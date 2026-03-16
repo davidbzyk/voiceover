@@ -2,7 +2,7 @@ import { logger } from './logger';
 
 const STORAGE_KEY = 'voiceover-config';
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
 	return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
 }
 
@@ -25,6 +25,7 @@ export type GoogleDrive = {
 	refresh_token: string;
 	email: string;
 	connected: boolean;
+	expires_at: number;
 };
 
 export type AppConfig = {
@@ -65,7 +66,8 @@ class AppState {
 			access_token: '',
 			refresh_token: '',
 			email: '',
-			connected: false
+			connected: false,
+			expires_at: 0
 		}
 	});
 

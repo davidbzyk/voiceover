@@ -13,6 +13,7 @@ pub struct DriveTokens {
     pub refresh_token: String,
     pub email: String,
     pub connected: bool,
+    pub expires_at: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -61,12 +62,24 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     // Open browser for consent
     open::that(&auth_url).map_err(|e| format!("Failed to open browser: {e}"))?;
 
-    // Wait for the OAuth callback (blocking, with timeout)
-    listener
-        .set_nonblocking(false)
-        .map_err(|e| e.to_string())?;
-
-    let (mut stream, _) = listener.accept().map_err(|e| format!("OAuth callback failed: {e}"))?;
+    // Wait for the OAuth callback with a 120-second timeout
+    use std::time::{Duration, Instant};
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let start = Instant::now();
+    let timeout = Duration::from_secs(120);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(conn) => break conn,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() > timeout {
+                    return Err("OAuth timed out — no callback received within 2 minutes".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            Err(e) => return Err(format!("OAuth callback failed: {e}")),
+        }
+    };
 
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
@@ -124,6 +137,15 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
         .unwrap_or_default()
         .to_string();
 
+    // Calculate token expiry (Google tokens last 3600s, subtract 60s buffer)
+    let expires_in = token_data["expires_in"].as_u64().unwrap_or(3600);
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + expires_in
+        - 60;
+
     // Get user email
     let email = get_user_email(&client, &access_token).await.unwrap_or_default();
 
@@ -132,6 +154,7 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
         refresh_token,
         email,
         connected: true,
+        expires_at,
     })
 }
 
@@ -187,7 +210,6 @@ pub async fn upload_to_drive(
         .unwrap_or("voiceover.mp4");
 
     let file_bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
-    let file_size = file_bytes.len();
 
     on_event
         .send(DriveEvent::Progress { percent: 10.0 })

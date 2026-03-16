@@ -2,7 +2,7 @@ use crate::config;
 use crate::elevenlabs;
 use crate::ffmpeg;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
 
 #[derive(Clone, Serialize)]
@@ -46,7 +46,7 @@ pub async fn process_recording(
             })
             .ok();
 
-        ffmpeg::normalize_to_mp4(&recording, &final_path)?;
+        ffmpeg::normalize_to_mp4(&recording, &final_path).await?;
 
         on_event
             .send(PipelineEvent::Complete {
@@ -88,7 +88,7 @@ pub async fn process_recording(
         .ok();
 
     log::info!("[pipeline] Extracting audio to {:?}", extracted_wav);
-    ffmpeg::extract_audio(&recording, &extracted_wav)?;
+    ffmpeg::extract_audio(&recording, &extracted_wav).await?;
     log::info!("[pipeline] Audio extracted");
 
     on_event
@@ -124,7 +124,7 @@ pub async fn process_recording(
         .ok();
 
     log::info!("[pipeline] Splicing audio into video");
-    ffmpeg::replace_audio(&recording, &transformed_mp3, &final_path)?;
+    ffmpeg::replace_audio(&recording, &transformed_mp3, &final_path).await?;
 
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
@@ -146,7 +146,7 @@ pub async fn process_recording(
     Ok(final_path.to_string_lossy().to_string())
 }
 
-fn cleanup_temp(path: &PathBuf) {
+fn cleanup_temp(path: &Path) {
     std::fs::remove_file(path).ok();
 }
 
