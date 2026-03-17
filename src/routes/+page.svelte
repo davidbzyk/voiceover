@@ -1,10 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { appState } from '$lib/state.svelte';
-
-	function isTauri() {
-		return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
-	}
+	import { appState, isTauri } from '$lib/state.svelte';
 	import {
 		startRecording,
 		stopRecording,
@@ -51,6 +47,11 @@
 			if (isTauri()) {
 				const { invoke } = await import('@tauri-apps/api/core');
 				await invoke('create_widget_window');
+
+				// Listen for widget events (stop / cancel)
+				const { listen } = await import('@tauri-apps/api/event');
+				listen('recording-stop', () => handleStop());
+				listen('recording-cancel', () => handleCancel());
 			}
 
 			// Start duration timer

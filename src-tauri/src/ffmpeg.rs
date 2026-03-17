@@ -1,8 +1,8 @@
 use std::path::Path;
-use std::process::Command;
+use tokio::process::Command;
 
 /// Extract audio from a video file as 16kHz mono WAV (optimal for ElevenLabs S2S).
-pub fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
+pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
     let status = Command::new("ffmpeg")
         .args([
             "-y",
@@ -18,6 +18,7 @@ pub fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String
             output_wav.to_str().unwrap(),
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
 
     if !status.status.success() {
@@ -29,7 +30,7 @@ pub fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String
 
 /// Replace the audio track in a video file with new audio.
 /// Uses `-c:v copy` to avoid re-encoding video (fast).
-pub fn replace_audio(
+pub async fn replace_audio(
     input_video: &Path,
     new_audio: &Path,
     output_mp4: &Path,
@@ -53,6 +54,7 @@ pub fn replace_audio(
             output_mp4.to_str().unwrap(),
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
 
     if !status.status.success() {
@@ -63,7 +65,7 @@ pub fn replace_audio(
 }
 
 /// Normalize a recording to MP4 format (handles platform codec differences).
-pub fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
+pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let status = Command::new("ffmpeg")
         .args([
             "-y",
@@ -78,6 +80,7 @@ pub fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
             output_mp4.to_str().unwrap(),
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
 
     if !status.status.success() {

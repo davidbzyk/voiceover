@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://api.elevenlabs.io https://oauth2.googleapis.com https://www.googleapis.com https://accounts.google.com https://cdn.jsdelivr.net blob:; media-src 'self' blob:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

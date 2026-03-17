@@ -1,11 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { appState, type Voice } from '$lib/state.svelte';
+	import { appState, isTauri, type Voice } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
-
-	function isTauri() {
-		return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
-	}
 
 	let newVoiceName = $state('');
 	let newVoiceId = $state('');

@@ -2,6 +2,17 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Validate that a session_id contains only safe characters (alphanumeric, hyphens, underscores).
+fn validate_session_id(session_id: &str) -> Result<(), String> {
+    if session_id.is_empty() {
+        return Err("session_id must not be empty".to_string());
+    }
+    if !session_id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("session_id contains invalid characters (only alphanumeric, hyphens, and underscores allowed)".to_string());
+    }
+    Ok(())
+}
+
 fn temp_recording_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("voiceover-recordings");
     fs::create_dir_all(&dir).ok();
@@ -16,6 +27,7 @@ pub fn get_temp_dir() -> String {
 /// Save a chunk of recording data (base64-encoded) to a temp file.
 #[tauri::command]
 pub fn save_recording_chunk(session_id: String, chunk: Vec<u8>, chunk_index: u32) -> Result<String, String> {
+    validate_session_id(&session_id)?;
     let dir = temp_recording_dir().join(&session_id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
@@ -29,6 +41,7 @@ pub fn save_recording_chunk(session_id: String, chunk: Vec<u8>, chunk_index: u32
 /// Finalize a recording session by concatenating all chunks into a single file.
 #[tauri::command]
 pub fn finalize_recording(session_id: String) -> Result<String, String> {
+    validate_session_id(&session_id)?;
     let dir = temp_recording_dir().join(&session_id);
     let output_path = temp_recording_dir().join(format!("{session_id}.webm"));
 

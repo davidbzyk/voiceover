@@ -1,9 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { appState } from '$lib/state.svelte';
+	import { appState, isTauri } from '$lib/state.svelte';
 	import '../app.css';
-
-	const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
 
 	let { children } = $props();
 
@@ -12,7 +10,7 @@
 		await appState.loadConfig();
 
 		// Tauri-only: check ffmpeg
-		if (isTauri) {
+		if (isTauri()) {
 			try {
 				const { invoke } = await import('@tauri-apps/api/core');
 				const status = await invoke<{ ffmpeg_available: boolean }>('check_prerequisites');

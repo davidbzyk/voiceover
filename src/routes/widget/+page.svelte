@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { listen } from '@tauri-apps/api/event';
-	import { invoke } from '@tauri-apps/api/core';
+	import { isTauri } from '$lib/state.svelte';
 	import { onMount } from 'svelte';
 
 	let duration = $state(0);
@@ -9,18 +8,24 @@
 	let timer: ReturnType<typeof setInterval> | null = null;
 
 	onMount(() => {
+		if (!isTauri()) return;
+
 		timer = setInterval(() => {
 			if (!isPaused) duration++;
 		}, 1000);
 
 		// Listen for voice name from main window
-		const unlisten = listen<string>('widget-voice-name', (event) => {
-			voiceName = event.payload;
-		});
+		let unlistenPromise: Promise<() => void> | null = null;
+		(async () => {
+			const { listen } = await import('@tauri-apps/api/event');
+			unlistenPromise = listen<string>('widget-voice-name', (event) => {
+				voiceName = event.payload;
+			});
+		})();
 
 		return () => {
 			if (timer) clearInterval(timer);
-			unlisten.then((fn) => fn());
+			unlistenPromise?.then((fn) => fn());
 		};
 	});
 
@@ -32,23 +37,29 @@
 		return `${m}:${s}`;
 	}
 
-	function handlePause() {
+	async function handlePause() {
 		isPaused = !isPaused;
+		if (!isTauri()) return;
 		// Notify main window
+		const { invoke } = await import('@tauri-apps/api/core');
 		invoke('plugin:event|emit', { event: isPaused ? 'recording-pause' : 'recording-resume', payload: null }).catch(() => {});
 	}
 
 	async function handleStop() {
 		if (timer) clearInterval(timer);
+		if (!isTauri()) return;
 		// Notify main window to stop recording
 		const { emit } = await import('@tauri-apps/api/event');
+		const { invoke } = await import('@tauri-apps/api/core');
 		await emit('recording-stop');
 		await invoke('close_widget_window');
 	}
 
 	async function handleCancel() {
 		if (timer) clearInterval(timer);
+		if (!isTauri()) return;
 		const { emit } = await import('@tauri-apps/api/event');
+		const { invoke } = await import('@tauri-apps/api/core');
 		await emit('recording-cancel');
 		await invoke('close_widget_window');
 	}

@@ -42,6 +42,9 @@ pub struct GoogleDrive {
     pub email: String,
     #[serde(default)]
     pub connected: bool,
+    /// Unix timestamp (seconds) when the access token expires
+    #[serde(default)]
+    pub expires_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,21 +107,39 @@ pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
     fs::write(&path, &json).map_err(|e| e.to_string())?;
 
     // Also write to static/ so the browser dev server can serve it
-    sync_to_static(&json);
+    sync_to_static(&config);
 
     Ok(())
 }
 
 /// Write config to the project's static dir so the Vite dev server can serve it.
 /// This bridges the gap between Tauri's app data and the browser at localhost.
-fn sync_to_static(json: &str) {
+/// Secrets are stripped — only preferences, voice names, and non-sensitive fields are synced.
+fn sync_to_static(config: &AppConfig) {
+    // Strip secrets — only sync preferences and voice names
+    let safe = serde_json::json!({
+        "elevenlabs_api_key": "",
+        "voices": config.voices,
+        "output_dir": &config.output_dir,
+        "preferences": &config.preferences,
+        "google_drive": {
+            "client_id": "",
+            "client_secret": "",
+            "access_token": "",
+            "refresh_token": "",
+            "email": &config.google_drive.email,
+            "connected": config.google_drive.connected
+        }
+    });
+    let json = serde_json::to_string_pretty(&safe).unwrap_or_default();
+
     // Walk up from the binary to find the project root (src-tauri/../static)
     if let Ok(exe) = std::env::current_exe() {
         // In dev: target/debug/voiceover -> src-tauri -> voiceover -> static
         for ancestor in exe.ancestors() {
             let static_dir = ancestor.join("static");
             if static_dir.is_dir() {
-                fs::write(static_dir.join("_config.json"), json).ok();
+                fs::write(static_dir.join("_config.json"), &json).ok();
                 return;
             }
         }
@@ -126,6 +147,6 @@ fn sync_to_static(json: &str) {
     // Fallback: try CWD
     let static_dir = PathBuf::from("static");
     if static_dir.is_dir() {
-        fs::write(static_dir.join("_config.json"), json).ok();
+        fs::write(static_dir.join("_config.json"), &json).ok();
     }
 }

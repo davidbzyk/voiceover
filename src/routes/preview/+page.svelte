@@ -1,11 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { appState } from '$lib/state.svelte';
+	import { appState, isTauri } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
-
-	function isTauri() {
-		return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
-	}
 
 	let isProcessing = $state(false);
 	let processingError = $state('');
@@ -307,7 +303,9 @@
 
 		const data = await resp.json();
 		const newToken = data.access_token;
+		const expiresIn = data.expires_in || 3600;
 		appState.config.google_drive.access_token = newToken;
+		appState.config.google_drive.expires_at = Math.floor(Date.now() / 1000) + expiresIn - 60;
 		await appState.saveConfig();
 		logger.info('drive', 'Access token refreshed');
 		return newToken;
@@ -381,6 +379,13 @@
 				if (!blob) throw new Error('No recording blob for upload');
 
 				let token = appState.config.google_drive.access_token;
+
+				// Proactively refresh if token is expired or expiring soon
+				const now = Math.floor(Date.now() / 1000);
+				if (appState.config.google_drive.expires_at > 0 && now >= appState.config.google_drive.expires_at) {
+					logger.info('drive', 'Token expired, refreshing proactively...');
+					token = await refreshDriveToken();
+				}
 
 				try {
 					driveLink = await driveUploadWithToken(blob, token);

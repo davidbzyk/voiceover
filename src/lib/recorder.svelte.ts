@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { isTauri } from './state.svelte';
 
 let mediaRecorder: MediaRecorder | null = null;
 let audioRecorder: MediaRecorder | null = null;
@@ -10,10 +11,6 @@ let sessionId = '';
 // Browser mode: collect chunks in memory
 let recordedChunks: Blob[] = [];
 let audioChunks: Blob[] = [];
-
-function isTauri(): boolean {
-	return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
-}
 
 async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 	const { invoke } = await import('@tauri-apps/api/core');
@@ -81,7 +78,7 @@ export async function startRecording(
 				logger.recordingChunk(chunkIndex, event.data.size);
 				if (isTauri()) {
 					const buffer = await event.data.arrayBuffer();
-					const bytes = Array.from(new Uint8Array(buffer));
+					const bytes = new Uint8Array(buffer);
 					await tauriInvoke('save_recording_chunk', {
 						sessionId,
 						chunk: bytes,

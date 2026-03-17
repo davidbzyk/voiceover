@@ -33,8 +33,8 @@ export const logger = {
 	recordingStart: (mode: string) => log('info', 'record', `Starting capture: ${mode}`),
 	recordingChunk: (index: number, size: number) =>
 		log('debug', 'record', `Chunk ${index}: ${(size / 1024).toFixed(1)}KB`),
-	recordingStop: (duration: number) =>
-		log('info', 'record', `Stopped after ${duration}s`),
+	recordingStop: (chunks: number) =>
+		log('info', 'record', `Stopped after ${chunks} chunks`),
 	recordingCancel: () => log('warn', 'record', 'Recording cancelled'),
 
 	// ElevenLabs
