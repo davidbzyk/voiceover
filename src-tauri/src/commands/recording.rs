@@ -38,6 +38,12 @@ pub fn save_recording_chunk(session_id: String, chunk: Vec<u8>, chunk_index: u32
     Ok(chunk_path.to_string_lossy().to_string())
 }
 
+/// Read a file as raw bytes (used for video preview in webview).
+#[tauri::command]
+pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))
+}
+
 /// Finalize a recording session by concatenating all chunks into a single file.
 #[tauri::command]
 pub fn finalize_recording(session_id: String) -> Result<String, String> {

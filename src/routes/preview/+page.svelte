@@ -3,9 +3,32 @@
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
 
+	import { onMount } from 'svelte';
+
 	let isProcessing = $state(false);
 	let processingError = $state('');
 	let transformedAudioUrl = $state('');
+	let videoSrc = $state('');
+
+	onMount(async () => {
+		if (!appState.recordingPath) return;
+		if (appState.recordingPath.startsWith('blob:')) {
+			videoSrc = appState.recordingPath;
+		} else if (isTauri()) {
+			// Read the file as bytes and create a blob URL
+			// (asset protocol is unreliable in WKWebView)
+			try {
+				const { invoke } = await import('@tauri-apps/api/core');
+				const bytes = await invoke<number[]>('read_file_bytes', {
+					path: appState.recordingPath
+				});
+				const blob = new Blob([new Uint8Array(bytes)], { type: 'video/webm' });
+				videoSrc = URL.createObjectURL(blob);
+			} catch (e) {
+				logger.error('preview', 'Failed to load video preview', e);
+			}
+		}
+	});
 
 	async function processAndSave() {
 		isProcessing = true;
@@ -431,9 +454,9 @@
 	</div>
 
 	<!-- Video preview -->
-	{#if appState.recordingPath}
+	{#if videoSrc}
 		<div class="video-container">
-			<video controls src={appState.recordingPath.startsWith('blob:') ? appState.recordingPath : `file://${appState.recordingPath}`} class="video-player">
+			<video controls src={videoSrc} class="video-player">
 				<track kind="captions" />
 			</video>
 		</div>

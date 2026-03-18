@@ -40,6 +40,7 @@ pub fn run() {
             recording::save_recording_chunk,
             recording::finalize_recording,
             recording::get_temp_dir,
+            recording::read_file_bytes,
             window::create_widget_window,
             window::close_widget_window,
             pipeline::process_recording,
