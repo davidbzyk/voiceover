@@ -12,11 +12,10 @@ pub async fn create_widget_window(app: tauri::AppHandle) -> Result<(), String> {
         .inner_size(340.0, 80.0)
         .resizable(false)
         .decorations(false)
-        .transparent(true)
         .always_on_top(true)
         .center()
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e: tauri::Error| e.to_string())?;
 
     Ok(())
 }
