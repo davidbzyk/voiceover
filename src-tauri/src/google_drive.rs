@@ -282,7 +282,7 @@ pub async fn upload_to_drive(
     Ok(share_link)
 }
 
-fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], filename: &str) -> Vec<u8> {
+fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], _filename: &str) -> Vec<u8> {
     let mut body = Vec::new();
     // Metadata part
     body.extend_from_slice(b"--voiceover_boundary\r\n");
