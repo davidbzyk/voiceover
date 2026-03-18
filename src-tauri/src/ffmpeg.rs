@@ -29,7 +29,7 @@ pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), 
 }
 
 /// Replace the audio track in a video file with new audio.
-/// Uses `-c:v copy` to avoid re-encoding video (fast).
+/// Re-encodes video to H.264 (input may be VP8/WebM which can't mux into MP4).
 pub async fn replace_audio(
     input_video: &Path,
     new_audio: &Path,
@@ -47,7 +47,9 @@ pub async fn replace_audio(
             "-map",
             "1:a",
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "fast",
             "-c:a",
             "aac",
             "-shortest",
