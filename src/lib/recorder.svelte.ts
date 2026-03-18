@@ -34,6 +34,13 @@ export async function startRecording(
 	audioChunks = [];
 
 	try {
+		if (!navigator.mediaDevices?.getDisplayMedia) {
+			throw new Error(
+				'Screen capture is not supported in this environment. ' +
+					'Use browser mode (open in Chrome) or the Tauri desktop app.'
+			);
+		}
+
 		// Request screen capture — OS provides the picker dialog
 		const displayMediaOptions: DisplayMediaStreamOptions = {
 			video: {
