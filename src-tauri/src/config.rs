@@ -93,11 +93,36 @@ pub fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     } else {
-        let config = AppConfig::default();
+        // Seed from static/_config.json if it exists (user may have placed config there)
+        let config = read_static_config().unwrap_or_default();
         let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
         fs::write(&path, json).map_err(|e| e.to_string())?;
         Ok(config)
     }
+}
+
+/// Try reading config from static/_config.json (project root).
+fn read_static_config() -> Option<AppConfig> {
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.ancestors().find_map(|a| {
+                let p = a.join("static/_config.json");
+                p.exists().then_some(p)
+            })),
+        {
+            let p = PathBuf::from("static/_config.json");
+            p.exists().then_some(p)
+        },
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if let Ok(content) = fs::read_to_string(&candidate) {
+            if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
+                return Some(config);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -115,7 +140,11 @@ pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
 /// Write config to the project's static dir so the Vite dev server can serve it.
 /// This bridges the gap between Tauri's app data and the browser at localhost.
 /// Secrets are stripped — only preferences, voice names, and non-sensitive fields are synced.
+/// Skipped if the config has no API key (avoids overwriting a user-seeded file with empty defaults).
 fn sync_to_static(config: &AppConfig) {
+    if config.elevenlabs_api_key.is_empty() {
+        return;
+    }
     // Strip secrets — only sync preferences and voice names
     let safe = serde_json::json!({
         "elevenlabs_api_key": "",
