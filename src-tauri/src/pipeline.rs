@@ -30,7 +30,20 @@ pub async fn process_recording(
 
     let config = config::get_config(app.clone())?;
     let output_dir = PathBuf::from(&config.output_dir);
-    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    // Fall back to default output dir if configured path can't be created
+    let output_dir = match std::fs::create_dir_all(&output_dir) {
+        Ok(_) => output_dir,
+        Err(e) => {
+            log::warn!("[pipeline] Can't create output dir {:?}: {}, using default", output_dir, e);
+            let fallback = dirs::video_dir()
+                .or_else(dirs::home_dir)
+                .map(|p| p.join("VoiceOver"))
+                .unwrap_or_else(|| PathBuf::from("/tmp/VoiceOver"));
+            std::fs::create_dir_all(&fallback).map_err(|e| e.to_string())?;
+            fallback
+        }
+    };
 
     let timestamp = chrono_timestamp();
     let final_name = format!("voiceover-{timestamp}.mp4");

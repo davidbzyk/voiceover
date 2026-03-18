@@ -15,8 +15,18 @@
 		if (appState.recordingPath.startsWith('blob:')) {
 			videoSrc = appState.recordingPath;
 		} else if (isTauri()) {
-			const { convertFileSrc } = await import('@tauri-apps/api/core');
-			videoSrc = convertFileSrc(appState.recordingPath);
+			// Read the file as bytes and create a blob URL
+			// (asset protocol is unreliable in WKWebView)
+			try {
+				const { invoke } = await import('@tauri-apps/api/core');
+				const bytes = await invoke<number[]>('read_file_bytes', {
+					path: appState.recordingPath
+				});
+				const blob = new Blob([new Uint8Array(bytes)], { type: 'video/webm' });
+				videoSrc = URL.createObjectURL(blob);
+			} catch (e) {
+				logger.error('preview', 'Failed to load video preview', e);
+			}
 		}
 	});
 
