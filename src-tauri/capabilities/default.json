@@ -41,10 +41,9 @@
         }
       ]
     },
-    {
-      "identifier": "core:asset:default",
-      "allow": [{ "path": "$TEMP/**" }, { "path": "$VIDEO/**" }, { "path": "$HOME/VoiceOver/**" }]
-    },
+    "fs:scope-temp-recursive",
+    "fs:scope-video-recursive",
+    "fs:scope-home-recursive",
     "global-shortcut:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
