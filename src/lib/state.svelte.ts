@@ -92,24 +92,39 @@ class AppState {
 	async loadConfig() {
 		if (isTauri()) {
 			try {
-				this.config = await tauriInvoke<AppConfig>('get_config');
-				localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-				logger.configLoaded('Tauri app data');
-				return;
+				const tauriConfig = await tauriInvoke<AppConfig>('get_config');
+				if (tauriConfig.elevenlabs_api_key) {
+					this.config = tauriConfig;
+					localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+					logger.configLoaded('Tauri app data');
+					return;
+				}
+				logger.warn('config', 'Tauri config has no API key, checking static fallback');
 			} catch (e) {
 				logger.error('config', 'Failed to load from Tauri', e);
 			}
 		}
 
-		// Browser mode: try fetching the synced config file first
+		// Browser mode (or Tauri fallback): try fetching the synced config file
 		try {
 			const resp = await fetch('/_config.json');
 			if (resp.ok) {
 				const data = await resp.json();
-				this.config = { ...this.config, ...data };
-				localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-				logger.configLoaded('static/_config.json');
-				return;
+				if (data.elevenlabs_api_key) {
+					this.config = { ...this.config, ...data };
+					localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+					logger.configLoaded('static/_config.json');
+					// If in Tauri, persist to app data so it's picked up next time
+					if (isTauri()) {
+						try {
+							await tauriInvoke('save_config', { config: this.config });
+							logger.configSaved('Tauri app data (seeded from static)');
+						} catch {
+							// Non-fatal — config is loaded, just not persisted to Tauri
+						}
+					}
+					return;
+				}
 			}
 		} catch {
 			// File doesn't exist yet — fall through to localStorage
