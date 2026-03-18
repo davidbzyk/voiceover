@@ -43,17 +43,6 @@
 
 			appState.recordingState = 'recording';
 
-			// Open floating widget (Tauri only)
-			if (isTauri()) {
-				const { invoke } = await import('@tauri-apps/api/core');
-				await invoke('create_widget_window');
-
-				// Listen for widget events (stop / cancel)
-				const { listen } = await import('@tauri-apps/api/event');
-				listen('recording-stop', () => handleStop());
-				listen('recording-cancel', () => handleCancel());
-			}
-
 			// Start duration timer
 			const startTime = Date.now();
 			const timer = setInterval(() => {

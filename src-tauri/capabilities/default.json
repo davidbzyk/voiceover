@@ -41,6 +41,10 @@
         }
       ]
     },
+    {
+      "identifier": "core:asset:default",
+      "allow": [{ "path": "$TEMP/**" }, { "path": "$VIDEO/**" }, { "path": "$HOME/VoiceOver/**" }]
+    },
     "global-shortcut:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
