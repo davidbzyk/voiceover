@@ -177,6 +177,7 @@
 								...v,
 								is_default: v.id === target.value
 							}));
+							appState.saveConfig();
 						}}
 					>
 						{#each appState.config.voices as voice}
