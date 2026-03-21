@@ -80,6 +80,7 @@
 		const result = await invoke<string>('process_recording', {
 			recordingPath: appState.recordingPath,
 			voiceReplacement: appState.config.preferences.voice_replacement_enabled,
+			voiceId: appState.selectedVoice?.id ?? null,
 			onEvent
 		});
 		appState.outputPath = result;

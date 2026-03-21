@@ -19,6 +19,7 @@ pub async fn process_recording(
     app: tauri::AppHandle,
     recording_path: String,
     voice_replacement: bool,
+    voice_id: Option<String>,
     on_event: Channel<PipelineEvent>,
 ) -> Result<String, String> {
     let recording = PathBuf::from(&recording_path);
@@ -77,16 +78,15 @@ pub async fn process_recording(
         return Err("ElevenLabs API key not set — configure in Settings".to_string());
     }
 
-    let default_voice = config
-        .voices
-        .iter()
-        .find(|v| v.is_default)
-        .or_else(|| config.voices.first());
-
-    let voice_id = match default_voice {
-        Some(v) => v.id.clone(),
-        None => return Err("No voice configured — add one in Settings".to_string()),
-    };
+    let voice_id = voice_id
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            config.voices.iter()
+                .find(|v| v.is_default)
+                .or_else(|| config.voices.first())
+                .map(|v| v.id.clone())
+        })
+        .ok_or_else(|| "No voice configured — add one in Settings".to_string())?;
 
     let temp_dir = recording.parent().unwrap_or(std::path::Path::new("/tmp"));
     let extracted_wav = temp_dir.join(format!("extracted-{timestamp}.wav"));
