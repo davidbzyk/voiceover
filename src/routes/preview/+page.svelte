@@ -381,6 +381,14 @@
 		logger.driveUploadStart(appState.outputPath || 'blob');
 
 		try {
+			// Refresh token if expired (applies to both Tauri and browser mode)
+			let token = appState.config.google_drive.access_token;
+			const now = Math.floor(Date.now() / 1000);
+			if (!appState.config.google_drive.expires_at || now >= appState.config.google_drive.expires_at) {
+				logger.info('drive', 'Token expired, refreshing...');
+				token = await refreshDriveToken();
+			}
+
 			if (isTauri()) {
 				const { invoke, Channel } = await import('@tauri-apps/api/core');
 				type DriveEvent =
@@ -394,22 +402,13 @@
 				};
 
 				driveLink = await invoke<string>('upload_to_drive', {
-					accessToken: appState.config.google_drive.access_token,
+					accessToken: token,
 					filePath: appState.outputPath,
 					onEvent
 				});
 			} else {
 				const blob = (window as any).__voiceover_blob as Blob | undefined;
 				if (!blob) throw new Error('No recording blob for upload');
-
-				let token = appState.config.google_drive.access_token;
-
-				// Proactively refresh if token is expired or expiring soon
-				const now = Math.floor(Date.now() / 1000);
-				if (appState.config.google_drive.expires_at > 0 && now >= appState.config.google_drive.expires_at) {
-					logger.info('drive', 'Token expired, refreshing proactively...');
-					token = await refreshDriveToken();
-				}
 
 				try {
 					driveLink = await driveUploadWithToken(blob, token);

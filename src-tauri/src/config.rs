@@ -139,28 +139,12 @@ pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
 
 /// Write config to the project's static dir so the Vite dev server can serve it.
 /// This bridges the gap between Tauri's app data and the browser at localhost.
-/// Secrets are stripped — only preferences, voice names, and non-sensitive fields are synced.
-/// Skipped if the config has no API key (avoids overwriting a user-seeded file with empty defaults).
+/// The file is gitignored so credentials are safe from accidental commits.
 fn sync_to_static(config: &AppConfig) {
     if config.elevenlabs_api_key.is_empty() {
         return;
     }
-    // Strip secrets — only sync preferences and voice names
-    let safe = serde_json::json!({
-        "elevenlabs_api_key": "",
-        "voices": config.voices,
-        "output_dir": &config.output_dir,
-        "preferences": &config.preferences,
-        "google_drive": {
-            "client_id": "",
-            "client_secret": "",
-            "access_token": "",
-            "refresh_token": "",
-            "email": &config.google_drive.email,
-            "connected": config.google_drive.connected
-        }
-    });
-    let json = serde_json::to_string_pretty(&safe).unwrap_or_default();
+    let json = serde_json::to_string_pretty(config).unwrap_or_default();
 
     // Walk up from the binary to find the project root (src-tauri/../static)
     if let Ok(exe) = std::env::current_exe() {
