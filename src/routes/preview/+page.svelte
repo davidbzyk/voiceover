@@ -517,7 +517,14 @@
 		{#if driveLink}
 			<div class="drive-link">
 				<div class="saved-label">Drive link:</div>
-				<a href={driveLink} class="link">{driveLink}</a>
+				<button class="link" onclick={async () => {
+					if (isTauri()) {
+						const { invoke } = await import('@tauri-apps/api/core');
+						await invoke('plugin:shell|open', { path: driveLink });
+					} else {
+						window.open(driveLink, '_blank');
+					}
+				}}>{driveLink}</button>
 			</div>
 		{:else if appState.config.google_drive.connected}
 			<button class="btn secondary" onclick={uploadToDrive} disabled={isUploading}>
@@ -700,5 +707,14 @@
 		word-break: break-all;
 		margin-top: 4px;
 		display: block;
+		background: none;
+		border: none;
+		cursor: pointer;
+		text-align: left;
+		padding: 0;
+		font-family: inherit;
+	}
+	.link:hover {
+		text-decoration: underline;
 	}
 </style>
