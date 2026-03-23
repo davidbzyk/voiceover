@@ -179,6 +179,16 @@ This produces:
 - **macOS:** `.dmg` installer in `src-tauri/target/release/bundle/dmg/`
 - **Linux:** `.AppImage` and `.deb` in `src-tauri/target/release/bundle/`
 
+### Installing the .app (macOS)
+
+The app is unsigned. After dragging VoiceOver.app to Applications, open Terminal and run:
+
+```bash
+xattr -cr /Applications/VoiceOver.app
+```
+
+This removes the macOS quarantine flag. You only need to do this once.
+
 ## Configuration
 
 All settings are managed in-app via the Settings screen. No config files to edit manually.
