@@ -171,6 +171,7 @@ async fn get_user_email(client: &reqwest::Client, access_token: &str) -> Result<
 }
 
 /// Refresh an expired access token.
+#[allow(dead_code)]
 pub async fn refresh_access_token(
     client_id: &str,
     client_secret: &str,
@@ -303,4 +304,102 @@ fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], _filename: &str)
 #[tauri::command]
 pub fn google_drive_disconnect() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_verifier_is_base64url_encoded() {
+        let verifier = generate_code_verifier();
+        assert!(
+            verifier.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "verifier contains non-base64url chars: {verifier}"
+        );
+    }
+
+    #[test]
+    fn code_verifier_has_sufficient_entropy() {
+        let verifier = generate_code_verifier();
+        assert!(
+            verifier.len() >= 40,
+            "verifier too short ({} chars): {verifier}",
+            verifier.len()
+        );
+    }
+
+    #[test]
+    fn code_verifiers_are_unique() {
+        let v1 = generate_code_verifier();
+        let v2 = generate_code_verifier();
+        assert_ne!(v1, v2, "two verifiers should differ");
+    }
+
+    #[test]
+    fn code_challenge_is_sha256_of_verifier() {
+        let verifier = "test_verifier_string";
+        let challenge = code_challenge(verifier);
+
+        // Independently compute SHA256
+        let hash = Sha256::digest(verifier.as_bytes());
+        let expected = URL_SAFE_NO_PAD.encode(hash);
+
+        assert_eq!(challenge, expected);
+    }
+
+    #[test]
+    fn code_challenge_is_url_safe_base64() {
+        let verifier = generate_code_verifier();
+        let challenge = code_challenge(&verifier);
+        assert!(
+            !challenge.contains('='),
+            "challenge should not have padding: {challenge}"
+        );
+        assert!(
+            challenge.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            "challenge contains non-url-safe chars: {challenge}"
+        );
+    }
+
+    #[test]
+    fn multipart_body_has_correct_boundary_structure() {
+        let metadata = r#"{"name":"test.mp4"}"#;
+        let file_bytes = vec![0u8; 10];
+        let body = build_multipart_body(metadata, &file_bytes, "test.mp4");
+        let body_str = String::from_utf8_lossy(&body);
+
+        assert!(
+            body_str.starts_with("--voiceover_boundary\r\n"),
+            "body should start with opening boundary"
+        );
+        assert!(
+            body_str.ends_with("--voiceover_boundary--\r\n"),
+            "body should end with closing boundary"
+        );
+
+        let opening_count = body_str.matches("--voiceover_boundary\r\n").count();
+        let closing_count = body_str.matches("--voiceover_boundary--\r\n").count();
+        assert_eq!(opening_count, 2, "expected 2 opening boundaries");
+        assert_eq!(closing_count, 1, "expected 1 closing boundary");
+    }
+
+    #[test]
+    fn multipart_body_contains_file_bytes() {
+        let metadata = r#"{"name":"test.mp4"}"#;
+        let file_bytes: Vec<u8> = vec![1, 2, 3, 4, 5];
+        let body = build_multipart_body(metadata, &file_bytes, "test.mp4");
+
+        // Find the file bytes in the body
+        let has_bytes = body.windows(5).any(|w| w == [1, 2, 3, 4, 5]);
+        assert!(has_bytes, "body should contain the file bytes");
+    }
+
+    #[test]
+    fn drive_tokens_default_is_disconnected() {
+        let tokens = DriveTokens::default();
+        assert!(!tokens.connected);
+        assert!(tokens.access_token.is_empty());
+        assert!(tokens.refresh_token.is_empty());
+    }
 }

@@ -145,6 +145,29 @@ When running via `pnpm tauri dev`, you can use the app in Chrome at `http://loca
 
 Settings entered in the desktop app sync to the browser via `static/_config.json`.
 
+## Testing
+
+```bash
+# Run all tests (frontend + backend)
+pnpm test:all
+
+# Frontend only (Vitest)
+pnpm test
+
+# Backend only (Rust)
+pnpm test:rust
+
+# Watch mode (frontend, re-runs on file changes)
+pnpm test:watch
+
+# Coverage reports with HTML graphs
+pnpm test:coverage          # Frontend → coverage/index.html
+pnpm test:rust:coverage     # Backend  → src-tauri/target/llvm-cov/html/index.html
+pnpm test:all:coverage      # Both
+```
+
+Pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) run frontend tests, Rust tests, and type checking in parallel before every commit.
+
 ## Building for Distribution
 
 ```bash

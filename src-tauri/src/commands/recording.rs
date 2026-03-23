@@ -71,3 +71,83 @@ pub fn finalize_recording(session_id: String) -> Result<String, String> {
 
     Ok(output_path.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_session_id_with_alphanumeric_hyphens_underscores() {
+        assert!(validate_session_id("rec-1234567890-abc123").is_ok());
+    }
+
+    #[test]
+    fn valid_session_id_with_underscores() {
+        assert!(validate_session_id("my_session_id").is_ok());
+    }
+
+    #[test]
+    fn empty_session_id_is_rejected() {
+        let err = validate_session_id("").unwrap_err();
+        assert!(err.contains("empty"), "expected 'empty' in error: {err}");
+    }
+
+    #[test]
+    fn session_id_with_path_traversal_is_rejected() {
+        assert!(validate_session_id("../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn session_id_with_slashes_is_rejected() {
+        assert!(validate_session_id("session/evil").is_err());
+    }
+
+    #[test]
+    fn session_id_with_spaces_is_rejected() {
+        assert!(validate_session_id("session id").is_err());
+    }
+
+    #[test]
+    fn session_id_with_dots_is_rejected() {
+        assert!(validate_session_id("session.id").is_err());
+    }
+
+    #[test]
+    fn temp_recording_dir_is_under_system_temp() {
+        let dir = temp_recording_dir();
+        let tmp = std::env::temp_dir();
+        assert!(
+            dir.starts_with(&tmp),
+            "expected {dir:?} to start with {tmp:?}"
+        );
+        assert!(
+            dir.to_string_lossy().contains("voiceover-recordings"),
+            "expected 'voiceover-recordings' in {dir:?}"
+        );
+    }
+
+    #[test]
+    fn save_and_finalize_roundtrip() {
+        let session_id = format!("test-session-{}", std::process::id());
+
+        // Save 3 chunks
+        save_recording_chunk(session_id.clone(), vec![1, 2, 3], 0).unwrap();
+        save_recording_chunk(session_id.clone(), vec![4, 5, 6], 1).unwrap();
+        save_recording_chunk(session_id.clone(), vec![7, 8, 9], 2).unwrap();
+
+        // Finalize
+        let output_path = finalize_recording(session_id.clone()).unwrap();
+        let output = PathBuf::from(&output_path);
+
+        // Verify concatenated content
+        let data = fs::read(&output).unwrap();
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        // Verify chunk dir was cleaned up
+        let chunk_dir = temp_recording_dir().join(&session_id);
+        assert!(!chunk_dir.exists(), "chunk dir should be cleaned up");
+
+        // Clean up test artifact
+        fs::remove_file(&output).ok();
+    }
+}
