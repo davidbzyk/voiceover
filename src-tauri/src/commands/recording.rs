@@ -45,6 +45,7 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
 }
 
 /// Finalize a recording session by concatenating all chunks into a single file.
+/// MediaRecorder chunks are WebM fragments (not standalone files) — byte append is correct.
 #[tauri::command]
 pub fn finalize_recording(session_id: String) -> Result<String, String> {
     validate_session_id(&session_id)?;
@@ -149,5 +150,43 @@ mod tests {
 
         // Clean up test artifact
         fs::remove_file(&output).ok();
+    }
+
+    /// Guard: finalize must produce exact byte-concat of all chunks, preserving every byte.
+    /// MediaRecorder WebM fragments depend on byte continuity — any reprocessing (e.g. ffmpeg
+    /// concat demuxer) would break the stream because chunks after the first lack EBML headers.
+    #[test]
+    fn finalize_preserves_all_chunk_bytes_in_order() {
+        let session_id = format!("test-byteconcat-{}", std::process::id());
+
+        // Simulate realistic chunk sizes with recognizable patterns
+        let chunk_0: Vec<u8> = (0..=255).collect(); // 256 bytes: EBML header + init
+        let chunk_1: Vec<u8> = vec![0xCA; 512];      // 512 bytes: cluster data
+        let chunk_2: Vec<u8> = vec![0xFE; 128];      // 128 bytes: cluster data
+
+        save_recording_chunk(session_id.clone(), chunk_0.clone(), 0).unwrap();
+        save_recording_chunk(session_id.clone(), chunk_1.clone(), 1).unwrap();
+        save_recording_chunk(session_id.clone(), chunk_2.clone(), 2).unwrap();
+
+        let output_path = finalize_recording(session_id.clone()).unwrap();
+        let result = fs::read(&output_path).unwrap();
+
+        // Total size must equal sum of all chunks (no bytes lost or added)
+        assert_eq!(
+            result.len(),
+            chunk_0.len() + chunk_1.len() + chunk_2.len(),
+            "finalize must not drop or add bytes — got {} expected {}",
+            result.len(),
+            chunk_0.len() + chunk_1.len() + chunk_2.len()
+        );
+
+        // Byte-exact match: chunks must appear in order without modification
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&chunk_0);
+        expected.extend_from_slice(&chunk_1);
+        expected.extend_from_slice(&chunk_2);
+        assert_eq!(result, expected, "finalize must byte-concat chunks in order");
+
+        fs::remove_file(&output_path).ok();
     }
 }

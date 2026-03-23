@@ -16,6 +16,8 @@
 	let audioDevices = $state<MediaDeviceInfo[]>([]);
 	let selectedDeviceId = $state<string>('');
 	let isStarting = $state(false);
+	let pausedAt = $state(0);
+	let totalPausedMs = $state(0);
 
 	onMount(async () => {
 		try {
@@ -42,12 +44,14 @@
 			);
 
 			appState.recordingState = 'recording';
+			pausedAt = 0;
+			totalPausedMs = 0;
 
-			// Start duration timer
+			// Start duration timer (subtracts paused time from elapsed)
 			const startTime = Date.now();
 			const timer = setInterval(() => {
 				if (appState.recordingState === 'recording') {
-					appState.recordingDuration = Math.floor((Date.now() - startTime) / 1000);
+					appState.recordingDuration = Math.floor((Date.now() - startTime - totalPausedMs) / 1000);
 				} else if (appState.recordingState !== 'paused') {
 					clearInterval(timer);
 				}
@@ -80,8 +84,11 @@
 	function handlePause() {
 		if (appState.recordingState === 'recording') {
 			pauseRecording();
+			pausedAt = Date.now();
 			appState.recordingState = 'paused';
 		} else if (appState.recordingState === 'paused') {
+			totalPausedMs += Date.now() - pausedAt;
+			pausedAt = 0;
 			resumeRecording();
 			appState.recordingState = 'recording';
 		}
