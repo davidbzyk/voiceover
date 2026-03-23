@@ -171,3 +171,59 @@ fn chrono_timestamp() -> String {
         .as_secs();
     format!("{secs}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrono_timestamp_returns_numeric_string() {
+        let ts = chrono_timestamp();
+        assert!(ts.chars().all(|c| c.is_ascii_digit()), "expected all digits, got: {ts}");
+        let val: u64 = ts.parse().expect("should parse as u64");
+        assert!(val > 1_577_836_800, "expected timestamp after year 2020, got: {val}");
+    }
+
+    #[test]
+    fn pipeline_event_progress_serializes_with_tag() {
+        let event = PipelineEvent::Progress {
+            stage: "Extracting audio".to_string(),
+            percent: 42.5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["event"], "progress");
+        let data = &v["data"];
+        assert_eq!(data["stage"], "Extracting audio");
+        assert_eq!(data["percent"], 42.5);
+    }
+
+    #[test]
+    fn pipeline_event_complete_serializes_with_output_path() {
+        let event = PipelineEvent::Complete {
+            output_path: "/tmp/output.mp4".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["event"], "complete");
+        // rename_all="camelCase" turns output_path into outputPath
+        let data = &v["data"];
+        let output = data.get("outputPath").or_else(|| data.get("output_path"));
+        assert_eq!(
+            output.and_then(|val| val.as_str()),
+            Some("/tmp/output.mp4"),
+            "actual JSON: {json}"
+        );
+    }
+
+    #[test]
+    fn pipeline_event_error_serializes_with_message() {
+        let event = PipelineEvent::Error {
+            message: "Something went wrong".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["event"], "error");
+        assert_eq!(v["data"]["message"], "Something went wrong");
+    }
+}

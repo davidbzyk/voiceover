@@ -7,9 +7,16 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"prepare": "lefthook install",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage",
+		"test:rust": "cd src-tauri && cargo test",
+		"test:rust:coverage": "cd src-tauri && cargo llvm-cov --html --open --ignore-filename-regex '(lib|main)\\.rs|commands/window\\.rs'",
+		"test:all": "pnpm test && pnpm test:rust",
+		"test:all:coverage": "pnpm test:coverage && pnpm test:rust:coverage"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
@@ -17,10 +24,16 @@
 		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tauri-apps/cli": "^2.10.1",
+		"@testing-library/jest-dom": "^6.9.1",
+		"@testing-library/svelte": "^5.3.1",
+		"@vitest/coverage-v8": "^4.1.0",
+		"jsdom": "^29.0.1",
+		"lefthook": "^2.1.4",
 		"svelte": "^5.51.0",
 		"svelte-check": "^4.4.2",
 		"typescript": "^5.9.3",
-		"vite": "^7.3.1"
+		"vite": "^7.3.1",
+		"vitest": "^4.1.0"
 	},
 	"dependencies": {
 		"@ffmpeg/core": "0.12.10",

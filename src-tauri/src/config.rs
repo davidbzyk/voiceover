@@ -163,3 +163,109 @@ fn sync_to_static(config: &AppConfig) {
         fs::write(static_dir.join("_config.json"), &json).ok();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_has_empty_api_key() {
+        let config = AppConfig::default();
+        assert!(config.elevenlabs_api_key.is_empty());
+    }
+
+    #[test]
+    fn default_config_has_no_voices() {
+        let config = AppConfig::default();
+        assert!(config.voices.is_empty());
+    }
+
+    #[test]
+    fn default_preferences_enable_voice_replacement() {
+        let prefs = Preferences::default();
+        assert!(prefs.voice_replacement_enabled);
+    }
+
+    #[test]
+    fn default_preferences_disable_webcam() {
+        let prefs = Preferences::default();
+        assert!(!prefs.webcam_enabled);
+    }
+
+    #[test]
+    fn default_preferences_use_fullscreen_capture() {
+        let prefs = Preferences::default();
+        assert_eq!(prefs.default_capture_mode, "fullscreen");
+    }
+
+    #[test]
+    fn default_output_dir_contains_voiceover() {
+        let dir = default_output_dir();
+        assert!(dir.contains("VoiceOver"), "expected 'VoiceOver' in output dir, got: {dir}");
+    }
+
+    #[test]
+    fn default_google_drive_is_disconnected() {
+        let gd = GoogleDrive::default();
+        assert!(!gd.connected);
+        assert!(gd.access_token.is_empty());
+        assert!(gd.refresh_token.is_empty());
+        assert_eq!(gd.expires_at, 0);
+    }
+
+    #[test]
+    fn config_serialization_roundtrip_is_lossless() {
+        let config = AppConfig {
+            elevenlabs_api_key: "sk-test-key-12345".to_string(),
+            voices: vec![Voice {
+                id: "voice1".to_string(),
+                name: "Test Voice".to_string(),
+                description: "A test voice".to_string(),
+                is_default: true,
+            }],
+            output_dir: "/tmp/test-output".to_string(),
+            preferences: Preferences {
+                default_capture_mode: "window".to_string(),
+                webcam_enabled: true,
+                voice_replacement_enabled: false,
+            },
+            google_drive: GoogleDrive {
+                client_id: "cid".to_string(),
+                client_secret: "csec".to_string(),
+                access_token: "at".to_string(),
+                refresh_token: "rt".to_string(),
+                email: "test@example.com".to_string(),
+                connected: true,
+                expires_at: 1700000000,
+            },
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.elevenlabs_api_key, "sk-test-key-12345");
+        assert_eq!(deserialized.voices.len(), 1);
+        assert_eq!(deserialized.voices[0].id, "voice1");
+        assert_eq!(deserialized.voices[0].is_default, true);
+        assert_eq!(deserialized.output_dir, "/tmp/test-output");
+        assert_eq!(deserialized.preferences.default_capture_mode, "window");
+        assert_eq!(deserialized.preferences.webcam_enabled, true);
+        assert_eq!(deserialized.preferences.voice_replacement_enabled, false);
+        assert_eq!(deserialized.google_drive.connected, true);
+        assert_eq!(deserialized.google_drive.expires_at, 1700000000);
+    }
+
+    #[test]
+    fn config_deserialization_with_missing_fields_uses_defaults() {
+        let json = r#"{"elevenlabs_api_key": "sk-old"}"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.elevenlabs_api_key, "sk-old");
+        assert!(config.voices.is_empty());
+        assert!(config.output_dir.contains("VoiceOver"));
+        assert_eq!(config.preferences.default_capture_mode, "fullscreen");
+        assert!(config.preferences.voice_replacement_enabled);
+        assert!(!config.preferences.webcam_enabled);
+        assert!(!config.google_drive.connected);
+    }
+}

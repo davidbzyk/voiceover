@@ -34,3 +34,38 @@ pub struct PrerequisiteStatus {
     pub ffmpeg_available: bool,
     pub ffmpeg_version: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn check_ffmpeg_returns_bool_without_panic() {
+        let result = check_ffmpeg();
+        // Just verify it returns a bool without panicking
+        assert!(result == true || result == false);
+    }
+
+    #[test]
+    fn prerequisite_status_serializes_correctly() {
+        let status = PrerequisiteStatus {
+            ffmpeg_available: true,
+            ffmpeg_version: Some("ffmpeg version 6.1".to_string()),
+        };
+        let json: serde_json::Value = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["ffmpeg_available"], true);
+        assert_eq!(json["ffmpeg_version"], "ffmpeg version 6.1");
+    }
+
+    #[test]
+    fn prerequisite_status_serializes_with_null_version() {
+        let status = PrerequisiteStatus {
+            ffmpeg_available: false,
+            ffmpeg_version: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["ffmpeg_available"], false);
+        assert!(json["ffmpeg_version"].is_null());
+    }
+}

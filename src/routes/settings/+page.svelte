@@ -132,9 +132,10 @@
 	<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
 		<div class="section-title">ElevenLabs</div>
 		<div class="card">
-			<label class="field-label">API Key</label>
+			<label class="field-label" for="api-key">API Key</label>
 			<div class="key-row">
 				<input
+					id="api-key"
 					type={apiKeyVisible ? 'text' : 'password'}
 					bind:value={appState.config.elevenlabs_api_key}
 					placeholder="sk-..."
@@ -198,8 +199,8 @@
 	<div class="section">
 		<div class="section-title">Output</div>
 		<div class="card">
-			<label class="field-label">Save Location</label>
-			<input bind:value={appState.config.output_dir} class="input" />
+			<label class="field-label" for="output-dir">Save Location</label>
+			<input id="output-dir" bind:value={appState.config.output_dir} class="input" />
 		</div>
 	</div>
 
@@ -216,14 +217,16 @@
 					<button class="link-btn danger" onclick={disconnectDrive}>Disconnect</button>
 				</div>
 			{:else}
-				<label class="field-label">OAuth Client ID</label>
+				<label class="field-label" for="gdrive-client-id">OAuth Client ID</label>
 				<input
+					id="gdrive-client-id"
 					bind:value={appState.config.google_drive.client_id}
 					placeholder="your-app.apps.googleusercontent.com"
 					class="input"
 				/>
-				<label class="field-label">Client Secret</label>
+				<label class="field-label" for="gdrive-client-secret">Client Secret</label>
 				<input
+					id="gdrive-client-secret"
 					type="password"
 					bind:value={appState.config.google_drive.client_secret}
 					placeholder="GOCSPX-..."

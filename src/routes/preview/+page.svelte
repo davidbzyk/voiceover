@@ -206,7 +206,7 @@
 		]);
 
 		const outputData = await ffmpegInstance.readFile('output.webm');
-		const outputBlob = new Blob([outputData], { type: 'video/webm' });
+		const outputBlob = new Blob([outputData as BlobPart], { type: 'video/webm' });
 		ffmpegInstance.terminate();
 
 		appState.processingStage = 'Complete!';
@@ -476,6 +476,7 @@
 			<button
 				class="toggle"
 				class:active={appState.config.preferences.voice_replacement_enabled}
+				aria-label="Toggle voice replacement"
 				onclick={() =>
 					(appState.config.preferences.voice_replacement_enabled =
 						!appState.config.preferences.voice_replacement_enabled)}

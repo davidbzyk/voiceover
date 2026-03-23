@@ -25,4 +25,10 @@ static/_config.json
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
-.notes/
+
+# Coverage
+coverage/
+
+MEMORY/
+docs/
+firebase-debug.log

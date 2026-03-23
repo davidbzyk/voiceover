@@ -48,10 +48,7 @@
 			const timer = setInterval(() => {
 				if (appState.recordingState === 'recording') {
 					appState.recordingDuration = Math.floor((Date.now() - startTime) / 1000);
-				} else if (
-					appState.recordingState !== 'paused' &&
-					appState.recordingState !== 'recording'
-				) {
+				} else if (appState.recordingState !== 'paused') {
 					clearInterval(timer);
 				}
 			}, 1000);
@@ -205,6 +202,7 @@
 			<button
 				class="toggle"
 				class:active={appState.config.preferences.voice_replacement_enabled}
+				aria-label="Toggle voice replacement"
 				onclick={() =>
 					(appState.config.preferences.voice_replacement_enabled =
 						!appState.config.preferences.voice_replacement_enabled)}

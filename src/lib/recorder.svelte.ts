@@ -17,12 +17,20 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 	return invoke<T>(cmd, args);
 }
 
-function generateSessionId(): string {
+export function generateSessionId(): string {
 	return `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function selectVideoMimeType(): string {
+	if (typeof MediaRecorder === 'undefined') return '';
+	if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) return 'video/webm;codecs=vp8,opus';
+	if (MediaRecorder.isTypeSupported('video/webm')) return 'video/webm';
+	return '';
 }
 
 export type CaptureMode = 'fullscreen' | 'window' | 'region';
 
+/* v8 ignore start -- WebRTC recording requires browser runtime */
 export async function startRecording(
 	captureMode: CaptureMode,
 	audioDeviceId?: string,
@@ -69,11 +77,7 @@ export async function startRecording(
 		]);
 
 		// Determine supported MIME type
-		const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-			? 'video/webm;codecs=vp8,opus'
-			: MediaRecorder.isTypeSupported('video/webm')
-				? 'video/webm'
-				: '';
+		const mimeType = selectVideoMimeType();
 
 		mediaRecorder = new MediaRecorder(combinedStream, {
 			...(mimeType ? { mimeType } : {}),
@@ -124,6 +128,9 @@ export async function startRecording(
 	}
 }
 
+/* v8 ignore stop */
+
+/* v8 ignore start -- WebRTC webcam requires browser runtime */
 async function getWebcamStream(): Promise<MediaStream | null> {
 	try {
 		return await navigator.mediaDevices.getUserMedia({
@@ -134,6 +141,8 @@ async function getWebcamStream(): Promise<MediaStream | null> {
 		return null;
 	}
 }
+
+/* v8 ignore stop */
 
 export function pauseRecording() {
 	if (mediaRecorder?.state === 'recording') {
@@ -149,6 +158,7 @@ export function resumeRecording() {
 	}
 }
 
+/* v8 ignore start -- WebRTC stop/cleanup requires browser runtime */
 export async function stopRecording(): Promise<string> {
 	return new Promise((resolve, reject) => {
 		if (!mediaRecorder) {
@@ -206,6 +216,8 @@ function cleanup() {
 	mediaRecorder = null;
 	audioRecorder = null;
 }
+
+/* v8 ignore stop */
 
 export async function getAudioDevices(): Promise<MediaDeviceInfo[]> {
 	const devices = await navigator.mediaDevices.enumerateDevices();
