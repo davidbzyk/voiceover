@@ -30,5 +30,7 @@ vite.config.ts.timestamp-*
 coverage/
 
 MEMORY/
-docs/
 firebase-debug.log
+
+# Bundled sidecar binaries (large static ffmpeg ~60MB)
+src-tauri/binaries/

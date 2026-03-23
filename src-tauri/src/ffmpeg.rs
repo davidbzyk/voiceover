@@ -1,5 +1,20 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
+
+/// Resolve the ffmpeg binary path.
+/// In a bundled .app, the sidecar lives next to the main executable in Contents/MacOS/.
+/// Falls back to "ffmpeg" on the system PATH for development.
+pub fn resolve_ffmpeg_path() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let sidecar = exe.parent().unwrap_or(Path::new(".")).join("ffmpeg");
+        if sidecar.exists() {
+            log::info!("[ffmpeg] Using bundled binary: {:?}", sidecar);
+            return sidecar;
+        }
+    }
+    log::info!("[ffmpeg] Using system PATH ffmpeg");
+    PathBuf::from("ffmpeg")
+}
 
 /// Build ffmpeg arguments for audio extraction.
 pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
@@ -28,7 +43,7 @@ pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), 
         input_video.to_str().unwrap(),
         output_wav.to_str().unwrap(),
     );
-    let status = Command::new("ffmpeg")
+    let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
         .output()
         .await
@@ -53,7 +68,7 @@ pub async fn replace_audio(
         new_audio.to_str().unwrap(),
         output_mp4.to_str().unwrap(),
     );
-    let status = Command::new("ffmpeg")
+    let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
         .output()
         .await
@@ -72,7 +87,7 @@ pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), Str
         input.to_str().unwrap(),
         output_mp4.to_str().unwrap(),
     );
-    let status = Command::new("ffmpeg")
+    let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
         .output()
         .await

@@ -1,8 +1,9 @@
+use crate::ffmpeg::resolve_ffmpeg_path;
 use std::process::Command;
 
-/// Check if ffmpeg is available on the system PATH.
+/// Check if ffmpeg is available (bundled sidecar or system PATH).
 pub fn check_ffmpeg() -> bool {
-    Command::new("ffmpeg")
+    Command::new(resolve_ffmpeg_path())
         .arg("-version")
         .output()
         .map(|o| o.status.success())
@@ -13,7 +14,7 @@ pub fn check_ffmpeg() -> bool {
 pub fn check_prerequisites() -> Result<PrerequisiteStatus, String> {
     let ffmpeg_available = check_ffmpeg();
     let ffmpeg_version = if ffmpeg_available {
-        Command::new("ffmpeg")
+        Command::new(resolve_ffmpeg_path())
             .arg("-version")
             .output()
             .ok()
