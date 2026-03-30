@@ -223,6 +223,16 @@ export async function startRecording(
 			// Share the decoded video element with WebcamBubble to avoid dual decode
 			if (webcamVideoEl) appState.webcamVideoEl = webcamVideoEl;
 
+			// Draw the first frame synchronously so captureStream doesn't
+			// start with a black canvas (rAF hasn't fired yet)
+			const w = compositorCanvas.width;
+			const h = compositorCanvas.height;
+			if (regionRect) {
+				compositorCtx.drawImage(screenVideoEl, regionRect.x, regionRect.y, regionRect.width, regionRect.height, 0, 0, w, h);
+			} else {
+				compositorCtx.drawImage(screenVideoEl, 0, 0, w, h);
+			}
+
 			startCompositorLoop();
 
 			if (!('captureStream' in compositorCanvas)) {
