@@ -95,7 +95,7 @@ export async function startRecording(
 		// Determine video tracks: use canvas compositor if webcam is active
 		let videoTracks: MediaStreamTrack[];
 
-		if (appState.webcamStream) {
+		if (appState.webcamStream && screenStream) {
 			// Set up canvas compositor to overlay webcam onto screen capture
 			const screenTrack = screenStream.getVideoTracks()[0];
 			const settings = screenTrack.getSettings();
@@ -148,8 +148,11 @@ export async function startRecording(
 				logger.info('record', `Compositor: ${canvasW}x${canvasH} with webcam overlay`);
 			}
 		} else {
+			if (!screenStream) throw new Error('Screen capture was lost');
 			videoTracks = screenStream.getVideoTracks();
 		}
+
+		if (!screenStream || !audioStream) throw new Error('Media streams were lost');
 
 		// Combine video + mic audio into one stream
 		const combinedStream = new MediaStream([
