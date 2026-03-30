@@ -5,7 +5,10 @@ import {
 	getAudioDevices,
 	pauseRecording,
 	cancelRecording,
-	computeWebcamBubbleRect
+	computeWebcamBubbleRect,
+	captureModeToDisplaySurface,
+	confirmRegionSelection,
+	cancelRegionSelection
 } from './recorder.svelte';
 import { blobStore } from './blobStore';
 
@@ -103,6 +106,20 @@ describe('getAudioDevices', () => {
 	});
 });
 
+describe('captureModeToDisplaySurface', () => {
+	it('maps fullscreen to monitor', () => {
+		expect(captureModeToDisplaySurface('fullscreen')).toBe('monitor');
+	});
+
+	it('maps window to window', () => {
+		expect(captureModeToDisplaySurface('window')).toBe('window');
+	});
+
+	it('maps region to monitor (captures full screen before cropping)', () => {
+		expect(captureModeToDisplaySurface('region')).toBe('monitor');
+	});
+});
+
 describe('guard functions', () => {
 	it('pauseRecording does not throw with no active recorder', () => {
 		expect(() => pauseRecording()).not.toThrow();
@@ -110,6 +127,14 @@ describe('guard functions', () => {
 
 	it('cancelRecording does not throw with no active recording', () => {
 		expect(() => cancelRecording()).not.toThrow();
+	});
+
+	it('confirmRegionSelection does not throw with no pending selection', () => {
+		expect(() => confirmRegionSelection({ x: 0, y: 0, width: 100, height: 100 })).not.toThrow();
+	});
+
+	it('cancelRegionSelection does not throw with no pending selection', () => {
+		expect(() => cancelRegionSelection()).not.toThrow();
 	});
 });
 

@@ -8,10 +8,13 @@
 		resumeRecording,
 		cancelRecording,
 		getAudioDevices,
+		confirmRegionSelection,
+		cancelRegionSelection,
 		type CaptureMode
 	} from '$lib/recorder.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
+	import RegionSelector from '$lib/RegionSelector.svelte';
 
 	let captureMode = $state<CaptureMode>('fullscreen');
 	let audioDevices = $state<MediaDeviceInfo[]>([]);
@@ -275,6 +278,14 @@
 	{/if}
 
 	<WebcamBubble />
+
+	{#if appState.recordingState === 'selecting-region'}
+		<RegionSelector
+			screenshotUrl={appState.regionScreenshot}
+			onSelect={(rect) => confirmRegionSelection(rect)}
+			onCancel={() => { cancelRegionSelection(); appState.recordingState = 'ready'; }}
+		/>
+	{/if}
 </div>
 
 <style>
