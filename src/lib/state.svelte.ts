@@ -1,14 +1,30 @@
 import { logger } from './logger';
+import { tauriInvoke } from './tauri';
 
 const STORAGE_KEY = 'voiceover-config';
 
-export function isTauri(): boolean {
-	return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+/** Strip secrets before persisting to localStorage — secrets are stored in Tauri app data only */
+function sanitizeForStorage(config: AppConfig): Partial<AppConfig> {
+	return {
+		...config,
+		elevenlabs_api_key: '',
+		google_drive: {
+			...config.google_drive,
+			client_secret: '',
+			access_token: '',
+			refresh_token: '',
+		},
+	};
 }
 
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-	const { invoke } = await import('@tauri-apps/api/core');
-	return invoke<T>(cmd, args);
+declare global {
+	interface Window {
+		__TAURI_INTERNALS__?: Record<string, unknown>;
+	}
+}
+
+export function isTauri(): boolean {
+	return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 }
 
 export type Voice = {
@@ -74,6 +90,7 @@ class AppState {
 	});
 
 	webcamStream = $state<MediaStream | null>(null);
+	webcamVideoEl = $state<HTMLVideoElement | null>(null);
 	recordingState = $state<RecordingState>('ready');
 	recordingPath = $state('');
 	outputPath = $state('');
@@ -92,13 +109,19 @@ class AppState {
 		this.config.elevenlabs_api_key.length > 0 && this.config.voices.length > 0
 	);
 
+	/**
+	 * Config loading priority:
+	 * 1. Tauri app data (native desktop) — canonical source
+	 * 2. static/_config.json (browser bridge) — dev-mode fallback, seeds back to Tauri
+	 * 3. localStorage (browser fallback) — last resort
+	 */
 	async loadConfig() {
 		if (isTauri()) {
 			try {
 				const tauriConfig = await tauriInvoke<AppConfig>('get_config');
 				if (tauriConfig.elevenlabs_api_key) {
 					this.config = tauriConfig;
-					localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+					localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeForStorage(this.config)));
 					logger.configLoaded('Tauri app data');
 					return;
 				}
@@ -115,7 +138,7 @@ class AppState {
 				const data = await resp.json();
 				if (data.elevenlabs_api_key) {
 					this.config = { ...this.config, ...data };
-					localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+					localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeForStorage(this.config)));
 					logger.configLoaded('static/_config.json');
 					// If in Tauri, persist to app data so it's picked up next time
 					if (isTauri()) {
@@ -150,7 +173,7 @@ class AppState {
 	async saveConfig() {
 		// Always save to localStorage (shared between Tauri webview & browser)
 		try {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+			localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeForStorage(this.config)));
 			logger.configSaved('localStorage');
 		} catch (e) {
 			logger.error('config', 'Failed to save to localStorage', e);
@@ -169,6 +192,7 @@ class AppState {
 	reset() {
 		this.webcamStream?.getTracks().forEach((t) => t.stop());
 		this.webcamStream = null;
+		this.webcamVideoEl = null;
 		this.recordingState = 'ready';
 		this.recordingPath = '';
 		this.outputPath = '';

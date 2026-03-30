@@ -81,7 +81,7 @@ pub async fn test_api_key(api_key: String) -> Result<bool, String> {
         return Ok(false);
     }
 
-    log::info!("[elevenlabs] Testing API key: {}...{}", &trimmed[..6.min(trimmed.len())], &trimmed[trimmed.len().saturating_sub(4)..]);
+    log::info!("[elevenlabs] Testing API key: ...{}", &trimmed[trimmed.len().saturating_sub(4)..]);
 
     let client = reqwest::Client::new();
     let response = client

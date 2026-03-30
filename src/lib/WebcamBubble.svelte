@@ -1,5 +1,14 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
+	import { onDestroy } from 'svelte';
+
+	// Live webcam preview bubble using a canvas that draws from the compositor's
+	// shared webcamVideoEl (already decoding for the recorded output). This avoids
+	// a second independent video decode pipeline that would waste ~2-5% CPU.
+
+	const PREVIEW_SIZE = 120;
+	const PREVIEW_FPS = 15;
+	const FRAME_INTERVAL = 1000 / PREVIEW_FPS;
 
 	const isVisible = $derived(
 		appState.webcamStream !== null &&
@@ -11,15 +20,78 @@
 	function togglePosition() {
 		appState.config.preferences.webcam_position =
 			position === 'bottom-left' ? 'bottom-right' : 'bottom-left';
+		appState.saveConfig();
 	}
 
-	let videoEl: HTMLVideoElement | undefined = $state();
+	let canvasEl: HTMLCanvasElement | undefined = $state();
+	let animFrameId = 0;
+
+	function startPreviewLoop() {
+		let lastFrameTime = 0;
+
+		function drawPreview(timestamp: number) {
+			const videoEl = appState.webcamVideoEl;
+			if (!canvasEl || !videoEl) {
+				animFrameId = requestAnimationFrame(drawPreview);
+				return;
+			}
+
+			if (timestamp - lastFrameTime < FRAME_INTERVAL) {
+				animFrameId = requestAnimationFrame(drawPreview);
+				return;
+			}
+			lastFrameTime = timestamp;
+
+			const ctx = canvasEl.getContext('2d');
+			if (!ctx) {
+				animFrameId = requestAnimationFrame(drawPreview);
+				return;
+			}
+
+			try {
+				const vw = videoEl.videoWidth || 640;
+				const vh = videoEl.videoHeight || 480;
+				const srcSize = Math.min(vw, vh);
+				const sx = (vw - srcSize) / 2;
+				const sy = (vh - srcSize) / 2;
+
+				ctx.save();
+				// Mirror horizontally (selfie-cam effect)
+				ctx.translate(PREVIEW_SIZE, 0);
+				ctx.scale(-1, 1);
+				ctx.drawImage(videoEl, sx, sy, srcSize, srcSize, 0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+				ctx.restore();
+			} catch {
+				// Video element may not be ready yet — skip this frame
+			}
+
+			animFrameId = requestAnimationFrame(drawPreview);
+		}
+
+		animFrameId = requestAnimationFrame(drawPreview);
+	}
+
+	function stopPreviewLoop() {
+		if (animFrameId) {
+			cancelAnimationFrame(animFrameId);
+			animFrameId = 0;
+		}
+	}
 
 	$effect(() => {
-		if (videoEl && appState.webcamStream) {
-			videoEl.srcObject = appState.webcamStream;
-		} else if (videoEl) {
-			videoEl.srcObject = null;
+		if (canvasEl && isVisible) {
+			startPreviewLoop();
+			return () => {
+				stopPreviewLoop();
+			};
+		}
+	});
+
+	onDestroy(() => {
+		stopPreviewLoop();
+		if (appState.webcamStream) {
+			appState.webcamStream.getTracks().forEach(t => t.stop());
+			appState.webcamStream = null;
 		}
 	});
 </script>
@@ -30,8 +102,12 @@
 		class:bottom-left={position === 'bottom-left'}
 		class:bottom-right={position === 'bottom-right'}
 	>
-		<!-- svelte-ignore a11y_media_has_caption -->
-		<video bind:this={videoEl} autoplay playsinline muted class="webcam-video"></video>
+		<canvas
+			bind:this={canvasEl}
+			width={PREVIEW_SIZE}
+			height={PREVIEW_SIZE}
+			class="webcam-canvas"
+		></canvas>
 		<button class="position-toggle" onclick={togglePosition} aria-label="Move webcam bubble">
 			{position === 'bottom-left' ? '\u2192' : '\u2190'}
 		</button>
@@ -61,11 +137,9 @@
 		right: 24px;
 	}
 
-	.webcam-video {
+	.webcam-canvas {
 		width: 100%;
 		height: 100%;
-		object-fit: cover;
-		transform: scaleX(-1);
 		display: block;
 	}
 

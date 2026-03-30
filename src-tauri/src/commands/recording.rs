@@ -39,9 +39,26 @@ pub fn save_recording_chunk(session_id: String, chunk: Vec<u8>, chunk_index: u32
 }
 
 /// Read a file as raw bytes (used for video preview in webview).
+/// Restricted to temp recording dir, video dir, and ~/VoiceOver for security.
 #[tauri::command]
 pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
-    fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))
+    let requested = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Invalid path: {e}"))?;
+
+    // Allow reading from temp dir and common video/recording paths
+    let temp_dir = std::env::temp_dir();
+    let home_dir = dirs::home_dir().unwrap_or_default();
+    let video_dir = dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos"));
+
+    let allowed = requested.starts_with(&temp_dir)
+        || requested.starts_with(&video_dir)
+        || requested.starts_with(home_dir.join("VoiceOver"));
+
+    if !allowed {
+        return Err(format!("Access denied: path outside allowed directories"));
+    }
+
+    fs::read(&requested).map_err(|e| format!("Failed to read: {e}"))
 }
 
 /// Finalize a recording session by concatenating all chunks into a single file.

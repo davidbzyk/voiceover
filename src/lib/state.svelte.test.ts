@@ -127,6 +127,24 @@ describe('reset()', () => {
 		expect(appState.errorMessage).toBe('');
 		expect(appState.recordingDuration).toBe(0);
 	});
+
+	it('resets webcamStream to null', () => {
+		// Create a minimal mock MediaStream
+		const mockTrack = { stop: vi.fn(), kind: 'video', id: '1', label: '', enabled: true, muted: false, readyState: 'live' as const, contentHint: '', onended: null, onmute: null, onunmute: null, clone: vi.fn(), getCapabilities: vi.fn(), getConstraints: vi.fn(), getSettings: vi.fn(), applyConstraints: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() };
+		const mockStream = { getTracks: () => [mockTrack], getVideoTracks: () => [mockTrack], getAudioTracks: () => [], id: 'test', active: true, onaddtrack: null, onremovetrack: null, addTrack: vi.fn(), removeTrack: vi.fn(), clone: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() } as unknown as MediaStream;
+		appState.webcamStream = mockStream;
+		appState.reset();
+		expect(appState.webcamStream).toBeNull();
+	});
+
+	it('stops webcam tracks on reset', () => {
+		const stopFn = vi.fn();
+		const mockTrack = { stop: stopFn, kind: 'video' };
+		const mockStream = { getTracks: () => [mockTrack] } as unknown as MediaStream;
+		appState.webcamStream = mockStream;
+		appState.reset();
+		expect(stopFn).toHaveBeenCalled();
+	});
 });
 
 describe('loadConfig fallback', () => {

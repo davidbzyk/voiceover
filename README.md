@@ -30,7 +30,7 @@ The entire pipeline happens in one app. Your pacing, pauses, and emphasis are pr
 ## Features
 
 - **Screen capture** — full screen, window, or region selection via native OS picker
-- **Optional webcam overlay** — picture-in-picture bubble during recording
+- **Optional webcam overlay** — picture-in-picture bubble during recording. Toggle webcam via the camera button on the home screen. Click the arrow on the bubble to move it between bottom-left and bottom-right. The bubble is composited into the recorded video output (not just a preview overlay)
 - **Microphone selection** — pick any connected audio input device
 - **ElevenLabs Speech-to-Speech** — voice transformation that preserves timing and emotion
 - **Voice collection** — save multiple voice IDs with friendly names, set a default
@@ -54,6 +54,7 @@ Frontend (Svelte 5 + TypeScript)          Backend (Rust)
 │ recorder.svelte.ts       │             │ google_drive.rs          │
 │ state.svelte.ts          │             │ commands/recording.rs    │
 │ logger.ts                │             │ commands/window.rs       │
+│ WebcamBubble.svelte      │             │                          │
 └──────────────────────────┘             └──────────────────────────┘
 ```
 
@@ -229,7 +230,8 @@ voiceover/
 │   ├── lib/
 │   │   ├── logger.ts             # Structured logging ([VO:*] prefix)
 │   │   ├── recorder.svelte.ts    # WebRTC capture + MediaRecorder
-│   │   └── state.svelte.ts       # App state (Svelte 5 runes)
+│   │   ├── state.svelte.ts       # App state (Svelte 5 runes)
+│   │   └── WebcamBubble.svelte   # Webcam bubble overlay (live preview)
 │   └── routes/
 │       ├── +layout.svelte        # Root layout, config loading
 │       ├── +page.svelte          # Home screen (record controls)
@@ -309,6 +311,10 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
 - **ffmpeg.wasm first load** — ~32MB download on first use in browser mode (cached after).
 - **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect). Once connected, uploads work from both desktop and browser.
+- **Webcam requires camera permission** — prompted on first use.
+- **Webcam bubble limited to bottom-left/bottom-right positions.**
+- **Webcam captured at 640x480** — compositor runs at 30fps.
+- **`captureStream` API is non-standard** — webcam overlay may not work in all WebKit versions.
 
 ## License
 

@@ -5,6 +5,7 @@ mod ffmpeg;
 mod google_drive;
 mod pipeline;
 mod prerequisites;
+pub mod secrets;
 
 use commands::recording;
 use commands::window;

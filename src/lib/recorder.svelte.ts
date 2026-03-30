@@ -1,5 +1,10 @@
+// NOTE: The webcam overlay uses a single decoded video element shared between:
+// 1. This compositor (canvas-based, burned into recorded output)
+// 2. WebcamBubble.svelte (canvas preview, draws from appState.webcamVideoEl at 15fps)
+
 import { logger } from './logger';
 import { appState, isTauri } from './state.svelte';
+import { blobStore } from './blobStore';
 
 let mediaRecorder: MediaRecorder | null = null;
 let audioRecorder: MediaRecorder | null = null;
@@ -19,10 +24,7 @@ let compositorFrameId = 0;
 let recordedChunks: Blob[] = [];
 let audioChunks: Blob[] = [];
 
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-	const { invoke } = await import('@tauri-apps/api/core');
-	return invoke<T>(cmd, args);
-}
+import { tauriInvoke } from './tauri';
 
 export function generateSessionId(): string {
 	return `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -42,7 +44,7 @@ export async function startRecording(
 	captureMode: CaptureMode,
 	audioDeviceId?: string,
 	webcamEnabled?: boolean
-): Promise<MediaStream | null> {
+): Promise<void> {
 	sessionId = generateSessionId();
 	chunkIndex = 0;
 	recordedChunks = [];
@@ -67,6 +69,14 @@ export async function startRecording(
 		logger.recordingStart(captureMode);
 		screenStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
 		logger.info('record', `Screen stream: ${screenStream.getVideoTracks()[0]?.label}`);
+
+		// Stop recording if screen sharing ends externally (e.g. user clicks OS "Stop Sharing")
+		screenStream.getVideoTracks()[0]?.addEventListener('ended', () => {
+			logger.warn('record', 'Screen track ended externally');
+			cleanup();
+			appState.recordingState = 'ready';
+			appState.errorMessage = 'Screen sharing was stopped';
+		});
 
 		// Request microphone audio
 		const audioConstraints: MediaStreamConstraints = {
@@ -95,26 +105,44 @@ export async function startRecording(
 			compositorCanvas = document.createElement('canvas');
 			compositorCanvas.width = canvasW;
 			compositorCanvas.height = canvasH;
-			compositorCtx = compositorCanvas.getContext('2d');
-
+			compositorCtx = compositorCanvas.getContext('2d', { alpha: false, desynchronized: true });
 			if (!compositorCtx) {
-				logger.error('record', 'Failed to get 2D canvas context — falling back to screen-only');
-				compositorCanvas = null;
+				throw new Error('Failed to create 2D canvas context for webcam compositor');
+			}
+
+			// Hidden video elements to draw from
+			screenVideoEl = document.createElement('video');
+			screenVideoEl.srcObject = screenStream;
+			screenVideoEl.muted = true;
+			await screenVideoEl.play();
+			compositorCanvas.width = screenVideoEl.videoWidth || canvasW;
+			compositorCanvas.height = screenVideoEl.videoHeight || canvasH;
+
+			// Cap compositor resolution — recording bitrate (2.5Mbps) is ~1080p quality,
+			// so compositing at native 4K/Retina resolution wastes CPU
+			const MAX_COMPOSITOR_WIDTH = 1920;
+			const MAX_COMPOSITOR_HEIGHT = 1080;
+			const scale = Math.min(MAX_COMPOSITOR_WIDTH / compositorCanvas.width, MAX_COMPOSITOR_HEIGHT / compositorCanvas.height, 1);
+			if (scale < 1) {
+				compositorCanvas.width = Math.round(compositorCanvas.width * scale);
+				compositorCanvas.height = Math.round(compositorCanvas.height * scale);
+				logger.info('record', `Compositor downscaled to ${compositorCanvas.width}x${compositorCanvas.height}`);
+			}
+
+			webcamVideoEl = document.createElement('video');
+			webcamVideoEl.srcObject = appState.webcamStream;
+			webcamVideoEl.muted = true;
+			await webcamVideoEl.play();
+
+			// Share the decoded video element with WebcamBubble to avoid dual decode
+			appState.webcamVideoEl = webcamVideoEl;
+
+			startCompositorLoop();
+
+			if (!('captureStream' in compositorCanvas)) {
+				logger.warn('record', 'captureStream not available — recording without webcam overlay');
 				videoTracks = screenStream.getVideoTracks();
 			} else {
-				// Hidden video elements to draw from
-				screenVideoEl = document.createElement('video');
-				screenVideoEl.srcObject = screenStream;
-				screenVideoEl.muted = true;
-				await screenVideoEl.play();
-
-				webcamVideoEl = document.createElement('video');
-				webcamVideoEl.srcObject = appState.webcamStream;
-				webcamVideoEl.muted = true;
-				await webcamVideoEl.play();
-
-				startCompositorLoop();
-
 				const canvasStream = compositorCanvas.captureStream(30);
 				videoTracks = canvasStream.getVideoTracks();
 				logger.info('record', `Compositor: ${canvasW}x${canvasH} with webcam overlay`);
@@ -155,8 +183,8 @@ export async function startRecording(
 			}
 		};
 
-		// Capture in 1-second chunks for progressive saving
-		mediaRecorder.start(1000);
+		// Capture in 5-second chunks for progressive saving (reduces IPC overhead vs 1s)
+		mediaRecorder.start(5000);
 
 		// Record audio separately (clean audio-only track for ElevenLabs S2S)
 		if (!isTauri()) {
@@ -170,11 +198,10 @@ export async function startRecording(
 			audioRecorder.ondataavailable = (event) => {
 				if (event.data.size > 0) audioChunks.push(event.data);
 			};
-			audioRecorder.start(1000);
+			audioRecorder.start(5000);
 			logger.info('record', 'Audio-only recorder started for S2S');
 		}
 
-		return appState.webcamStream;
 	} catch (err) {
 		cleanup();
 		throw err;
@@ -183,9 +210,31 @@ export async function startRecording(
 
 /* v8 ignore stop */
 
+/** Webcam bubble dimensions — 12% of canvas width, clamped to 100-240px for visibility at all resolutions */
+export function computeWebcamBubbleRect(
+	canvasW: number,
+	canvasH: number,
+	position: 'bottom-left' | 'bottom-right'
+): { x: number; y: number; diameter: number; centerX: number; centerY: number; radius: number } {
+	const diameter = Math.max(100, Math.min(240, canvasW * 0.12));
+	const margin = Math.max(16, canvasW * 0.02);
+	const x = position === 'bottom-right' ? canvasW - diameter - margin : margin;
+	const y = canvasH - diameter - margin;
+	return { x, y, diameter, centerX: x + diameter / 2, centerY: y + diameter / 2, radius: diameter / 2 };
+}
+
 function startCompositorLoop() {
-	function drawFrame() {
+	let lastFrameTime = 0;
+	const FRAME_INTERVAL = 1000 / 30;
+
+	function drawFrame(timestamp: number) {
 		if (!compositorCtx || !compositorCanvas || !screenVideoEl) return;
+
+		if (timestamp - lastFrameTime < FRAME_INTERVAL) {
+			compositorFrameId = requestAnimationFrame(drawFrame);
+			return;
+		}
+		lastFrameTime = timestamp;
 
 		try {
 			const w = compositorCanvas.width;
@@ -196,15 +245,8 @@ function startCompositorLoop() {
 
 			// Draw circular webcam overlay
 			if (webcamVideoEl && appState.webcamStream) {
-				const diameter = Math.max(100, Math.min(240, w * 0.12));
-				const margin = Math.max(16, w * 0.02);
 				const position = appState.config.preferences.webcam_position ?? 'bottom-right';
-
-				const x = position === 'bottom-right' ? w - diameter - margin : margin;
-				const y = h - diameter - margin;
-				const centerX = x + diameter / 2;
-				const centerY = y + diameter / 2;
-				const radius = diameter / 2;
+				const { x, y, diameter, centerX, centerY, radius } = computeWebcamBubbleRect(w, h, position);
 
 				// Crop webcam to center square for cover-fit
 				const vw = webcamVideoEl.videoWidth || 640;
@@ -213,7 +255,7 @@ function startCompositorLoop() {
 				const sx = (vw - srcSize) / 2;
 				const sy = (vh - srcSize) / 2;
 
-				// Circular clip + mirror
+				// Mirror webcam horizontally (selfie-cam effect) so user movements appear natural
 				compositorCtx.save();
 				compositorCtx.beginPath();
 				compositorCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
@@ -238,7 +280,7 @@ function startCompositorLoop() {
 		compositorFrameId = requestAnimationFrame(drawFrame);
 	}
 
-	drawFrame();
+	compositorFrameId = requestAnimationFrame(drawFrame);
 }
 
 /* v8 ignore start -- WebRTC webcam requires browser runtime */
@@ -248,7 +290,12 @@ async function getWebcamStream(): Promise<MediaStream | null> {
 			video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
 			audio: false
 		});
-	} catch {
+	} catch (err) {
+		const msg = err instanceof DOMException
+			? `Webcam unavailable: ${err.message}`
+			: 'Webcam unavailable';
+		logger.warn('webcam', msg);
+		appState.errorMessage = msg + '. Recording without webcam.';
 		return null;
 	}
 }
@@ -280,7 +327,7 @@ export function resumeRecording() {
 export async function stopRecording(): Promise<string> {
 	return new Promise((resolve, reject) => {
 		if (!mediaRecorder) {
-			reject('No active recording');
+			reject(new Error('No active recording'));
 			return;
 		}
 
@@ -304,8 +351,10 @@ export async function stopRecording(): Promise<string> {
 					logger.recordingStop(chunkIndex);
 					logger.info('record', `Video: ${(videoBlob.size / 1024 / 1024).toFixed(1)}MB`);
 					logger.info('record', `Audio: ${(audioBlobOnly.size / 1024).toFixed(0)}KB`);
-					(window as any).__voiceover_blob = videoBlob;
-					(window as any).__voiceover_audio_blob = audioBlobOnly;
+					blobStore.setVideo(videoBlob);
+					blobStore.setAudio(audioBlobOnly);
+					recordedChunks = [];
+					audioChunks = [];
 					cleanup();
 					resolve(url);
 				}
@@ -341,8 +390,10 @@ function cleanup() {
 	}
 	screenVideoEl = null;
 	webcamVideoEl = null;
+	appState.webcamVideoEl = null;
 	compositorCanvas = null;
 	compositorCtx = null;
+	// Stop all media tracks individually — screen, audio, and webcam are separate streams with independent lifecycles
 	screenStream?.getTracks().forEach((t) => t.stop());
 	audioStream?.getTracks().forEach((t) => t.stop());
 	appState.webcamStream?.getTracks().forEach((t) => t.stop());

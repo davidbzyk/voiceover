@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
+	import { blobStore } from '$lib/blobStore';
 
 	import { onMount } from 'svelte';
 
@@ -88,7 +89,7 @@
 	}
 
 	async function processViaBrowser() {
-		const blob = (window as any).__voiceover_blob as Blob | undefined;
+		const blob = blobStore.getVideo();
 		if (!blob) {
 			throw new Error('No recording data found');
 		}
@@ -116,7 +117,7 @@
 		logger.pipelineStage('Preparing audio', 10);
 
 		// Use the audio-only blob recorded separately (clean, no video data)
-		let audioBlob = (window as any).__voiceover_audio_blob as Blob | undefined;
+		let audioBlob = blobStore.getAudio();
 		if (!audioBlob || audioBlob.size === 0) {
 			logger.warn('pipeline', 'No separate audio blob, extracting from video');
 			audioBlob = await extractAudioFromBlob(blob);
@@ -215,7 +216,7 @@
 		const filename = `voiceover-${Date.now()}.webm`;
 		downloadBlob(outputBlob, filename);
 
-		(window as any).__voiceover_blob = outputBlob;
+		blobStore.setVideo(outputBlob);
 		appState.outputPath = `Downloaded: ${filename}`;
 		appState.recordingState = 'saved';
 		logger.pipelineComplete(`browser: ${filename} (${(outputBlob.size / 1024 / 1024).toFixed(1)}MB)`);
@@ -407,7 +408,7 @@
 					onEvent
 				});
 			} else {
-				const blob = (window as any).__voiceover_blob as Blob | undefined;
+				const blob = blobStore.getVideo();
 				if (!blob) throw new Error('No recording blob for upload');
 
 				try {

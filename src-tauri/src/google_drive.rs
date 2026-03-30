@@ -42,6 +42,9 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     let verifier = generate_code_verifier();
     let challenge = code_challenge(&verifier);
 
+    // Generate state parameter for CSRF protection
+    let state = format!("{:x}", rand::thread_rng().gen::<u64>());
+
     // Find an available port for the loopback redirect
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
@@ -56,7 +59,8 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
         code_challenge={challenge}&\
         code_challenge_method=S256&\
         access_type=offline&\
-        prompt=consent",
+        prompt=consent&\
+        state={state}",
     );
 
     // Open browser for consent
@@ -87,16 +91,28 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
         .read_line(&mut request_line)
         .map_err(|e| e.to_string())?;
 
-    // Extract authorization code from the request
-    let code = request_line
+    // Extract authorization code and verify state parameter from the request
+    let callback_url = request_line
         .split_whitespace()
         .nth(1)
         .and_then(|path| url::Url::parse(&format!("http://localhost{path}")).ok())
-        .and_then(|url| {
-            url.query_pairs()
-                .find(|(k, _)| k == "code")
-                .map(|(_, v)| v.to_string())
-        })
+        .ok_or("Failed to parse OAuth callback URL")?;
+
+    // Verify state parameter matches to prevent CSRF attacks
+    let callback_state = callback_url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+        .ok_or("No state parameter in OAuth callback")?;
+
+    if callback_state != state {
+        return Err("OAuth state mismatch — possible CSRF attack".to_string());
+    }
+
+    let code = callback_url
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.to_string())
         .ok_or("No authorization code in callback")?;
 
     // Send success response to browser
@@ -249,21 +265,10 @@ pub async fn upload_to_drive(
     }
 
     let file_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    let file_id = file_data["id"].as_str().unwrap_or_default();
+    let _file_id = file_data["id"].as_str().unwrap_or_default();
 
-    // Make file publicly readable
-    client
-        .post(format!(
-            "https://www.googleapis.com/drive/v3/files/{file_id}/permissions"
-        ))
-        .bearer_auth(&access_token)
-        .json(&serde_json::json!({
-            "type": "anyone",
-            "role": "reader"
-        }))
-        .send()
-        .await
-        .ok();
+    // Removed automatic public sharing — screen recordings may contain sensitive content.
+    // Users can share files manually through Google Drive if needed.
 
     on_event
         .send(DriveEvent::Progress { percent: 95.0 })
