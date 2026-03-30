@@ -21,14 +21,14 @@ fn entry() -> Result<Entry, String> {
     Entry::new(SERVICE, ACCOUNT).map_err(|e| format!("Keychain entry error: {e}"))
 }
 
-fn read_vault() -> Vault {
-    let Ok(e) = entry() else { return Vault::default() };
+fn read_vault() -> Option<Vault> {
+    let Ok(e) = entry() else { return None };
     match e.get_password() {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-        Err(keyring::Error::NoEntry) => Vault::default(),
+        Ok(json) => Some(serde_json::from_str(&json).unwrap_or_default()),
+        Err(keyring::Error::NoEntry) => Some(Vault::default()),
         Err(err) => {
             log::warn!("[secrets] Failed to read keychain: {err}");
-            Vault::default()
+            None // Hard failure — don't return empty vault
         }
     }
 }
@@ -46,7 +46,10 @@ fn write_vault(vault: &Vault) {
 
 /// Load secrets from keychain and merge into an AppConfig
 pub fn load_secrets(config: &mut super::config::AppConfig) {
-    let vault = read_vault();
+    let Some(vault) = read_vault() else {
+        log::warn!("[secrets] Keychain unavailable — keeping config as-is");
+        return;
+    };
     if !vault.elevenlabs_api_key.is_empty() {
         config.elevenlabs_api_key = vault.elevenlabs_api_key;
     }

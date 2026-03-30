@@ -130,7 +130,11 @@ pub fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     };
 
     // Migrate: if config.json still has secrets (pre-keychain), move them to keychain
-    if !config.elevenlabs_api_key.is_empty() || !config.google_drive.access_token.is_empty() {
+    if !config.elevenlabs_api_key.is_empty()
+        || !config.google_drive.client_secret.is_empty()
+        || !config.google_drive.access_token.is_empty()
+        || !config.google_drive.refresh_token.is_empty()
+    {
         log::info!("[config] Migrating secrets from config.json to keychain");
         crate::secrets::save_secrets(&config);
         // Strip secrets from file and rewrite
@@ -200,9 +204,6 @@ pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
 /// The file is gitignored so credentials are safe from accidental commits.
 #[cfg(debug_assertions)]
 fn sync_to_static(config: &AppConfig) {
-    if config.elevenlabs_api_key.is_empty() {
-        return;
-    }
     let json = serde_json::to_string_pretty(config).unwrap_or_default();
 
     // Walk up from the binary to find the project root (src-tauri/../static)

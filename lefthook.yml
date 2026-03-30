@@ -7,3 +7,13 @@ pre-commit:
       run: cd src-tauri && cargo test
     typecheck:
       run: pnpm check
+
+pre-push:
+  parallel: true
+  commands:
+    clippy:
+      run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+    audit-npm:
+      run: pnpm audit --audit-level=high || true
+    audit-rust:
+      run: cargo audit --file src-tauri/Cargo.lock 2>/dev/null || true

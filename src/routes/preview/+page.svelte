@@ -363,15 +363,8 @@
 
 		const data = await resp.json();
 
-		// Make shareable
-		await fetch(`https://www.googleapis.com/drive/v3/files/${data.id}/permissions`, {
-			method: 'POST',
-			headers: {
-				Authorization: `Bearer ${accessToken}`,
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify({ type: 'anyone', role: 'reader' })
-		});
+		// Private by default — screen recordings may contain sensitive content.
+		// Users can share files manually through Google Drive if needed.
 
 		return data.webViewLink || '';
 	}

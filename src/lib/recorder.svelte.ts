@@ -73,7 +73,7 @@ export async function startRecording(
 		// Stop recording if screen sharing ends externally (e.g. user clicks OS "Stop Sharing")
 		screenStream.getVideoTracks()[0]?.addEventListener('ended', () => {
 			logger.warn('record', 'Screen track ended externally');
-			cleanup();
+			cancelRecording();
 			appState.recordingState = 'ready';
 			appState.errorMessage = 'Screen sharing was stopped';
 		});

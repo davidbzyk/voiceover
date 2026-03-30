@@ -32,7 +32,7 @@
 		function drawPreview(timestamp: number) {
 			const videoEl = appState.webcamVideoEl;
 			if (!canvasEl || !videoEl) {
-				animFrameId = requestAnimationFrame(drawPreview);
+				setTimeout(() => { animFrameId = requestAnimationFrame(drawPreview); }, 100);
 				return;
 			}
 
