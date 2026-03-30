@@ -72,12 +72,21 @@ pub fn finalize_recording(session_id: String) -> Result<String, String> {
     let dir = temp_recording_dir().join(&session_id);
     let output_path = temp_recording_dir().join(format!("{session_id}.webm"));
 
+    if !dir.exists() {
+        return Err("No recording data — stopped too quickly".to_string());
+    }
+
     let mut chunks: Vec<PathBuf> = fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|ext| ext == "webm"))
         .collect();
+
+    if chunks.is_empty() {
+        fs::remove_dir_all(&dir).ok();
+        return Err("No recording data — stopped too quickly".to_string());
+    }
 
     chunks.sort();
 
