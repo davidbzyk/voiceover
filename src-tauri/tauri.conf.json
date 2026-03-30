@@ -18,7 +18,8 @@
         "height": 640,
         "resizable": true,
         "center": true,
-        "decorations": true
+        "decorations": true,
+        "visible": false
       }
     ],
     "security": {
