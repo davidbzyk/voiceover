@@ -186,6 +186,12 @@ export async function startRecording(
 			screenVideoEl.srcObject = screenStream;
 			screenVideoEl.muted = true;
 			await screenVideoEl.play();
+			// Wait for the first frame to decode — without this, the compositor
+			// draws black frames until the video element produces decoded output
+			await new Promise<void>((resolve) => {
+				if (screenVideoEl!.videoWidth > 0) { resolve(); return; }
+				screenVideoEl!.addEventListener('loadeddata', () => resolve(), { once: true });
+			});
 			if (regionRect) {
 				// Region mode: canvas matches the cropped region size
 				compositorCanvas.width = regionRect.width;
