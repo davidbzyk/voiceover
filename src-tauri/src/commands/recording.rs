@@ -45,14 +45,16 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     let requested = std::fs::canonicalize(&path)
         .map_err(|e| format!("Invalid path: {e}"))?;
 
-    // Allow reading from temp dir and common video/recording paths
-    let temp_dir = std::env::temp_dir();
+    // Canonicalize allowlist dirs too so symlinks match consistently
+    let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
     let home_dir = dirs::home_dir().unwrap_or_default();
-    let video_dir = dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos"));
+    let home_canon = std::fs::canonicalize(&home_dir).unwrap_or_else(|_| home_dir.clone());
+    let video_dir = std::fs::canonicalize(dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos")))
+        .unwrap_or_else(|_| home_dir.join("Videos"));
 
     let allowed = requested.starts_with(&temp_dir)
         || requested.starts_with(&video_dir)
-        || requested.starts_with(home_dir.join("VoiceOver"));
+        || requested.starts_with(home_canon.join("VoiceOver"));
 
     if !allowed {
         return Err("Access denied: path outside allowed directories".to_string());

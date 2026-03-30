@@ -35,7 +35,10 @@ fn read_vault() -> Vault {
 
 fn write_vault(vault: &Vault) {
     let Ok(e) = entry() else { return };
-    let json = serde_json::to_string(vault).unwrap_or_default();
+    let Ok(json) = serde_json::to_string(vault) else {
+        log::error!("[secrets] Failed to serialize vault — aborting write to prevent data loss");
+        return;
+    };
     if let Err(err) = e.set_password(&json) {
         log::error!("[secrets] Failed to write keychain: {err}");
     }
@@ -70,6 +73,7 @@ pub fn save_secrets(config: &super::config::AppConfig) {
 }
 
 /// Remove all secrets from keychain
+#[allow(dead_code)]
 pub fn clear_secrets() {
     if let Ok(e) = entry() {
         let _ = e.delete_credential();
