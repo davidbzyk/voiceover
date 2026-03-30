@@ -47,7 +47,8 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
 
     // Canonicalize allowlist dirs too so symlinks match consistently
     let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
-    let home_dir = dirs::home_dir().unwrap_or_default();
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| "Cannot determine home directory".to_string())?;
     let home_canon = std::fs::canonicalize(&home_dir).unwrap_or_else(|_| home_dir.clone());
     let video_dir = std::fs::canonicalize(dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos")))
         .unwrap_or_else(|_| home_dir.join("Videos"));

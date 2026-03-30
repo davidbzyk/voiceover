@@ -89,10 +89,6 @@
 
 	onDestroy(() => {
 		stopPreviewLoop();
-		if (appState.webcamStream) {
-			appState.webcamStream.getTracks().forEach(t => t.stop());
-			appState.webcamStream = null;
-		}
 	});
 </script>
 

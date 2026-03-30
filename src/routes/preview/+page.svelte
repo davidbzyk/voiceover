@@ -3,6 +3,7 @@
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
 	import { blobStore } from '$lib/blobStore';
+	import { refreshDriveToken, driveUploadWithToken, DriveUploadError } from '$lib/drive';
 
 	import { onMount } from 'svelte';
 
@@ -305,70 +306,6 @@
 	let isUploading = $state(false);
 	let driveLink = $state('');
 
-	async function refreshDriveToken(): Promise<string> {
-		const { client_id, client_secret, refresh_token } = appState.config.google_drive;
-		if (!refresh_token) throw new Error('No refresh token — reconnect Google Drive in Settings');
-
-		logger.info('drive', 'Refreshing access token...');
-		const resp = await fetch('https://oauth2.googleapis.com/token', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({
-				client_id,
-				client_secret,
-				refresh_token,
-				grant_type: 'refresh_token'
-			})
-		});
-
-		if (!resp.ok) {
-			const body = await resp.text();
-			throw new Error(`Token refresh failed: ${body}`);
-		}
-
-		const data = await resp.json();
-		const newToken = data.access_token;
-		const expiresIn = data.expires_in || 3600;
-		appState.config.google_drive.access_token = newToken;
-		appState.config.google_drive.expires_at = Math.floor(Date.now() / 1000) + expiresIn - 60;
-		await appState.saveConfig();
-		logger.info('drive', 'Access token refreshed');
-		return newToken;
-	}
-
-	async function driveUploadWithToken(blob: Blob, accessToken: string): Promise<string> {
-		const metadata = JSON.stringify({
-			name: `voiceover-${Date.now()}.webm`,
-			mimeType: 'video/webm'
-		});
-
-		const form = new FormData();
-		form.append('metadata', new Blob([metadata], { type: 'application/json' }));
-		form.append('file', blob);
-
-		const resp = await fetch(
-			'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
-			{
-				method: 'POST',
-				headers: { Authorization: `Bearer ${accessToken}` },
-				body: form
-			}
-		);
-
-		if (!resp.ok) {
-			const status = resp.status;
-			const body = await resp.text();
-			throw { status, body };
-		}
-
-		const data = await resp.json();
-
-		// Private by default — screen recordings may contain sensitive content.
-		// Users can share files manually through Google Drive if needed.
-
-		return data.webViewLink || '';
-	}
-
 	async function uploadToDrive() {
 		if (!appState.config.google_drive.connected) return;
 		isUploading = true;
@@ -406,13 +343,13 @@
 
 				try {
 					driveLink = await driveUploadWithToken(blob, token);
-				} catch (err: any) {
-					if (err?.status === 401) {
+				} catch (err) {
+					if (err instanceof DriveUploadError && err.status === 401) {
 						// Token expired — refresh and retry
 						token = await refreshDriveToken();
 						driveLink = await driveUploadWithToken(blob, token);
 					} else {
-						throw new Error(`Drive upload failed: ${err?.status || ''} ${err?.body || err}`);
+						throw err;
 					}
 				}
 			}

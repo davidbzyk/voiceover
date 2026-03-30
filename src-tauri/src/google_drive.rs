@@ -2,10 +2,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
 use std::path::Path;
 use tauri::ipc::Channel;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DriveTokens {
@@ -46,7 +45,8 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     let state = format!("{:x}", rand::thread_rng().gen::<u64>());
 
     // Find an available port for the loopback redirect
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        .map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
@@ -67,29 +67,18 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     open::that(&auth_url).map_err(|e| format!("Failed to open browser: {e}"))?;
 
     // Wait for the OAuth callback with a 120-second timeout
-    use std::time::{Duration, Instant};
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let start = Instant::now();
-    let timeout = Duration::from_secs(120);
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(conn) => break conn,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > timeout {
-                    return Err("OAuth timed out — no callback received within 2 minutes".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(200));
-                continue;
-            }
-            Err(e) => return Err(format!("OAuth callback failed: {e}")),
-        }
-    };
+    use tokio::time::{timeout, Duration};
 
-    let mut reader = BufReader::new(&stream);
-    let mut request_line = String::new();
-    reader
-        .read_line(&mut request_line)
-        .map_err(|e| e.to_string())?;
+    let (mut stream, _) = timeout(Duration::from_secs(120), listener.accept())
+        .await
+        .map_err(|_| "OAuth timed out — no callback received within 2 minutes".to_string())?
+        .map_err(|e| format!("OAuth callback failed: {e}"))?;
+
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
+    let request_line = String::from_utf8_lossy(&buf[..n]).to_string();
+    // Extract just the first line (the HTTP request line)
+    let request_line = request_line.lines().next().unwrap_or("").to_string();
 
     // Extract authorization code and verify state parameter from the request
     let callback_url = request_line
@@ -119,7 +108,8 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
         <html><body style='font-family:sans-serif;text-align:center;padding:60px'>\
         <h2>Connected to Google Drive!</h2><p>You can close this tab.</p></body></html>";
-    stream.write_all(response.as_bytes()).ok();
+    stream.write_all(response.as_bytes()).await.ok();
+    stream.flush().await.ok();
 
     // Exchange code for tokens
     let client = reqwest::Client::new();
@@ -305,9 +295,10 @@ fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], _filename: &str)
     body
 }
 
-/// Disconnect Google Drive (just clears tokens, no API call needed).
+/// Disconnect Google Drive — clears stored secrets from keychain.
 #[tauri::command]
 pub fn google_drive_disconnect() -> Result<(), String> {
+    crate::secrets::clear_secrets();
     Ok(())
 }
 

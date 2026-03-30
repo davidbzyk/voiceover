@@ -88,6 +88,8 @@ pub struct AppConfig {
     pub preferences: Preferences,
     #[serde(default)]
     pub google_drive: GoogleDrive,
+    #[serde(default)]
+    pub secrets_migrated: bool,
 }
 
 fn default_output_dir() -> String {
@@ -105,6 +107,7 @@ impl Default for AppConfig {
             output_dir: default_output_dir(),
             preferences: Preferences::default(),
             google_drive: GoogleDrive::default(),
+            secrets_migrated: false,
         }
     }
 }
@@ -130,18 +133,20 @@ pub fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     };
 
     // Migrate: if config.json still has secrets (pre-keychain), move them to keychain
-    if !config.elevenlabs_api_key.is_empty()
-        || !config.google_drive.client_secret.is_empty()
-        || !config.google_drive.access_token.is_empty()
-        || !config.google_drive.refresh_token.is_empty()
+    if !config.secrets_migrated
+        && (!config.elevenlabs_api_key.is_empty()
+            || !config.google_drive.client_secret.is_empty()
+            || !config.google_drive.access_token.is_empty()
+            || !config.google_drive.refresh_token.is_empty())
     {
         log::info!("[config] Migrating secrets from config.json to keychain");
         crate::secrets::save_secrets(&config);
-        // Strip secrets from file and rewrite
+        // Strip secrets from file, set sentinel, and rewrite
         let mut sanitized = config.clone();
         crate::secrets::sanitize_config(&mut sanitized);
+        sanitized.secrets_migrated = true;
         let json = serde_json::to_string_pretty(&sanitized).map_err(|e| e.to_string())?;
-        fs::write(&path, json).ok(); // best-effort rewrite
+        fs::write(&path, json).map_err(|e| format!("Failed to write migrated config: {e}"))?;
     }
 
     // Always overlay secrets from keychain (authoritative source)
@@ -304,6 +309,7 @@ mod tests {
                 connected: true,
                 expires_at: 1700000000,
             },
+            secrets_migrated: false,
         };
 
         let json = serde_json::to_string(&config).unwrap();
