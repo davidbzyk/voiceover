@@ -32,9 +32,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Install Tauri dependencies
+      - name: Create sidecar placeholder for Tauri build script
         run: |
-          brew install gtk4 webkitgtk || true
+          mkdir -p src-tauri/binaries
+          touch src-tauri/binaries/ffmpeg-aarch64-apple-darwin
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Install cargo-audit
