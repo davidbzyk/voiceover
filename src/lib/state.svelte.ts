@@ -36,6 +36,7 @@ export type AppConfig = {
 		default_capture_mode: string;
 		webcam_enabled: boolean;
 		voice_replacement_enabled: boolean;
+		webcam_position: 'bottom-left' | 'bottom-right';
 	};
 	google_drive: GoogleDrive;
 };
@@ -58,7 +59,8 @@ class AppState {
 		preferences: {
 			default_capture_mode: 'fullscreen',
 			webcam_enabled: false,
-			voice_replacement_enabled: true
+			voice_replacement_enabled: true,
+			webcam_position: 'bottom-right'
 		},
 		google_drive: {
 			client_id: '',
@@ -71,6 +73,7 @@ class AppState {
 		}
 	});
 
+	webcamStream = $state<MediaStream | null>(null);
 	recordingState = $state<RecordingState>('ready');
 	recordingPath = $state('');
 	outputPath = $state('');
@@ -164,6 +167,8 @@ class AppState {
 	}
 
 	reset() {
+		this.webcamStream?.getTracks().forEach((t) => t.stop());
+		this.webcamStream = null;
 		this.recordingState = 'ready';
 		this.recordingPath = '';
 		this.outputPath = '';

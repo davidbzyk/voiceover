@@ -1,5 +1,5 @@
 import { logger } from './logger';
-import { isTauri } from './state.svelte';
+import { appState, isTauri } from './state.svelte';
 
 let mediaRecorder: MediaRecorder | null = null;
 let audioRecorder: MediaRecorder | null = null;
@@ -7,6 +7,13 @@ let screenStream: MediaStream | null = null;
 let audioStream: MediaStream | null = null;
 let chunkIndex = 0;
 let sessionId = '';
+
+// Canvas compositor for webcam overlay in recorded output
+let compositorCanvas: HTMLCanvasElement | null = null;
+let compositorCtx: CanvasRenderingContext2D | null = null;
+let screenVideoEl: HTMLVideoElement | null = null;
+let webcamVideoEl: HTMLVideoElement | null = null;
+let compositorFrameId = 0;
 
 // Browser mode: collect chunks in memory
 let recordedChunks: Blob[] = [];
@@ -70,9 +77,55 @@ export async function startRecording(
 		audioStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
 		logger.info('record', `Audio stream: ${audioStream.getAudioTracks()[0]?.label}`);
 
-		// Combine screen video + mic audio into one stream
+		// Get webcam stream if enabled
+		if (webcamEnabled) {
+			appState.webcamStream = await getWebcamStream();
+		}
+
+		// Determine video tracks: use canvas compositor if webcam is active
+		let videoTracks: MediaStreamTrack[];
+
+		if (appState.webcamStream) {
+			// Set up canvas compositor to overlay webcam onto screen capture
+			const screenTrack = screenStream.getVideoTracks()[0];
+			const settings = screenTrack.getSettings();
+			const canvasW = settings.width || 1920;
+			const canvasH = settings.height || 1080;
+
+			compositorCanvas = document.createElement('canvas');
+			compositorCanvas.width = canvasW;
+			compositorCanvas.height = canvasH;
+			compositorCtx = compositorCanvas.getContext('2d');
+
+			if (!compositorCtx) {
+				logger.error('record', 'Failed to get 2D canvas context — falling back to screen-only');
+				compositorCanvas = null;
+				videoTracks = screenStream.getVideoTracks();
+			} else {
+				// Hidden video elements to draw from
+				screenVideoEl = document.createElement('video');
+				screenVideoEl.srcObject = screenStream;
+				screenVideoEl.muted = true;
+				await screenVideoEl.play();
+
+				webcamVideoEl = document.createElement('video');
+				webcamVideoEl.srcObject = appState.webcamStream;
+				webcamVideoEl.muted = true;
+				await webcamVideoEl.play();
+
+				startCompositorLoop();
+
+				const canvasStream = compositorCanvas.captureStream(30);
+				videoTracks = canvasStream.getVideoTracks();
+				logger.info('record', `Compositor: ${canvasW}x${canvasH} with webcam overlay`);
+			}
+		} else {
+			videoTracks = screenStream.getVideoTracks();
+		}
+
+		// Combine video + mic audio into one stream
 		const combinedStream = new MediaStream([
-			...screenStream.getVideoTracks(),
+			...videoTracks,
 			...audioStream.getAudioTracks()
 		]);
 
@@ -121,7 +174,7 @@ export async function startRecording(
 			logger.info('record', 'Audio-only recorder started for S2S');
 		}
 
-		return webcamEnabled ? await getWebcamStream() : null;
+		return appState.webcamStream;
 	} catch (err) {
 		cleanup();
 		throw err;
@@ -130,11 +183,69 @@ export async function startRecording(
 
 /* v8 ignore stop */
 
+function startCompositorLoop() {
+	function drawFrame() {
+		if (!compositorCtx || !compositorCanvas || !screenVideoEl) return;
+
+		try {
+			const w = compositorCanvas.width;
+			const h = compositorCanvas.height;
+
+			// Draw screen capture
+			compositorCtx.drawImage(screenVideoEl, 0, 0, w, h);
+
+			// Draw circular webcam overlay
+			if (webcamVideoEl && appState.webcamStream) {
+				const diameter = Math.max(100, Math.min(240, w * 0.12));
+				const margin = Math.max(16, w * 0.02);
+				const position = appState.config.preferences.webcam_position ?? 'bottom-right';
+
+				const x = position === 'bottom-right' ? w - diameter - margin : margin;
+				const y = h - diameter - margin;
+				const centerX = x + diameter / 2;
+				const centerY = y + diameter / 2;
+				const radius = diameter / 2;
+
+				// Crop webcam to center square for cover-fit
+				const vw = webcamVideoEl.videoWidth || 640;
+				const vh = webcamVideoEl.videoHeight || 480;
+				const srcSize = Math.min(vw, vh);
+				const sx = (vw - srcSize) / 2;
+				const sy = (vh - srcSize) / 2;
+
+				// Circular clip + mirror
+				compositorCtx.save();
+				compositorCtx.beginPath();
+				compositorCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+				compositorCtx.clip();
+				compositorCtx.translate(centerX, 0);
+				compositorCtx.scale(-1, 1);
+				compositorCtx.translate(-centerX, 0);
+				compositorCtx.drawImage(webcamVideoEl, sx, sy, srcSize, srcSize, x, y, diameter, diameter);
+				compositorCtx.restore();
+
+				// Border ring
+				compositorCtx.beginPath();
+				compositorCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+				compositorCtx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
+				compositorCtx.lineWidth = 3;
+				compositorCtx.stroke();
+			}
+		} catch (err) {
+			logger.warn('record', 'Compositor frame draw failed', err);
+		}
+
+		compositorFrameId = requestAnimationFrame(drawFrame);
+	}
+
+	drawFrame();
+}
+
 /* v8 ignore start -- WebRTC webcam requires browser runtime */
 async function getWebcamStream(): Promise<MediaStream | null> {
 	try {
 		return await navigator.mediaDevices.getUserMedia({
-			video: { width: 160, height: 120, frameRate: 24 },
+			video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
 			audio: false
 		});
 	} catch {
@@ -148,6 +259,10 @@ export function pauseRecording() {
 	if (mediaRecorder?.state === 'recording') {
 		mediaRecorder.pause();
 		audioRecorder?.pause();
+		if (compositorFrameId) {
+			cancelAnimationFrame(compositorFrameId);
+			compositorFrameId = 0;
+		}
 	}
 }
 
@@ -155,6 +270,9 @@ export function resumeRecording() {
 	if (mediaRecorder?.state === 'paused') {
 		mediaRecorder.resume();
 		audioRecorder?.resume();
+		if (compositorCanvas && !compositorFrameId) {
+			startCompositorLoop();
+		}
 	}
 }
 
@@ -209,10 +327,28 @@ export function cancelRecording() {
 }
 
 function cleanup() {
+	if (compositorFrameId) {
+		cancelAnimationFrame(compositorFrameId);
+		compositorFrameId = 0;
+	}
+	if (screenVideoEl) {
+		screenVideoEl.pause();
+		screenVideoEl.srcObject = null;
+	}
+	if (webcamVideoEl) {
+		webcamVideoEl.pause();
+		webcamVideoEl.srcObject = null;
+	}
+	screenVideoEl = null;
+	webcamVideoEl = null;
+	compositorCanvas = null;
+	compositorCtx = null;
 	screenStream?.getTracks().forEach((t) => t.stop());
 	audioStream?.getTracks().forEach((t) => t.stop());
+	appState.webcamStream?.getTracks().forEach((t) => t.stop());
 	screenStream = null;
 	audioStream = null;
+	appState.webcamStream = null;
 	mediaRecorder = null;
 	audioRecorder = null;
 }

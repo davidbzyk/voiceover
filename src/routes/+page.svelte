@@ -11,6 +11,7 @@
 		type CaptureMode
 	} from '$lib/recorder.svelte';
 	import { onMount } from 'svelte';
+	import WebcamBubble from '$lib/WebcamBubble.svelte';
 
 	let captureMode = $state<CaptureMode>('fullscreen');
 	let audioDevices = $state<MediaDeviceInfo[]>([]);
@@ -264,6 +265,8 @@
 			<button class="dismiss" onclick={() => (appState.errorMessage = '')}>✕</button>
 		</div>
 	{/if}
+
+	<WebcamBubble />
 </div>
 
 <style>

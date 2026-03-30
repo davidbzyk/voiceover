@@ -16,6 +16,12 @@ pub struct Preferences {
     pub default_capture_mode: String,
     pub webcam_enabled: bool,
     pub voice_replacement_enabled: bool,
+    #[serde(default = "default_webcam_position")]
+    pub webcam_position: String,
+}
+
+fn default_webcam_position() -> String {
+    "bottom-right".to_string()
 }
 
 impl Default for Preferences {
@@ -24,6 +30,7 @@ impl Default for Preferences {
             default_capture_mode: "fullscreen".to_string(),
             webcam_enabled: false,
             voice_replacement_enabled: true,
+            webcam_position: default_webcam_position(),
         }
     }
 }
@@ -228,6 +235,7 @@ mod tests {
                 default_capture_mode: "window".to_string(),
                 webcam_enabled: true,
                 voice_replacement_enabled: false,
+                webcam_position: "bottom-left".to_string(),
             },
             google_drive: GoogleDrive {
                 client_id: "cid".to_string(),
@@ -251,6 +259,7 @@ mod tests {
         assert_eq!(deserialized.preferences.default_capture_mode, "window");
         assert_eq!(deserialized.preferences.webcam_enabled, true);
         assert_eq!(deserialized.preferences.voice_replacement_enabled, false);
+        assert_eq!(deserialized.preferences.webcam_position, "bottom-left");
         assert_eq!(deserialized.google_drive.connected, true);
         assert_eq!(deserialized.google_drive.expires_at, 1700000000);
     }
@@ -266,6 +275,7 @@ mod tests {
         assert_eq!(config.preferences.default_capture_mode, "fullscreen");
         assert!(config.preferences.voice_replacement_enabled);
         assert!(!config.preferences.webcam_enabled);
+        assert_eq!(config.preferences.webcam_position, "bottom-right");
         assert!(!config.google_drive.connected);
     }
 }
