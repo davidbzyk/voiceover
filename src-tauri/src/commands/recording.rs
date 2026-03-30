@@ -39,9 +39,29 @@ pub fn save_recording_chunk(session_id: String, chunk: Vec<u8>, chunk_index: u32
 }
 
 /// Read a file as raw bytes (used for video preview in webview).
+/// Restricted to temp recording dir, video dir, and ~/VoiceOver for security.
 #[tauri::command]
 pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
-    fs::read(&path).map_err(|e| format!("Failed to read {path}: {e}"))
+    let requested = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Invalid path: {e}"))?;
+
+    // Canonicalize allowlist dirs too so symlinks match consistently
+    let temp_dir = std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| "Cannot determine home directory".to_string())?;
+    let home_canon = std::fs::canonicalize(&home_dir).unwrap_or_else(|_| home_dir.clone());
+    let video_dir = std::fs::canonicalize(dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos")))
+        .unwrap_or_else(|_| home_dir.join("Videos"));
+
+    let allowed = requested.starts_with(&temp_dir)
+        || requested.starts_with(&video_dir)
+        || requested.starts_with(home_canon.join("VoiceOver"));
+
+    if !allowed {
+        return Err("Access denied: path outside allowed directories".to_string());
+    }
+
+    fs::read(&requested).map_err(|e| format!("Failed to read: {e}"))
 }
 
 /// Finalize a recording session by concatenating all chunks into a single file.
@@ -52,12 +72,21 @@ pub fn finalize_recording(session_id: String) -> Result<String, String> {
     let dir = temp_recording_dir().join(&session_id);
     let output_path = temp_recording_dir().join(format!("{session_id}.webm"));
 
+    if !dir.exists() {
+        return Err("No recording data — stopped too quickly".to_string());
+    }
+
     let mut chunks: Vec<PathBuf> = fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "webm"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "webm"))
         .collect();
+
+    if chunks.is_empty() {
+        fs::remove_dir_all(&dir).ok();
+        return Err("No recording data — stopped too quickly".to_string());
+    }
 
     chunks.sort();
 

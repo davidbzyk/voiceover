@@ -4,8 +4,10 @@ import {
 	selectVideoMimeType,
 	getAudioDevices,
 	pauseRecording,
-	cancelRecording
+	cancelRecording,
+	computeWebcamBubbleRect
 } from './recorder.svelte';
+import { blobStore } from './blobStore';
 
 describe('generateSessionId', () => {
 	it('starts with "rec-" prefix', () => {
@@ -108,5 +110,76 @@ describe('guard functions', () => {
 
 	it('cancelRecording does not throw with no active recording', () => {
 		expect(() => cancelRecording()).not.toThrow();
+	});
+});
+
+describe('computeWebcamBubbleRect', () => {
+	it('clamps minimum diameter at 100', () => {
+		const r = computeWebcamBubbleRect(500, 400, 'bottom-right');
+		expect(r.diameter).toBe(100);
+	});
+
+	it('scales diameter to 12% of canvas width', () => {
+		const r = computeWebcamBubbleRect(1500, 1000, 'bottom-right');
+		expect(r.diameter).toBe(180);
+	});
+
+	it('clamps maximum diameter at 240', () => {
+		const r = computeWebcamBubbleRect(4000, 2000, 'bottom-right');
+		expect(r.diameter).toBe(240);
+	});
+
+	it('positions bottom-right within canvas bounds', () => {
+		const r = computeWebcamBubbleRect(1920, 1080, 'bottom-right');
+		expect(r.x + r.diameter).toBeLessThanOrEqual(1920);
+		expect(r.y + r.diameter).toBeLessThanOrEqual(1080);
+		expect(r.x).toBeGreaterThan(1920 / 2); // right side
+	});
+
+	it('positions bottom-left near left edge', () => {
+		const r = computeWebcamBubbleRect(1920, 1080, 'bottom-left');
+		expect(r.x).toBeLessThan(100);
+		expect(r.x).toBeGreaterThanOrEqual(16);
+	});
+
+	it('computes correct center coordinates', () => {
+		const r = computeWebcamBubbleRect(1920, 1080, 'bottom-right');
+		expect(r.centerX).toBe(r.x + r.diameter / 2);
+		expect(r.centerY).toBe(r.y + r.diameter / 2);
+		expect(r.radius).toBe(r.diameter / 2);
+	});
+
+	it('handles zero-width canvas deterministically', () => {
+		const r = computeWebcamBubbleRect(0, 0, 'bottom-right');
+		expect(r.diameter).toBe(100); // min clamp
+	});
+});
+
+describe('blobStore', () => {
+	afterEach(() => blobStore.clear());
+
+	it('stores and retrieves video blob', () => {
+		const blob = new Blob(['test'], { type: 'video/webm' });
+		blobStore.setVideo(blob);
+		expect(blobStore.getVideo()).toBe(blob);
+	});
+
+	it('stores and retrieves audio blob', () => {
+		const blob = new Blob(['test'], { type: 'audio/webm' });
+		blobStore.setAudio(blob);
+		expect(blobStore.getAudio()).toBe(blob);
+	});
+
+	it('clears both blobs', () => {
+		blobStore.setVideo(new Blob(['v']));
+		blobStore.setAudio(new Blob(['a']));
+		blobStore.clear();
+		expect(blobStore.getVideo()).toBeNull();
+		expect(blobStore.getAudio()).toBeNull();
+	});
+
+	it('returns null when no blob set', () => {
+		expect(blobStore.getVideo()).toBeNull();
+		expect(blobStore.getAudio()).toBeNull();
 	});
 });

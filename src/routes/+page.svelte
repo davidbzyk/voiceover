@@ -10,7 +10,8 @@
 		getAudioDevices,
 		type CaptureMode
 	} from '$lib/recorder.svelte';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import WebcamBubble from '$lib/WebcamBubble.svelte';
 
 	let captureMode = $state<CaptureMode>('fullscreen');
 	let audioDevices = $state<MediaDeviceInfo[]>([]);
@@ -18,6 +19,7 @@
 	let isStarting = $state(false);
 	let pausedAt = $state(0);
 	let totalPausedMs = $state(0);
+	let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
 	onMount(async () => {
 		try {
@@ -28,6 +30,10 @@
 		} catch {
 			// Permission not yet granted — will prompt on record
 		}
+	});
+
+	onDestroy(() => {
+		if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
 	});
 
 	async function handleRecord() {
@@ -48,12 +54,13 @@
 			totalPausedMs = 0;
 
 			// Start duration timer (subtracts paused time from elapsed)
+			if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
 			const startTime = Date.now();
-			const timer = setInterval(() => {
+			timerHandle = setInterval(() => {
 				if (appState.recordingState === 'recording') {
 					appState.recordingDuration = Math.floor((Date.now() - startTime - totalPausedMs) / 1000);
 				} else if (appState.recordingState !== 'paused') {
-					clearInterval(timer);
+					if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
 				}
 			}, 1000);
 		} catch (err) {
@@ -65,6 +72,7 @@
 	}
 
 	async function handleStop() {
+		if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
 		try {
 			const path = await stopRecording();
 			appState.recordingPath = path;
@@ -77,6 +85,7 @@
 	}
 
 	function handleCancel() {
+		if (timerHandle) { clearInterval(timerHandle); timerHandle = null; }
 		cancelRecording();
 		appState.reset();
 	}
@@ -264,6 +273,8 @@
 			<button class="dismiss" onclick={() => (appState.errorMessage = '')}>✕</button>
 		</div>
 	{/if}
+
+	<WebcamBubble />
 </div>
 
 <style>

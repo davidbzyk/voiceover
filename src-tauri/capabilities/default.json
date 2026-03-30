@@ -36,11 +36,6 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "ffmpeg",
-          "cmd": "ffmpeg",
-          "args": true
-        },
-        {
           "name": "ffmpeg-sidecar",
           "sidecar": true,
           "cmd": "binaries/ffmpeg",
@@ -50,7 +45,6 @@
     },
     "fs:scope-temp-recursive",
     "fs:scope-video-recursive",
-    "fs:scope-home-recursive",
     "global-shortcut:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

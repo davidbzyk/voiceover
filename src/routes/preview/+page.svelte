@@ -2,6 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
+	import { blobStore } from '$lib/blobStore';
+	import { refreshDriveToken, driveUploadWithToken, DriveUploadError } from '$lib/drive';
 
 	import { onMount } from 'svelte';
 
@@ -88,7 +90,7 @@
 	}
 
 	async function processViaBrowser() {
-		const blob = (window as any).__voiceover_blob as Blob | undefined;
+		const blob = blobStore.getVideo();
 		if (!blob) {
 			throw new Error('No recording data found');
 		}
@@ -116,7 +118,7 @@
 		logger.pipelineStage('Preparing audio', 10);
 
 		// Use the audio-only blob recorded separately (clean, no video data)
-		let audioBlob = (window as any).__voiceover_audio_blob as Blob | undefined;
+		let audioBlob = blobStore.getAudio();
 		if (!audioBlob || audioBlob.size === 0) {
 			logger.warn('pipeline', 'No separate audio blob, extracting from video');
 			audioBlob = await extractAudioFromBlob(blob);
@@ -215,7 +217,7 @@
 		const filename = `voiceover-${Date.now()}.webm`;
 		downloadBlob(outputBlob, filename);
 
-		(window as any).__voiceover_blob = outputBlob;
+		blobStore.setVideo(outputBlob);
 		appState.outputPath = `Downloaded: ${filename}`;
 		appState.recordingState = 'saved';
 		logger.pipelineComplete(`browser: ${filename} (${(outputBlob.size / 1024 / 1024).toFixed(1)}MB)`);
@@ -304,77 +306,6 @@
 	let isUploading = $state(false);
 	let driveLink = $state('');
 
-	async function refreshDriveToken(): Promise<string> {
-		const { client_id, client_secret, refresh_token } = appState.config.google_drive;
-		if (!refresh_token) throw new Error('No refresh token — reconnect Google Drive in Settings');
-
-		logger.info('drive', 'Refreshing access token...');
-		const resp = await fetch('https://oauth2.googleapis.com/token', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({
-				client_id,
-				client_secret,
-				refresh_token,
-				grant_type: 'refresh_token'
-			})
-		});
-
-		if (!resp.ok) {
-			const body = await resp.text();
-			throw new Error(`Token refresh failed: ${body}`);
-		}
-
-		const data = await resp.json();
-		const newToken = data.access_token;
-		const expiresIn = data.expires_in || 3600;
-		appState.config.google_drive.access_token = newToken;
-		appState.config.google_drive.expires_at = Math.floor(Date.now() / 1000) + expiresIn - 60;
-		await appState.saveConfig();
-		logger.info('drive', 'Access token refreshed');
-		return newToken;
-	}
-
-	async function driveUploadWithToken(blob: Blob, accessToken: string): Promise<string> {
-		const metadata = JSON.stringify({
-			name: `voiceover-${Date.now()}.webm`,
-			mimeType: 'video/webm'
-		});
-
-		const form = new FormData();
-		form.append('metadata', new Blob([metadata], { type: 'application/json' }));
-		form.append('file', blob);
-
-		const resp = await fetch(
-			'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
-			{
-				method: 'POST',
-				headers: { Authorization: `Bearer ${accessToken}` },
-				body: form
-			}
-		);
-
-		if (!resp.ok) {
-			const status = resp.status;
-			const body = await resp.text();
-			throw { status, body };
-		}
-
-		const data = await resp.json();
-
-		// Make shareable
-		await fetch(`https://www.googleapis.com/drive/v3/files/${data.id}/permissions`, {
-			method: 'POST',
-			headers: {
-				Authorization: `Bearer ${accessToken}`,
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify({ type: 'anyone', role: 'reader' })
-		});
-
-		return data.webViewLink || '';
-	}
-
 	async function uploadToDrive() {
 		if (!appState.config.google_drive.connected) return;
 		isUploading = true;
@@ -407,18 +338,18 @@
 					onEvent
 				});
 			} else {
-				const blob = (window as any).__voiceover_blob as Blob | undefined;
+				const blob = blobStore.getVideo();
 				if (!blob) throw new Error('No recording blob for upload');
 
 				try {
 					driveLink = await driveUploadWithToken(blob, token);
-				} catch (err: any) {
-					if (err?.status === 401) {
+				} catch (err) {
+					if (err instanceof DriveUploadError && err.status === 401) {
 						// Token expired — refresh and retry
 						token = await refreshDriveToken();
 						driveLink = await driveUploadWithToken(blob, token);
 					} else {
-						throw new Error(`Drive upload failed: ${err?.status || ''} ${err?.body || err}`);
+						throw err;
 					}
 				}
 			}

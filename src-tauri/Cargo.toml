@@ -32,3 +32,4 @@ sha2 = "0.10"
 base64 = "0.22"
 url = "2"
 open = "5"
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
