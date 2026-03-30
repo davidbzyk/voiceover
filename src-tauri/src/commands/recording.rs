@@ -55,7 +55,7 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
         || requested.starts_with(home_dir.join("VoiceOver"));
 
     if !allowed {
-        return Err(format!("Access denied: path outside allowed directories"));
+        return Err("Access denied: path outside allowed directories".to_string());
     }
 
     fs::read(&requested).map_err(|e| format!("Failed to read: {e}"))
@@ -73,7 +73,7 @@ pub fn finalize_recording(session_id: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "webm"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "webm"))
         .collect();
 
     chunks.sort();

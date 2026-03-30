@@ -297,7 +297,7 @@ fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], _filename: &str)
     body.extend_from_slice(b"\r\n");
     // File part
     body.extend_from_slice(b"--voiceover_boundary\r\n");
-    body.extend_from_slice(format!("Content-Type: video/mp4\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Type: video/mp4\r\n");
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(file_bytes);
     body.extend_from_slice(b"\r\n");
