@@ -119,7 +119,7 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
+pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     let path = config_path(&app)?;
     let mut config = if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
@@ -186,7 +186,7 @@ fn read_static_config() -> Option<AppConfig> {
 }
 
 #[tauri::command]
-pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
+pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
     // Store secrets in OS keychain
     crate::secrets::save_secrets(&config);
 

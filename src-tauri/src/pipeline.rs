@@ -29,7 +29,7 @@ pub async fn process_recording(
 
     log::info!("[pipeline] Starting: voice_replacement={}, input={}", voice_replacement, recording_path);
 
-    let config = config::get_config(app.clone())?;
+    let config = config::get_config(app.clone()).await?;
     let output_dir = PathBuf::from(&config.output_dir);
 
     // Fall back to default output dir if configured path can't be created
