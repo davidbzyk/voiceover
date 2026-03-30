@@ -20,7 +20,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
-      - run: pnpm audit --audit-level=high || true
+      - run: pnpm audit --audit-level=high
+        continue-on-error: true
 
   rust:
     runs-on: macos-latest
