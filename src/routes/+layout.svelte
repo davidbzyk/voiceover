@@ -9,7 +9,7 @@
 		// Always load config (works in both Tauri and browser via localStorage)
 		await appState.loadConfig();
 
-		// Tauri-only: check ffmpeg, then reveal the window
+		// Tauri-only: check ffmpeg
 		if (isTauri()) {
 			try {
 				const { invoke } = await import('@tauri-apps/api/core');
@@ -18,11 +18,6 @@
 			} catch (err) {
 				console.error('Failed to check prerequisites:', err);
 			}
-			// Show the window now that the UI is rendered (hidden via tauri.conf.json)
-			try {
-				const { getCurrentWindow } = await import('@tauri-apps/api/window');
-				await getCurrentWindow().show();
-			} catch { /* non-fatal */ }
 		}
 	});
 </script>
