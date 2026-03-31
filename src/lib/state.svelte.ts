@@ -60,6 +60,7 @@ export type AppConfig = {
 export type RecordingState =
 	| 'ready'
 	| 'selecting'
+	| 'selecting-region'
 	| 'recording'
 	| 'paused'
 	| 'recorded'
@@ -91,6 +92,7 @@ class AppState {
 
 	webcamStream = $state<MediaStream | null>(null);
 	webcamVideoEl = $state<HTMLVideoElement | null>(null);
+	regionScreenshot = $state<string>('');
 	recordingState = $state<RecordingState>('ready');
 	recordingPath = $state('');
 	outputPath = $state('');
@@ -193,6 +195,7 @@ class AppState {
 		this.webcamStream?.getTracks().forEach((t) => t.stop());
 		this.webcamStream = null;
 		this.webcamVideoEl = null;
+		this.regionScreenshot = '';
 		this.recordingState = 'ready';
 		this.recordingPath = '';
 		this.outputPath = '';

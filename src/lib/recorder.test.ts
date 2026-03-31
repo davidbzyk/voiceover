@@ -5,7 +5,11 @@ import {
 	getAudioDevices,
 	pauseRecording,
 	cancelRecording,
-	computeWebcamBubbleRect
+	computeWebcamBubbleRect,
+	captureModeToDisplaySurface,
+	confirmRegionSelection,
+	cancelRegionSelection,
+	mapSelectionToSource
 } from './recorder.svelte';
 import { blobStore } from './blobStore';
 
@@ -103,6 +107,63 @@ describe('getAudioDevices', () => {
 	});
 });
 
+describe('captureModeToDisplaySurface', () => {
+	it('maps fullscreen to monitor', () => {
+		expect(captureModeToDisplaySurface('fullscreen')).toBe('monitor');
+	});
+
+	it('maps window to window', () => {
+		expect(captureModeToDisplaySurface('window')).toBe('window');
+	});
+
+	it('maps region to monitor (captures full screen before cropping)', () => {
+		expect(captureModeToDisplaySurface('region')).toBe('monitor');
+	});
+});
+
+describe('mapSelectionToSource', () => {
+	it('scales 2x for Retina displays', () => {
+		const result = mapSelectionToSource(
+			{ x: 100, y: 50, width: 400, height: 300 },
+			960, 540, 1920, 1080
+		);
+		expect(result).toEqual({ x: 200, y: 100, width: 800, height: 600 });
+	});
+
+	it('returns identity at 1:1 scaling', () => {
+		const result = mapSelectionToSource(
+			{ x: 10, y: 20, width: 300, height: 200 },
+			1920, 1080, 1920, 1080
+		);
+		expect(result).toEqual({ x: 10, y: 20, width: 300, height: 200 });
+	});
+
+	it('handles non-uniform scaling', () => {
+		const result = mapSelectionToSource(
+			{ x: 100, y: 100, width: 200, height: 200 },
+			800, 400, 1600, 1200
+		);
+		// scaleX = 2, scaleY = 3
+		expect(result).toEqual({ x: 200, y: 300, width: 400, height: 600 });
+	});
+
+	it('rounds fractional results', () => {
+		const result = mapSelectionToSource(
+			{ x: 33, y: 33, width: 100, height: 100 },
+			1000, 1000, 1920, 1080
+		);
+		expect(result).toEqual({ x: 63, y: 36, width: 192, height: 108 });
+	});
+
+	it('returns zero rect when display dimensions are zero', () => {
+		const result = mapSelectionToSource(
+			{ x: 100, y: 100, width: 200, height: 200 },
+			0, 0, 1920, 1080
+		);
+		expect(result).toEqual({ x: 0, y: 0, width: 0, height: 0 });
+	});
+});
+
 describe('guard functions', () => {
 	it('pauseRecording does not throw with no active recorder', () => {
 		expect(() => pauseRecording()).not.toThrow();
@@ -110,6 +171,14 @@ describe('guard functions', () => {
 
 	it('cancelRecording does not throw with no active recording', () => {
 		expect(() => cancelRecording()).not.toThrow();
+	});
+
+	it('confirmRegionSelection does not throw with no pending selection', () => {
+		expect(() => confirmRegionSelection({ x: 0, y: 0, width: 100, height: 100 })).not.toThrow();
+	});
+
+	it('cancelRegionSelection does not throw with no pending selection', () => {
+		expect(() => cancelRegionSelection()).not.toThrow();
 	});
 });
 

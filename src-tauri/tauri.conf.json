@@ -18,7 +18,8 @@
         "height": 640,
         "resizable": true,
         "center": true,
-        "decorations": true
+        "decorations": true,
+        "backgroundColor": [15, 23, 42, 255]
       }
     ],
     "security": {

@@ -145,6 +145,12 @@ describe('reset()', () => {
 		appState.reset();
 		expect(stopFn).toHaveBeenCalled();
 	});
+
+	it('clears regionScreenshot on reset', () => {
+		appState.regionScreenshot = 'data:image/jpeg;base64,/9j/fake';
+		appState.reset();
+		expect(appState.regionScreenshot).toBe('');
+	});
 });
 
 describe('loadConfig fallback', () => {

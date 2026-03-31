@@ -119,40 +119,42 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
+pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     let path = config_path(&app)?;
-    let mut config = if path.exists() {
-        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())?
-    } else {
-        // Seed from static/_config.json if it exists (user may have placed config there)
-        let config = read_static_config().unwrap_or_default();
-        let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| e.to_string())?;
-        config
-    };
+    tokio::task::spawn_blocking(move || {
+        let mut config = if path.exists() {
+            let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).map_err(|e| e.to_string())?
+        } else {
+            // Seed from static/_config.json if it exists (user may have placed config there)
+            let config = read_static_config().unwrap_or_default();
+            let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+            fs::write(&path, json).map_err(|e| e.to_string())?;
+            config
+        };
 
-    // Migrate: if config.json still has secrets (pre-keychain), move them to keychain
-    if !config.secrets_migrated
-        && (!config.elevenlabs_api_key.is_empty()
-            || !config.google_drive.client_secret.is_empty()
-            || !config.google_drive.access_token.is_empty()
-            || !config.google_drive.refresh_token.is_empty())
-    {
-        log::info!("[config] Migrating secrets from config.json to keychain");
-        crate::secrets::save_secrets(&config);
-        // Strip secrets from file, set sentinel, and rewrite
-        let mut sanitized = config.clone();
-        crate::secrets::sanitize_config(&mut sanitized);
-        sanitized.secrets_migrated = true;
-        let json = serde_json::to_string_pretty(&sanitized).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| format!("Failed to write migrated config: {e}"))?;
-    }
+        // Migrate: if config.json still has secrets (pre-keychain), move them to keychain
+        if !config.secrets_migrated
+            && (!config.elevenlabs_api_key.is_empty()
+                || !config.google_drive.client_secret.is_empty()
+                || !config.google_drive.access_token.is_empty()
+                || !config.google_drive.refresh_token.is_empty())
+        {
+            log::info!("[config] Migrating secrets from config.json to keychain");
+            crate::secrets::save_secrets(&config);
+            // Strip secrets from file, set sentinel, and rewrite
+            let mut sanitized = config.clone();
+            crate::secrets::sanitize_config(&mut sanitized);
+            sanitized.secrets_migrated = true;
+            let json = serde_json::to_string_pretty(&sanitized).map_err(|e| e.to_string())?;
+            fs::write(&path, json).map_err(|e| format!("Failed to write migrated config: {e}"))?;
+        }
 
-    // Always overlay secrets from keychain (authoritative source)
-    crate::secrets::load_secrets(&mut config);
+        // Always overlay secrets from keychain (authoritative source)
+        crate::secrets::load_secrets(&mut config);
 
-    Ok(config)
+        Ok(config)
+    }).await.map_err(|e| format!("Config task failed: {e}"))?
 }
 
 /// Try reading config from static/_config.json (project root).
@@ -186,22 +188,24 @@ fn read_static_config() -> Option<AppConfig> {
 }
 
 #[tauri::command]
-pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
-    // Store secrets in OS keychain
-    crate::secrets::save_secrets(&config);
-
-    // Strip secrets before writing to file
-    let mut file_config = config.clone();
-    crate::secrets::sanitize_config(&mut file_config);
-
+pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
     let path = config_path(&app)?;
-    let json = serde_json::to_string_pretty(&file_config).map_err(|e| e.to_string())?;
-    fs::write(&path, &json).map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        // Store secrets in OS keychain
+        crate::secrets::save_secrets(&config);
 
-    // Sync non-secret config to static dir in dev mode
-    sync_to_static(&file_config);
+        // Strip secrets before writing to file
+        let mut file_config = config.clone();
+        crate::secrets::sanitize_config(&mut file_config);
 
-    Ok(())
+        let json = serde_json::to_string_pretty(&file_config).map_err(|e| e.to_string())?;
+        fs::write(&path, &json).map_err(|e| e.to_string())?;
+
+        // Sync non-secret config to static dir in dev mode
+        sync_to_static(&file_config);
+
+        Ok(())
+    }).await.map_err(|e| format!("Config save task failed: {e}"))?
 }
 
 /// Write config to the project's static dir so the Vite dev server can serve it.
