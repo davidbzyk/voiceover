@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Which TTS provider to use for voice transformation.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Provider {
     #[default]
@@ -12,6 +13,7 @@ pub enum Provider {
 
 impl Provider {
     /// Return the string tag that matches the serde serialization.
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Provider::ElevenLabs => "elevenlabs",
