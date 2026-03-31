@@ -51,6 +51,8 @@ pub fn run() {
             local_tts::test_local_connection,
             local_tts::list_local_voices,
             local_tts::check_model_status,
+            local_tts::voicebox_fetch,
+            local_tts::voicebox_upload,
             google_drive::google_drive_connect,
             google_drive::google_drive_disconnect,
             google_drive::upload_to_drive,

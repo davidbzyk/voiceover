@@ -35,7 +35,14 @@ pub struct ModelInfo {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct SpeechToSpeechResponse {
+struct TranscriptionResponse {
+    text: String,
+    #[allow(dead_code)]
+    duration: f64,
+}
+
+#[derive(Deserialize)]
+struct GenerateResponse {
     id: String,
 }
 
@@ -53,9 +60,10 @@ struct GenerationStatus {
 /// Send audio to a local Voicebox server for voice transformation.
 ///
 /// The flow is:
-/// 1. POST multipart to `{endpoint}/speech-to-speech` with audio + profile_id
-/// 2. Poll `{endpoint}/generate/{id}/status` until completed or failed
-/// 3. Download result from `{endpoint}/audio/{id}` and save to `output_wav`
+/// 1. POST multipart to `{endpoint}/transcribe` to get text from audio
+/// 2. POST JSON to `{endpoint}/generate` with profile_id + transcribed text
+/// 3. Poll `{endpoint}/generate/{id}/status` until completed or failed
+/// 4. Download result from `{endpoint}/audio/{id}` and save to `output_wav`
 pub async fn speech_to_speech(
     endpoint: &str,
     profile_id: &str,
@@ -73,42 +81,79 @@ pub async fn speech_to_speech(
     );
 
     let client = reqwest::Client::new();
+    let base = endpoint.trim_end_matches('/');
+    let start = std::time::Instant::now();
 
-    // --- Step 1: Submit the speech-to-speech job ---
-    let url = format!("{}/speech-to-speech", endpoint.trim_end_matches('/'));
+    // --- Step 1: Transcribe audio to text ---
+    let transcribe_url = format!("{}/transcribe", base);
     let form = reqwest::multipart::Form::new()
         .part(
-            "audio",
+            "file",
             reqwest::multipart::Part::bytes(audio_bytes)
                 .file_name("input.wav")
                 .mime_str("audio/wav")
                 .map_err(|e| e.to_string())?,
-        )
-        .text("profile_id", profile_id.to_string());
+        );
 
-    let start = std::time::Instant::now();
     let response = client
-        .post(&url)
+        .post(&transcribe_url)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("Local TTS request failed: {e}"))?;
+        .map_err(|e| format!("Transcription request failed: {e}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
+    if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        log::error!("[local_tts] S2S submit error: {status} -- {body}");
-        return Err(format!("Local TTS error {status}: {body}"));
+        log::error!("[local_tts] Transcribe error: {body}");
+        return Err(format!("Transcription failed: {body}"));
     }
 
-    let submit_resp: SpeechToSpeechResponse = response
+    let body_text = response.text().await
+        .map_err(|e| format!("Failed to read transcription response: {e}"))?;
+    log::info!("[local_tts] Transcribe response: {}", &body_text[..body_text.len().min(500)]);
+    let transcription: TranscriptionResponse = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Failed to parse transcription: {e} — body: {}", &body_text[..body_text.len().min(200)]))?;
+
+    log::info!(
+        "[local_tts] Transcribed: {:.1}s audio -> {} chars, elapsed={:.1}s",
+        transcription.duration,
+        transcription.text.len(),
+        start.elapsed().as_secs_f32(),
+    );
+
+    if transcription.text.trim().is_empty() {
+        return Err("Transcription returned empty text — no speech detected in recording".to_string());
+    }
+
+    // --- Step 2: Generate speech with voice profile ---
+    let generate_url = format!("{}/generate", base);
+    let gen_body = serde_json::json!({
+        "profile_id": profile_id,
+        "text": transcription.text,
+        "engine": "qwen"
+    });
+
+    let response = client
+        .post(&generate_url)
+        .json(&gen_body)
+        .send()
+        .await
+        .map_err(|e| format!("Generate request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        log::error!("[local_tts] Generate error: {body}");
+        return Err(format!("Voice generation failed: {body}"));
+    }
+
+    let gen_resp: GenerateResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse S2S response: {e}"))?;
+        .map_err(|e| format!("Failed to parse generate response: {e}"))?;
 
-    let generation_id = submit_resp.id;
+    let generation_id = gen_resp.id;
     log::info!(
-        "[local_tts] S2S submitted: id={}, elapsed={:.1}s",
+        "[local_tts] Generation submitted: id={}, elapsed={:.1}s",
         generation_id,
         start.elapsed().as_secs_f32(),
     );
@@ -142,10 +187,17 @@ pub async fn speech_to_speech(
             return Err(format!("Generation status check failed: {body}"));
         }
 
-        let gen_status: GenerationStatus = poll_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse generation status: {e}"))?;
+        let body = poll_resp.text().await
+            .map_err(|e| format!("Failed to read generation status: {e}"))?;
+        // Status endpoint returns an SSE stream with multiple "data: {...}" lines.
+        // Parse the last event to get the most recent status.
+        let json_str = body.lines()
+            .rev()
+            .filter_map(|line| line.trim().strip_prefix("data:").map(|s| s.trim()))
+            .find(|s| !s.is_empty())
+            .unwrap_or("{}");
+        let gen_status: GenerationStatus = serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse generation status: {e} — json: {}", &json_str[..json_str.len().min(200)]))?;
 
         match gen_status.status.as_str() {
             "completed" => {
@@ -289,6 +341,93 @@ pub async fn check_model_status(endpoint: String) -> Result<Vec<ModelInfo>, Stri
 
     log::info!("[local_tts] Model status: {} models", models.len());
     Ok(models)
+}
+
+/// Generic proxy for Voicebox API calls from the frontend.
+/// Routes through Rust to bypass webview CORS restrictions.
+#[tauri::command]
+pub async fn voicebox_fetch(
+    url: String,
+    method: String,
+    body: Option<String>,
+    content_type: Option<String>,
+) -> Result<String, String> {
+    log::info!("[local_tts] Proxy {} {}", method, url);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = match method.to_uppercase().as_str() {
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        _ => client.get(&url),
+    };
+
+    if let Some(ct) = content_type {
+        req = req.header("Content-Type", ct);
+    }
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("{}: {}", status, text));
+    }
+
+    Ok(text)
+}
+
+/// Upload bytes to Voicebox via multipart form (for sample uploads).
+#[tauri::command]
+pub async fn voicebox_upload(
+    url: String,
+    file_bytes: Vec<u8>,
+    file_name: String,
+    file_field: String,
+    fields: std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    log::info!("[local_tts] Upload to {} (file: {}, {}KB)", url, file_name, file_bytes.len() / 1024);
+
+    let mut form = reqwest::multipart::Form::new()
+        .part(
+            file_field,
+            reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(file_name)
+                .mime_str("application/octet-stream")
+                .map_err(|e| e.to_string())?,
+        );
+
+    for (key, value) in fields {
+        form = form.text(key, value);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Upload failed: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("{}: {}", status, text));
+    }
+
+    Ok(text)
 }
 
 #[cfg(test)]
