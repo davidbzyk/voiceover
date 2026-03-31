@@ -329,6 +329,108 @@ async def get_audio(gen_id: str):
 
 
 # ---------------------------------------------------------------------------
+# YouTube extraction
+# ---------------------------------------------------------------------------
+
+
+@app.post("/extract-youtube")
+async def extract_youtube(request: dict):
+    """Download a YouTube video, extract audio, and clip to duration.
+
+    Returns the path to a 16kHz mono WAV file suitable for voice cloning.
+    """
+    url = request.get("url", "")
+    start = request.get("start", "0")
+    duration = request.get("duration", 30)
+
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    temp_dir = DATA_DIR / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    output_id = str(uuid.uuid4())
+    output_wav = temp_dir / f"{output_id}.wav"
+
+    try:
+        import subprocess
+
+        # Step 1: Download video with yt-dlp
+        logger.info(f"Downloading YouTube video: {url}")
+        video_path = temp_dir / f"{output_id}.video"
+        dl_result = await asyncio.to_thread(
+            subprocess.run,
+            ["yt-dlp", "-o", str(video_path), "-q", "--no-warnings", url],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if dl_result.returncode != 0:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Download failed: {dl_result.stderr.strip()}"},
+            )
+
+        # Find the actual downloaded file (yt-dlp may add extension)
+        actual_video = None
+        for f in temp_dir.glob(f"{output_id}.*"):
+            if f.suffix != ".wav":
+                actual_video = f
+                break
+        if not actual_video or not actual_video.exists():
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Downloaded video file not found"},
+            )
+
+        # Step 2: Extract audio with ffmpeg (16kHz mono WAV, clipped)
+        logger.info(f"Extracting {duration}s audio starting at {start}")
+        ffmpeg_args = [
+            "ffmpeg", "-y", "-i", str(actual_video),
+            "-ss", str(start), "-t", str(duration),
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            str(output_wav),
+        ]
+        ff_result = await asyncio.to_thread(
+            subprocess.run,
+            ffmpeg_args,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        # Clean up video file
+        actual_video.unlink(missing_ok=True)
+
+        if ff_result.returncode != 0:
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Audio extraction failed: {ff_result.stderr.strip()[:200]}"},
+            )
+
+        if not output_wav.exists():
+            return JSONResponse(
+                status_code=500, content={"error": "Output WAV not created"}
+            )
+
+        # Get duration of the output
+        import wave
+        with wave.open(str(output_wav), "rb") as wf:
+            wav_duration = wf.getnframes() / wf.getframerate()
+
+        logger.info(f"Extracted: {output_wav} ({wav_duration:.1f}s)")
+        return {
+            "audio_path": str(output_wav),
+            "duration": wav_duration,
+            "id": output_id,
+        }
+
+    except Exception as e:
+        logger.error(f"YouTube extraction failed: {e}")
+        output_wav.unlink(missing_ok=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Profiles
 # ---------------------------------------------------------------------------
 

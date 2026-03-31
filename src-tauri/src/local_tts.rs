@@ -317,6 +317,47 @@ pub async fn check_model_status(app: tauri::AppHandle) -> Result<Vec<ModelInfo>,
     Ok(resp.models)
 }
 
+/// Extract audio from a YouTube video via the TTS sidecar.
+#[tauri::command]
+pub async fn extract_youtube_audio(
+    app: tauri::AppHandle,
+    url: String,
+    start: String,
+    duration: u32,
+) -> Result<serde_json::Value, String> {
+    let port = crate::sidecar::ensure_running(&app).await?;
+    let api_url = format!("http://127.0.0.1:{}/extract-youtube", port);
+    log::info!("[local_tts] YouTube extraction: {} (start={}, duration={}s)", url, start, duration);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180)) // 3 min for large downloads
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .post(&api_url)
+        .json(&serde_json::json!({
+            "url": url,
+            "start": start,
+            "duration": duration,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("YouTube extraction failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("YouTube extraction failed: {body}"));
+    }
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse extraction result: {e}"))?;
+
+    Ok(result)
+}
+
 /// Proxy a JSON request to the TTS sidecar (for frontend use).
 #[tauri::command]
 pub async fn sidecar_fetch(

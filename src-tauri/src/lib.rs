@@ -66,6 +66,7 @@ pub fn run() {
             local_tts::test_local_connection,
             local_tts::list_local_voices,
             local_tts::check_model_status,
+            local_tts::extract_youtube_audio,
             local_tts::sidecar_fetch,
             local_tts::sidecar_upload,
             sidecar::get_sidecar_status,

@@ -129,9 +129,17 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
             .spawn()
             .map_err(|e| format!("Failed to spawn sidecar binary: {e}"))?
     } else if let Some(server_py) = resolve_dev_server_path() {
-        // Dev mode: run Python directly
-        log::info!("[sidecar] Dev mode: running {:?}", server_py);
-        Command::new("python3")
+        // Dev mode: prefer the sidecar venv Python, fall back to system python3
+        let sidecar_dir = server_py.parent().unwrap_or(Path::new("."));
+        let venv_python = sidecar_dir.join(".venv").join("bin").join("python3");
+        let python = if venv_python.exists() {
+            log::info!("[sidecar] Dev mode: using venv {:?}", venv_python);
+            venv_python
+        } else {
+            log::info!("[sidecar] Dev mode: using system python3 (no .venv found)");
+            PathBuf::from("python3")
+        };
+        Command::new(&python)
             .args([
                 server_py.to_str().unwrap(),
                 "--port",
