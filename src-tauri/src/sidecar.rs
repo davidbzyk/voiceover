@@ -42,6 +42,12 @@ impl Default for SidecarState {
 /// In a bundled .app, the sidecar lives next to the main executable in
 /// `Contents/MacOS/`. Falls back to running `python server.py` in dev mode.
 fn resolve_sidecar_path() -> Option<PathBuf> {
+    // In dev builds, always use the Python source — the bundled binary is a
+    // placeholder that Tauri requires at compile time but can't actually serve.
+    if cfg!(debug_assertions) {
+        log::info!("[sidecar] Dev build — skipping bundled binary, will use Python");
+        return None;
+    }
     if let Ok(exe) = std::env::current_exe() {
         let sidecar = exe
             .parent()
