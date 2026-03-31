@@ -3,9 +3,11 @@ mod config;
 mod elevenlabs;
 mod ffmpeg;
 mod google_drive;
+mod local_tts;
 mod pipeline;
 mod prerequisites;
 mod secrets;
+mod tts_provider;
 
 use commands::recording;
 use commands::window;
@@ -46,6 +48,9 @@ pub fn run() {
             window::close_widget_window,
             pipeline::process_recording,
             elevenlabs::test_api_key,
+            local_tts::test_local_connection,
+            local_tts::list_local_voices,
+            local_tts::check_model_status,
             google_drive::google_drive_connect,
             google_drive::google_drive_disconnect,
             google_drive::upload_to_drive,
