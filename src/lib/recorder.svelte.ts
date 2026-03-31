@@ -61,6 +61,7 @@ export async function startRecording(
 	recordedChunks = [];
 	audioChunks = [];
 
+	let tauriWindow: Awaited<ReturnType<typeof import('@tauri-apps/api/window').getCurrentWindow>> | null = null;
 	try {
 		if (!navigator.mediaDevices?.getDisplayMedia) {
 			throw new Error(
@@ -80,12 +81,10 @@ export async function startRecording(
 
 		logger.recordingStart(captureMode);
 
-		// Trigger getDisplayMedia first (needs user gesture), then minimize window
+		// Call getDisplayMedia first to preserve user gesture, then minimize.
+		// macOS's picker shows a live preview that updates when the window minimizes.
 		const displayPromise = navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
 
-		// In Tauri fullscreen/region mode, minimize window to reveal macOS's
-		// "Share This Screen" button (hidden behind app window on main monitor)
-		let tauriWindow: Awaited<ReturnType<typeof import('@tauri-apps/api/window').getCurrentWindow>> | null = null;
 		if (isTauri() && captureMode !== 'window') {
 			try {
 				const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -310,6 +309,12 @@ export async function startRecording(
 		}
 
 	} catch (err) {
+		if (tauriWindow) {
+			try {
+				await tauriWindow.unminimize();
+				await tauriWindow.setFocus();
+			} catch { /* best effort */ }
+		}
 		cleanup();
 		throw err;
 	}

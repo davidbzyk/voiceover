@@ -90,6 +90,15 @@ pub struct AppConfig {
     pub google_drive: GoogleDrive,
     #[serde(default)]
     pub secrets_migrated: bool,
+    /// TTS provider: "elevenlabs" or "local"
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Endpoint for the local Voicebox server
+    #[serde(default = "default_local_endpoint")]
+    pub local_endpoint: String,
+    /// Voice profile ID to use with the local Voicebox server
+    #[serde(default)]
+    pub local_voice_profile_id: String,
 }
 
 fn default_output_dir() -> String {
@@ -97,6 +106,14 @@ fn default_output_dir() -> String {
         .or_else(dirs::home_dir)
         .map(|p| p.join("VoiceOver").to_string_lossy().to_string())
         .unwrap_or_else(|| "~/VoiceOver".to_string())
+}
+
+fn default_provider() -> String {
+    "elevenlabs".to_string()
+}
+
+fn default_local_endpoint() -> String {
+    "http://localhost:17493".to_string()
 }
 
 impl Default for AppConfig {
@@ -108,6 +125,9 @@ impl Default for AppConfig {
             preferences: Preferences::default(),
             google_drive: GoogleDrive::default(),
             secrets_migrated: false,
+            provider: default_provider(),
+            local_endpoint: default_local_endpoint(),
+            local_voice_profile_id: String::new(),
         }
     }
 }
@@ -314,6 +334,9 @@ mod tests {
                 expires_at: 1700000000,
             },
             secrets_migrated: false,
+            provider: "elevenlabs".to_string(),
+            local_endpoint: "http://localhost:17493".to_string(),
+            local_voice_profile_id: String::new(),
         };
 
         let json = serde_json::to_string(&config).unwrap();

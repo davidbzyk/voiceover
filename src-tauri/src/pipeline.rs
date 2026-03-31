@@ -1,6 +1,7 @@
 use crate::config;
 use crate::elevenlabs;
 use crate::ffmpeg;
+use crate::local_tts;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
@@ -73,9 +74,13 @@ pub async fn process_recording(
     }
 
     // Voice replacement pipeline
-    let api_key = &config.elevenlabs_api_key;
-    if api_key.is_empty() {
-        return Err("ElevenLabs API key not set — configure in Settings".to_string());
+    let use_local = config.provider == "local";
+
+    if !use_local {
+        let api_key = &config.elevenlabs_api_key;
+        if api_key.is_empty() {
+            return Err("ElevenLabs API key not set — configure in Settings".to_string());
+        }
     }
 
     let voice_id = voice_id
@@ -85,12 +90,25 @@ pub async fn process_recording(
                 .find(|v| v.is_default)
                 .or_else(|| config.voices.first())
                 .map(|v| v.id.clone())
-        })
-        .ok_or_else(|| "No voice configured — add one in Settings".to_string())?;
+        });
+
+    if !use_local && voice_id.is_none() {
+        return Err("No voice configured — add one in Settings".to_string());
+    }
+
+    if use_local && config.local_voice_profile_id.is_empty() {
+        return Err("No local voice profile configured — select one in Settings".to_string());
+    }
 
     let temp_dir = recording.parent().unwrap_or(std::path::Path::new("/tmp"));
     let extracted_wav = temp_dir.join(format!("extracted-{timestamp}.wav"));
-    let transformed_mp3 = temp_dir.join(format!("transformed-{timestamp}.mp3"));
+    // ElevenLabs outputs MP3; local Voicebox outputs WAV.
+    // ffmpeg's replace_audio handles both (transcodes to AAC).
+    let transformed_audio = if use_local {
+        temp_dir.join(format!("transformed-{timestamp}.wav"))
+    } else {
+        temp_dir.join(format!("transformed-{timestamp}.mp3"))
+    };
 
     // Stage 1: Extract audio (0-10%)
     on_event
@@ -111,15 +129,36 @@ pub async fn process_recording(
         })
         .ok();
 
-    // Stage 2: ElevenLabs S2S (10-85%)
-    on_event
-        .send(PipelineEvent::Progress {
-            stage: "Transforming voice".to_string(),
-            percent: 15.0,
-        })
-        .ok();
+    // Stage 2: Voice transformation (10-85%)
+    if use_local {
+        on_event
+            .send(PipelineEvent::Progress {
+                stage: "Transforming voice (local)...".to_string(),
+                percent: 15.0,
+            })
+            .ok();
 
-    elevenlabs::speech_to_speech(api_key, &voice_id, &extracted_wav, &transformed_mp3).await?;
+        local_tts::speech_to_speech(
+            &config.local_endpoint,
+            &config.local_voice_profile_id,
+            &extracted_wav,
+            &transformed_audio,
+        ).await?;
+    } else {
+        on_event
+            .send(PipelineEvent::Progress {
+                stage: "Transforming voice (ElevenLabs)...".to_string(),
+                percent: 15.0,
+            })
+            .ok();
+
+        elevenlabs::speech_to_speech(
+            &config.elevenlabs_api_key,
+            voice_id.as_deref().unwrap(),
+            &extracted_wav,
+            &transformed_audio,
+        ).await?;
+    }
 
     on_event
         .send(PipelineEvent::Progress {
@@ -137,7 +176,7 @@ pub async fn process_recording(
         .ok();
 
     log::info!("[pipeline] Splicing audio into video");
-    ffmpeg::replace_audio(&recording, &transformed_mp3, &final_path).await?;
+    ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
 
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
@@ -154,7 +193,7 @@ pub async fn process_recording(
     // Cleanup temp files
     cleanup_temp(&recording);
     cleanup_temp(&extracted_wav);
-    cleanup_temp(&transformed_mp3);
+    cleanup_temp(&transformed_audio);
 
     Ok(final_path.to_string_lossy().to_string())
 }

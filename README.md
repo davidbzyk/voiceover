@@ -1,6 +1,6 @@
 # VoiceOver
 
-A lightweight desktop screen recorder that replaces your voice with an ElevenLabs character voice — record, transform, and export in a single workflow.
+A lightweight desktop screen recorder that replaces your voice with a character voice — record, transform, and export in a single workflow. Supports **ElevenLabs** (cloud) and **Voicebox** (local, runs on your machine).
 
 Built with Tauri v2 (Rust backend) and SvelteKit 5 (TypeScript frontend). Runs on macOS and Linux.
 
@@ -8,14 +8,14 @@ Built with Tauri v2 (Rust backend) and SvelteKit 5 (TypeScript frontend). Runs o
 
 ## What It Does
 
-VoiceOver eliminates the multi-step process of recording a screen capture, uploading audio to ElevenLabs, and manually splicing the result. Instead:
+VoiceOver eliminates the multi-step process of recording a screen capture, uploading audio to a voice service, and manually splicing the result. Instead:
 
 1. **Record** your screen (full screen, window, or region) with microphone audio
-2. **Transform** your voice to any ElevenLabs character using Speech-to-Speech
+2. **Transform** your voice using ElevenLabs (cloud) or Voicebox (local)
 3. **Export** a final video with the transformed voice perfectly synced
 4. **Upload** (optional) to Google Drive for a shareable link
 
-The entire pipeline happens in one app. Your pacing, pauses, and emphasis are preserved — ElevenLabs S2S transforms the voice while keeping your natural cadence.
+The entire pipeline happens in one app. Your pacing, pauses, and emphasis are preserved — both providers transform the voice while keeping your natural cadence.
 
 ## Screenshots
 
@@ -32,8 +32,9 @@ The entire pipeline happens in one app. Your pacing, pauses, and emphasis are pr
 - **Screen capture** — full screen, window, or region selection via native OS picker
 - **Optional webcam overlay** — picture-in-picture bubble during recording. Toggle webcam via the camera button on the home screen. Click the arrow on the bubble to move it between bottom-left and bottom-right. The bubble is composited into the recorded video output (not just a preview overlay)
 - **Microphone selection** — pick any connected audio input device
-- **ElevenLabs Speech-to-Speech** — voice transformation that preserves timing and emotion
-- **Voice collection** — save multiple voice IDs with friendly names, set a default
+- **ElevenLabs Speech-to-Speech** — cloud voice transformation that preserves timing and emotion
+- **Voicebox local TTS** — runs entirely on your machine via [Voicebox](https://github.com/jamiepine/voicebox), no API keys needed. Uses Qwen TTS with voice cloning from audio samples
+- **Voice collection** — save multiple voice IDs (ElevenLabs) or voice profiles (Voicebox) with friendly names
 - **Voice replacement toggle** — on by default, turn off to save raw recordings
 - **Background noise removal** — ElevenLabs strips noise before transformation
 - **Google Drive upload** — OAuth2 flow, uploads and returns a shareable link
@@ -61,7 +62,8 @@ Frontend (Svelte 5 + TypeScript)          Backend (Rust)
 **Processing pipeline:**
 
 ```
-Record (WebM) → Extract Audio → ElevenLabs S2S → Splice New Audio → Final Video
+ElevenLabs:  Record → Extract Audio → ElevenLabs S2S → Splice New Audio → Final Video
+Voicebox:    Record → Extract Audio → Transcribe → Qwen TTS Generate → Splice → Final Video
 ```
 
 - Desktop mode: ffmpeg CLI handles extraction and splicing
@@ -204,6 +206,42 @@ All settings are managed in-app via the Settings screen. No config files to edit
 
 ![Settings — API key, voices, and Google Drive](images/settings.png)
 
+### Voicebox Setup (Local Voice — Optional)
+
+Voicebox is a local TTS server that runs on your machine. No API keys, no cloud — your audio never leaves your computer.
+
+**1. Install and run Voicebox:**
+
+```bash
+git clone https://github.com/jamiepine/voicebox
+cd voicebox
+# Follow Voicebox README for setup (Docker or native)
+```
+
+Voicebox runs at `http://localhost:17493` by default.
+
+**2. Create a voice profile:**
+
+You can create a voice profile directly from VoiceOver:
+
+1. Open **Settings** in VoiceOver
+2. Under **Local Voice Server**, verify the connection shows green
+3. Click **+ Create Voice**
+4. Follow the wizard: name your voice, upload audio samples (MP3, WAV, etc.), and add reference text for each sample
+5. Test the voice with a preview generation
+
+Or create profiles in the Voicebox web UI at `http://localhost:17493`.
+
+**3. Select the provider:**
+
+1. In **Settings**, switch the provider toggle to **Local**
+2. Select your voice profile from the dropdown
+3. Record as normal — VoiceOver will transcribe your audio, generate new speech with your cloned voice via Qwen TTS, and splice it into the final video
+
+**Supported audio formats for samples:** `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.aac`, `.webm`, `.opus` (max 50MB per sample)
+
+**How it works under the hood:** Unlike ElevenLabs (which does direct speech-to-speech), Voicebox uses a two-step process: your recorded audio is first transcribed to text, then Qwen TTS regenerates the speech using your voice profile. This means the output follows the *words* of your recording but with the cloned voice's characteristics.
+
 ### Google Drive Setup (Optional)
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com)
@@ -231,12 +269,14 @@ voiceover/
 │   │   ├── logger.ts             # Structured logging ([VO:*] prefix)
 │   │   ├── recorder.svelte.ts    # WebRTC capture + MediaRecorder
 │   │   ├── state.svelte.ts       # App state (Svelte 5 runes)
+│   │   ├── voicebox.ts           # Voicebox API client (routes through Tauri IPC)
 │   │   └── WebcamBubble.svelte   # Webcam bubble overlay (live preview)
 │   └── routes/
 │       ├── +layout.svelte        # Root layout, config loading
 │       ├── +page.svelte          # Home screen (record controls)
 │       ├── preview/+page.svelte  # Preview, process, save/upload
 │       ├── settings/+page.svelte # API key, voices, Drive, output
+│       ├── create-voice/+page.svelte # Voicebox voice creation wizard
 │       └── widget/+page.svelte   # Floating recording widget
 ├── src-tauri/                    # Rust backend
 │   ├── Cargo.toml
@@ -250,6 +290,7 @@ voiceover/
 │       ├── prerequisites.rs      # ffmpeg detection
 │       ├── ffmpeg.rs             # Audio extraction + video muxing
 │       ├── elevenlabs.rs         # S2S API client (reqwest)
+│       ├── local_tts.rs          # Voicebox client (transcribe → generate)
 │       ├── pipeline.rs           # Processing orchestrator
 │       ├── google_drive.rs       # OAuth2 + upload
 │       └── commands/
@@ -271,7 +312,8 @@ voiceover/
 | Frontend language | TypeScript |
 | Backend language | Rust |
 | Video processing | ffmpeg (CLI) / ffmpeg.wasm (browser) |
-| Voice API | ElevenLabs Speech-to-Speech v1 |
+| Voice API (cloud) | ElevenLabs Speech-to-Speech v1 |
+| Voice API (local) | Voicebox + Qwen TTS |
 | HTTP client | reqwest (Rust) / fetch (browser) |
 | Cloud upload | Google Drive API v3 |
 | State management | Svelte 5 runes |
@@ -309,6 +351,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 - **Browser mode output is WebM** (not MP4) — Chrome's MediaRecorder uses VP8 which can't be muxed into MP4 without re-encoding. Desktop mode outputs MP4 via system ffmpeg.
 - **getDisplayMedia in Tauri webview** — WebKitGTK on Linux may not grant screen capture permission. Use browser mode (Chrome) for recording on Linux.
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
+- **Voicebox local TTS** — requires Voicebox running separately at `localhost:17493`. Voice quality depends on your audio samples and hardware (Apple Silicon recommended for Qwen TTS via MLX).
 - **ffmpeg.wasm first load** — ~32MB download on first use in browser mode (cached after).
 - **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect). Once connected, uploads work from both desktop and browser.
 - **Webcam requires camera permission** — prompted on first use.
