@@ -13,6 +13,7 @@
 		type CaptureMode
 	} from '$lib/recorder.svelte';
 	import { onMount, onDestroy } from 'svelte';
+	import { logger } from '$lib/logger';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
 	import RegionSelector from '$lib/RegionSelector.svelte';
 
@@ -30,8 +31,9 @@
 			if (audioDevices.length > 0) {
 				selectedDeviceId = audioDevices[0].deviceId;
 			}
-		} catch {
+		} catch (err) {
 			// Permission not yet granted — will prompt on record
+			logger.debug('audio', 'Could not enumerate devices at mount', err);
 		}
 	});
 
@@ -283,7 +285,7 @@
 		<RegionSelector
 			screenshotUrl={appState.regionScreenshot}
 			onSelect={(rect) => confirmRegionSelection(rect)}
-			onCancel={() => { cancelRegionSelection(); appState.recordingState = 'ready'; }}
+			onCancel={() => cancelRegionSelection()}
 		/>
 	{/if}
 </div>

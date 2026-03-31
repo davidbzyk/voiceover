@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { RegionRect } from './recorder.svelte';
+	import { mapSelectionToSource, type RegionRect } from './recorder.svelte';
 
 	const MIN_SELECTION = 50; // minimum CSS pixels to avoid accidental micro-selections
 
@@ -40,8 +40,8 @@
 	function handleMouseDown(e: MouseEvent) {
 		if (!containerEl) return;
 		const rect = containerEl.getBoundingClientRect();
-		startX = e.clientX - rect.left;
-		startY = e.clientY - rect.top;
+		startX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+		startY = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
 		currentX = startX;
 		currentY = startY;
 		isDragging = true;
@@ -69,20 +69,13 @@
 	function confirmSelection() {
 		if (!imgEl || !containerEl) return;
 
-		// Map CSS layout coordinates to source video pixel coordinates
-		const displayW = containerEl.clientWidth;
-		const displayH = containerEl.clientHeight;
-		const sourceW = imgEl.naturalWidth;
-		const sourceH = imgEl.naturalHeight;
-		const scaleX = sourceW / displayW;
-		const scaleY = sourceH / displayH;
-
-		onSelect({
-			x: Math.round(selRect.x * scaleX),
-			y: Math.round(selRect.y * scaleY),
-			width: Math.round(selRect.width * scaleX),
-			height: Math.round(selRect.height * scaleY)
-		});
+		onSelect(mapSelectionToSource(
+			selRect,
+			containerEl.clientWidth,
+			containerEl.clientHeight,
+			imgEl.naturalWidth,
+			imgEl.naturalHeight
+		));
 	}
 </script>
 
@@ -98,7 +91,7 @@
 >
 	<img bind:this={imgEl} src={screenshotUrl} alt="Screen capture" class="screenshot" draggable="false" />
 
-	<!-- Dark overlay with cutout for selected region -->
+	<!-- Semi-transparent dark overlay (cutout effect is produced by the selection-cutout element below) -->
 	<div class="dimmer"></div>
 
 	{#if (isDragging || hasSelection) && selRect.width > 0 && selRect.height > 0}
@@ -133,7 +126,7 @@
 
 	{#if hasSelection && !isDragging}
 		<!-- stopPropagation prevents mousedown from bubbling to the overlay and starting a new drag -->
-		<div class="actions" style="left:{selRect.x + selRect.width / 2}px; top:{selRect.y - 48}px;" onmousedown={(e) => e.stopPropagation()}>
+		<div class="actions" style="left:{selRect.x + selRect.width / 2}px; top:{selRect.y < 56 ? selRect.y + selRect.height + 8 : selRect.y - 48}px;" onmousedown={(e) => e.stopPropagation()}>
 			<button class="action-btn confirm" onclick={confirmSelection}>Record Region</button>
 			<button class="action-btn cancel" onclick={onCancel}>Cancel</button>
 		</div>

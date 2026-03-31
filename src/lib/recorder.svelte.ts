@@ -22,8 +22,7 @@ let compositorFrameId = 0;
 
 // Region capture state
 let regionRect: RegionRect | null = null;
-let regionResolve: ((rect: RegionRect) => void) | null = null;
-let regionReject: (() => void) | null = null;
+let regionResolve: ((rect: RegionRect | null) => void) | null = null;
 
 // Browser mode: collect chunks in memory
 let recordedChunks: Blob[] = [];
@@ -45,7 +44,7 @@ export function selectVideoMimeType(): string {
 export type CaptureMode = 'fullscreen' | 'window' | 'region';
 export type RegionRect = { x: number; y: number; width: number; height: number };
 
-/** Map app capture mode to the W3C Screen Capture displaySurface constraint */
+/** Map app capture mode to a displaySurface hint for getDisplayMedia's picker UI */
 export function captureModeToDisplaySurface(mode: CaptureMode): string {
 	// 'region' captures a full monitor first, then crops via canvas
 	return mode === 'window' ? 'window' : 'monitor';
@@ -92,17 +91,16 @@ export async function startRecording(
 				const { getCurrentWindow } = await import('@tauri-apps/api/window');
 				tauriWindow = getCurrentWindow();
 				await tauriWindow.minimize();
-			} catch { /* non-fatal */ }
+			} catch (err) { logger.warn('record', 'Failed to minimize window for screen picker', err); }
 		}
 
 		screenStream = await displayPromise;
 
-		// Restore the window after user picks a source
 		if (tauriWindow) {
 			try {
 				await tauriWindow.unminimize();
 				await tauriWindow.setFocus();
-			} catch { /* non-fatal */ }
+			} catch (err) { logger.warn('record', 'Failed to restore window after screen selection', err); }
 		}
 
 		logger.info('record', `Screen stream: ${screenStream.getVideoTracks()[0]?.label}`);
@@ -132,7 +130,9 @@ export async function startRecording(
 			await tmpVideo.play();
 			// Wait one frame for the video to render
 			await new Promise((r) => requestAnimationFrame(r));
-			tmpCanvas.getContext('2d')!.drawImage(tmpVideo, 0, 0, frameW, frameH);
+			const tmpCtx = tmpCanvas.getContext('2d');
+			if (!tmpCtx) throw new Error('Failed to create canvas context for region screenshot');
+			tmpCtx.drawImage(tmpVideo, 0, 0, frameW, frameH);
 			tmpVideo.pause();
 			tmpVideo.srcObject = null;
 
@@ -140,13 +140,21 @@ export async function startRecording(
 			appState.recordingState = 'selecting-region';
 
 			// Wait for user to draw a selection rectangle (resolved by confirmRegionSelection)
-			regionRect = await new Promise<RegionRect>((resolve, reject) => {
+			const selectedRegion = await new Promise<RegionRect | null>((resolve) => {
 				regionResolve = resolve;
-				regionReject = reject;
 			});
 			regionResolve = null;
-			regionReject = null;
 			appState.regionScreenshot = '';
+			// Wait for the overlay to leave the screen before the compositor starts
+			await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+			if (!selectedRegion) {
+				// User cancelled region selection — not an error, just reset
+				cleanup();
+				appState.recordingState = 'ready';
+				return;
+			}
+			regionRect = selectedRegion;
 		}
 
 		// Request microphone audio
@@ -163,11 +171,11 @@ export async function startRecording(
 			appState.webcamStream = await getWebcamStream();
 		}
 
-		// Determine video tracks: use canvas compositor if webcam is active
+		// Determine video tracks: use canvas compositor if webcam overlay or region crop is active
 		let videoTracks: MediaStreamTrack[];
 
 		if ((appState.webcamStream || regionRect) && screenStream) {
-			// Set up canvas compositor to overlay webcam onto screen capture
+			// Set up canvas compositor for region cropping and/or webcam overlay
 			const screenTrack = screenStream.getVideoTracks()[0];
 			const settings = screenTrack.getSettings();
 			const canvasW = settings.width || 1920;
@@ -241,7 +249,7 @@ export async function startRecording(
 			} else {
 				const canvasStream = compositorCanvas.captureStream(30);
 				videoTracks = canvasStream.getVideoTracks();
-				logger.info('record', `Compositor: ${canvasW}x${canvasH} with webcam overlay`);
+				logger.info('record', `Compositor: ${compositorCanvas.width}x${compositorCanvas.height}${webcamVideoEl ? ' with webcam overlay' : ''}`);
 			}
 		} else {
 			if (!screenStream) throw new Error('Screen capture was lost');
@@ -505,9 +513,10 @@ function cleanup() {
 	appState.webcamStream = null;
 	mediaRecorder = null;
 	audioRecorder = null;
+	// Resolve any pending region selection before nullifying to prevent dangling promises
+	if (regionResolve) regionResolve(null);
 	regionRect = null;
 	regionResolve = null;
-	regionReject = null;
 	appState.regionScreenshot = '';
 }
 
@@ -518,6 +527,27 @@ export async function getAudioDevices(): Promise<MediaDeviceInfo[]> {
 	return devices.filter((d) => d.kind === 'audioinput');
 }
 
+/** Map a CSS-space selection rectangle to source video pixel coordinates */
+export function mapSelectionToSource(
+	sel: RegionRect,
+	displayW: number,
+	displayH: number,
+	sourceW: number,
+	sourceH: number
+): RegionRect {
+	if (displayW === 0 || displayH === 0) {
+		return { x: 0, y: 0, width: 0, height: 0 };
+	}
+	const scaleX = sourceW / displayW;
+	const scaleY = sourceH / displayH;
+	return {
+		x: Math.round(sel.x * scaleX),
+		y: Math.round(sel.y * scaleY),
+		width: Math.round(sel.width * scaleX),
+		height: Math.round(sel.height * scaleY)
+	};
+}
+
 /** Called by RegionSelector when user finishes drawing a selection rectangle */
 export function confirmRegionSelection(rect: RegionRect): void {
 	if (regionResolve) {
@@ -525,9 +555,9 @@ export function confirmRegionSelection(rect: RegionRect): void {
 	}
 }
 
-/** Called by RegionSelector when user cancels (Escape key) */
+/** Called by RegionSelector when user cancels (Escape key) — resolves with null to exit cleanly */
 export function cancelRegionSelection(): void {
-	if (regionReject) {
-		regionReject();
+	if (regionResolve) {
+		regionResolve(null);
 	}
 }
