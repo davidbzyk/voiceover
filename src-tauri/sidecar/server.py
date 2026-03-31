@@ -214,6 +214,25 @@ async def transcribe(file: UploadFile = File(...)):
         temp_path.unlink(missing_ok=True)
 
 
+@app.post("/transcribe-path")
+async def transcribe_path(request: dict):
+    """Transcribe audio from a file already on disk (used after YouTube extraction)."""
+    audio_path = request.get("audio_path", "")
+    if not audio_path or not Path(audio_path).exists():
+        return JSONResponse(status_code=400, content={"error": "audio_path not found"})
+
+    try:
+        logger.info(f"Transcribing from path: {audio_path}")
+        from tts import transcribe as do_transcribe
+
+        result = do_transcribe(audio_path, str(DATA_DIR / "models"))
+        logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
+        return result
+    except Exception as e:
+        logger.error(f"Transcription failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
@@ -471,6 +490,24 @@ async def upload_sample(
         return JSONResponse(status_code=404, content={"error": str(e)})
 
 
+@app.post("/profiles/{profile_id}/samples/from-path")
+async def add_sample_from_path(profile_id: str, request: dict):
+    """Add a voice sample from a file already on disk (used after YouTube extraction)."""
+    from profiles import add_sample
+
+    audio_path = request.get("audio_path", "")
+    reference_text = request.get("reference_text", "")
+
+    if not audio_path or not Path(audio_path).exists():
+        return JSONResponse(status_code=400, content={"error": "audio_path not found"})
+
+    try:
+        audio_bytes = Path(audio_path).read_bytes()
+        return add_sample(DATA_DIR, profile_id, audio_bytes, reference_text)
+    except ValueError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+
+
 @app.delete("/profiles/{profile_id}")
 async def delete_profile(profile_id: str):
     """Delete a voice profile."""
@@ -516,17 +553,22 @@ async def models_status():
 @app.post("/models/download")
 async def download_model(request: dict):
     """Download a model from HuggingFace. Streams progress as SSE."""
-    model = request.get("model", "")
+    # Accept both "model" and "model_name" keys (Voicebox compat)
+    model = request.get("model_name", "") or request.get("model", "")
 
+    # Accept short names ("whisper", "qwen") and full names from /models/status
     model_map = {
         "whisper": "mlx-community/whisper-large-v3-turbo",
+        "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
         "qwen": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "qwen-tts-1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "qwen-tts-1.7b": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     }
 
     if model not in model_map:
         return JSONResponse(
             status_code=400,
-            content={"error": f"Unknown model: {model}. Use 'whisper' or 'qwen'."},
+            content={"error": f"Unknown model: {model}"},
         )
 
     repo_id = model_map[model]

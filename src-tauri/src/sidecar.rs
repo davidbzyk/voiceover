@@ -130,14 +130,22 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
                 "--parent-pid",
                 &parent_pid.to_string(),
             ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to spawn sidecar binary: {e}"))?
     } else if let Some(server_py) = resolve_dev_server_path() {
-        // Dev mode: prefer the sidecar venv Python, fall back to system python3
+        // Dev mode: prefer the project-root .sidecar-venv, fall back to system python3
+        // The venv lives outside src-tauri/ to avoid triggering cargo's file watcher.
         let sidecar_dir = server_py.parent().unwrap_or(Path::new("."));
-        let venv_python = sidecar_dir.join(".venv").join("bin").join("python3");
+        let project_root_venv = sidecar_dir
+            .parent() // src-tauri/
+            .and_then(|p| p.parent()) // project root
+            .map(|p| p.join(".sidecar-venv").join("bin").join("python3"));
+        let local_venv = sidecar_dir.join(".venv").join("bin").join("python3");
+        let venv_python = project_root_venv
+            .filter(|p| p.exists())
+            .unwrap_or(local_venv);
         let python = if venv_python.exists() {
             log::info!("[sidecar] Dev mode: using venv {:?}", venv_python);
             venv_python
@@ -146,6 +154,7 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
             PathBuf::from("python3")
         };
         Command::new(&python)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .args([
                 server_py.to_str().unwrap(),
                 "--port",
@@ -155,8 +164,8 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
                 "--parent-pid",
                 &parent_pid.to_string(),
             ])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to spawn Python sidecar: {e}"))?
     } else {

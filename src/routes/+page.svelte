@@ -14,6 +14,7 @@
 	} from '$lib/recorder.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { logger } from '$lib/logger';
+	import { tauriInvoke } from '$lib/tauri';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
 	import RegionSelector from '$lib/RegionSelector.svelte';
 
@@ -25,6 +26,20 @@
 	let totalPausedMs = $state(0);
 	let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
+	// Local voice profiles
+	interface LocalVoice { id: string; name: string; language: string; }
+	let localVoices = $state<LocalVoice[]>([]);
+
+	async function loadLocalVoicesIfNeeded() {
+		if (appState.config.provider === 'local' && isTauri() && localVoices.length === 0) {
+			try {
+				localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
+			} catch {
+				// Sidecar might not be ready yet
+			}
+		}
+	}
+
 	onMount(async () => {
 		try {
 			audioDevices = await getAudioDevices();
@@ -32,9 +47,13 @@
 				selectedDeviceId = audioDevices[0].deviceId;
 			}
 		} catch (err) {
-			// Permission not yet granted — will prompt on record
 			logger.debug('audio', 'Could not enumerate devices at mount', err);
 		}
+
+		// Config may not be loaded yet at mount — load voices after a short delay
+		await loadLocalVoicesIfNeeded();
+		// Retry after config has had time to load from Tauri
+		setTimeout(loadLocalVoicesIfNeeded, 1500);
 	});
 
 	onDestroy(() => {
@@ -117,6 +136,9 @@
 	const isRecording = $derived(
 		appState.recordingState === 'recording' || appState.recordingState === 'paused'
 	);
+	const isSelecting = $derived(
+		appState.recordingState === 'selecting' || appState.recordingState === 'selecting-region'
+	);
 
 	const captureModes: { value: CaptureMode; label: string; icon: string }[] = [
 		{ value: 'fullscreen', label: 'Full Screen', icon: '🖥️' },
@@ -182,30 +204,6 @@
 				</span>
 			</button>
 
-			<!-- Voice selector -->
-			<div class="option-card">
-				<span class="option-icon">🎙️</span>
-				{#if appState.config.voices.length > 0}
-					<select
-						class="option-select"
-						value={appState.selectedVoice?.id ?? ''}
-						onchange={(e) => {
-							const target = e.target as HTMLSelectElement;
-							appState.config.voices = appState.config.voices.map((v) => ({
-								...v,
-								is_default: v.id === target.value
-							}));
-							appState.saveConfig();
-						}}
-					>
-						{#each appState.config.voices as voice}
-							<option value={voice.id}>{voice.name}</option>
-						{/each}
-					</select>
-				{:else}
-					<span class="option-hint">No voices — add in Settings</span>
-				{/if}
-			</div>
 		</div>
 	</div>
 
@@ -215,9 +213,13 @@
 			<div>
 				<div class="toggle-label">🎙️ Voice Replacement</div>
 				<div class="toggle-hint">
-					{appState.config.preferences.voice_replacement_enabled
-						? `Using: ${appState.selectedVoice?.name ?? 'None'}`
-						: 'Disabled — raw recording only'}
+					{#if !appState.config.preferences.voice_replacement_enabled}
+						Disabled — raw recording only
+					{:else if appState.config.provider === 'local'}
+						Local: {localVoices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? 'None selected'}
+					{:else}
+						ElevenLabs: {appState.selectedVoice?.name ?? 'None'}
+					{/if}
 				</div>
 			</div>
 			<button
@@ -231,6 +233,80 @@
 				<div class="toggle-knob"></div>
 			</button>
 		</div>
+
+		{#if appState.config.preferences.voice_replacement_enabled}
+			<!-- Provider toggle -->
+			<div class="provider-toggle">
+				<button
+					class="provider-btn"
+					class:active={appState.config.provider === 'elevenlabs'}
+					onclick={() => { appState.config.provider = 'elevenlabs'; appState.saveConfig(); }}
+				>
+					ElevenLabs
+				</button>
+				<button
+					class="provider-btn"
+					class:active={appState.config.provider === 'local'}
+					onclick={async () => {
+						appState.config.provider = 'local';
+						appState.saveConfig();
+						if (isTauri()) {
+							try { localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices'); } catch {}
+						}
+					}}
+				>
+					Local
+				</button>
+			</div>
+
+			<!-- Voice selector based on provider -->
+			{#if appState.config.provider === 'elevenlabs'}
+				<div class="option-card">
+					<span class="option-icon">🎙️</span>
+					{#if appState.config.voices.length > 0}
+						<select
+							class="option-select"
+							value={appState.selectedVoice?.id ?? ''}
+							onchange={(e) => {
+								const target = e.target as HTMLSelectElement;
+								appState.config.voices = appState.config.voices.map((v) => ({
+									...v,
+									is_default: v.id === target.value
+								}));
+								appState.saveConfig();
+							}}
+						>
+							{#each appState.config.voices as voice}
+								<option value={voice.id}>{voice.name}</option>
+							{/each}
+						</select>
+					{:else}
+						<span class="option-hint">No voices — add in Settings</span>
+					{/if}
+				</div>
+			{:else}
+				<div class="option-card">
+					<span class="option-icon">🎙️</span>
+					{#if localVoices.length > 0}
+						<select
+							class="option-select"
+							value={appState.config.local_voice_profile_id}
+							onchange={(e) => {
+								appState.config.local_voice_profile_id = (e.target as HTMLSelectElement).value;
+								appState.saveConfig();
+							}}
+						>
+							<option value="">Select a voice...</option>
+							{#each localVoices as voice}
+								<option value={voice.id}>{voice.name} ({voice.language})</option>
+							{/each}
+						</select>
+					{:else}
+						<span class="option-hint">No local voices — create in Settings</span>
+					{/if}
+				</div>
+			{/if}
+		{/if}
 	</div>
 
 	<!-- Record / Stop controls -->
@@ -251,6 +327,13 @@
 				<button class="ctrl-btn stop" onclick={handleStop} aria-label="Stop">⏹</button>
 				<button class="ctrl-btn cancel" onclick={handleCancel} aria-label="Cancel">✕</button>
 			</div>
+		{:else if isSelecting}
+			<!-- Waiting for screen share permission -->
+			<div class="record-btn starting" aria-label="Waiting for screen selection">
+				<div class="record-dot"></div>
+			</div>
+			<div class="record-hint">Select a screen to share...</div>
+			<button class="ctrl-btn cancel" onclick={handleCancel} aria-label="Cancel">✕</button>
 		{:else}
 			<!-- Ready to record -->
 			<button
@@ -450,6 +533,33 @@
 		left: 22px;
 	}
 
+	.provider-toggle {
+		display: flex;
+		gap: 4px;
+		background: #0f172a;
+		border-radius: 6px;
+		padding: 3px;
+	}
+	.provider-btn {
+		flex: 1;
+		background: transparent;
+		border: none;
+		color: #64748b;
+		padding: 8px 12px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 13px;
+		font-weight: 500;
+		transition: all 0.15s;
+	}
+	.provider-btn.active {
+		background: #334155;
+		color: #f1f5f9;
+	}
+	.provider-btn:hover:not(.active) {
+		color: #94a3b8;
+	}
+
 	.record-area {
 		flex: 1;
 		display: flex;
@@ -478,6 +588,10 @@
 	.record-btn:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+	.record-btn.starting {
+		opacity: 0.6;
+		animation: pulse 1.5s infinite;
 	}
 	.record-dot {
 		width: 28px;

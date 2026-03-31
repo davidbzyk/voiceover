@@ -52,6 +52,29 @@
 		await appState.saveConfig();
 	}
 
+	async function setDefaultLocalVoice(profileId: string) {
+		appState.config.local_voice_profile_id = profileId;
+		await appState.saveConfig();
+	}
+
+	async function removeLocalVoice(profileId: string) {
+		try {
+			await tauriInvoke<string>('sidecar_fetch', {
+				path: `/profiles/${profileId}`,
+				method: 'DELETE',
+				body: null,
+			});
+			// If we deleted the active voice, clear the selection
+			if (appState.config.local_voice_profile_id === profileId) {
+				appState.config.local_voice_profile_id = '';
+				await appState.saveConfig();
+			}
+			await loadLocalVoices();
+		} catch (err) {
+			logger.error('settings', 'Failed to delete voice profile', err);
+		}
+	}
+
 	async function saveAndBack() {
 		await appState.saveConfig();
 		goto('/');
@@ -195,32 +218,35 @@
 	</div>
 
 	{#if appState.config.provider === 'local'}
-		<!-- Local TTS Configuration -->
+		<!-- Local Voice Collection -->
 		<div class="section">
-			<div class="section-title">Local Voice (Apple Silicon)</div>
+			<div class="section-header">
+				<div class="section-title">Voice Collection</div>
+			</div>
 			<div class="card">
 				{#if localLoading}
 					<div class="hint-text">Loading voices...</div>
 				{:else if localError}
 					<div class="status invalid">{localError}</div>
+				{:else if localVoices.length > 0}
+					{#each localVoices as voice}
+						<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
+							<div class="voice-info">
+								<div class="voice-name">{voice.name}</div>
+								<div class="voice-id">{voice.id.slice(0, 20)}</div>
+							</div>
+							<div class="voice-actions">
+								{#if voice.id === appState.config.local_voice_profile_id}
+									<span class="default-badge">Default</span>
+								{:else}
+									<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
+								{/if}
+								<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
+							</div>
+						</div>
+					{/each}
 				{:else}
-					<!-- Voice profile selection -->
-					<label class="field-label" for="local-voice">Voice Profile</label>
-					{#if localVoices.length > 0}
-						<select
-							id="local-voice"
-							class="input"
-							value={appState.config.local_voice_profile_id}
-							onchange={(e) => setLocalVoice((e.target as HTMLSelectElement).value)}
-						>
-							<option value="">Select a voice...</option>
-							{#each localVoices as voice}
-								<option value={voice.id}>{voice.name} ({voice.language})</option>
-							{/each}
-						</select>
-					{:else}
-						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
-					{/if}
+					<div class="hint-text">No voice profiles yet. Create one to get started.</div>
 				{/if}
 
 				<button class="small-btn accent" onclick={() => goto('/create-voice')}>

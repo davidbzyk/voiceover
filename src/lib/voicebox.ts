@@ -56,7 +56,7 @@ export class VoiceboxClient {
 
 	/** Trigger model download */
 	async downloadModel(modelName: string): Promise<void> {
-		await this.jsonRequest('/models/download', 'POST', { model: modelName });
+		await this.jsonRequest('/models/download', 'POST', { model_name: modelName });
 	}
 
 	/** Create a new voice profile */
