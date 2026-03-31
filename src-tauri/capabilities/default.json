@@ -43,6 +43,12 @@
           "sidecar": true,
           "cmd": "binaries/ffmpeg",
           "args": true
+        },
+        {
+          "name": "voiceover-tts-sidecar",
+          "sidecar": true,
+          "cmd": "binaries/voiceover-tts",
+          "args": true
         }
       ]
     },

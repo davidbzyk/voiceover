@@ -49,7 +49,7 @@
 	];
 
 	function getClient(): VoiceboxClient {
-		return new VoiceboxClient(appState.config.local_endpoint);
+		return new VoiceboxClient();
 	}
 
 	onMount(() => {
@@ -169,7 +169,7 @@
 		try {
 			const gen = await client.testGenerate(profileId, testText.trim());
 			await client.pollGenerationStatus(gen.id);
-			generatedAudioUrl = client.getAudioUrl(gen.id);
+			generatedAudioUrl = await client.getAudioUrl(gen.id);
 		} catch (err) {
 			generateError = String(err);
 		}
@@ -214,16 +214,11 @@
 				{:else if healthy === false}
 					<div class="status-row">
 						<span class="status-dot disconnected"></span>
-						<span>Voicebox is not running</span>
+						<span>TTS engine is not running</span>
 					</div>
 					<div class="hint-text">
-						Start Voicebox to continue. Make sure it is running at:
+						The local TTS sidecar failed to start. Try restarting the app.
 					</div>
-					<input
-						bind:value={appState.config.local_endpoint}
-						placeholder="http://localhost:17493"
-						class="input"
-					/>
 					{#if prerequisiteError}
 						<div class="status invalid">{prerequisiteError}</div>
 					{/if}

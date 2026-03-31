@@ -56,7 +56,8 @@ export type AppConfig = {
 	};
 	google_drive: GoogleDrive;
 	provider: string;
-	local_endpoint: string;
+	/** @deprecated Kept for backward compatibility with old config files. Not used — sidecar runs on managed port. */
+	local_endpoint?: string;
 	local_voice_profile_id: string;
 };
 
@@ -92,7 +93,6 @@ class AppState {
 			expires_at: 0
 		},
 		provider: 'elevenlabs',
-		local_endpoint: 'http://localhost:17493',
 		local_voice_profile_id: ''
 	});
 

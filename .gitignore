@@ -35,5 +35,11 @@ firebase-debug.log
 # Bundled sidecar binaries (large static ffmpeg ~60MB)
 src-tauri/binaries/
 
+# Sidecar Python build artifacts
+src-tauri/sidecar/__pycache__/
+src-tauri/sidecar/dist/
+src-tauri/sidecar/build/
+src-tauri/sidecar/.venv/
+
 # Superpowers
 .superpowers/

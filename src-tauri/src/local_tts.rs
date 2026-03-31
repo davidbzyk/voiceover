@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use tauri::Manager;
 
 /// Default polling interval when waiting for generation to complete.
 const POLL_INTERVAL_MS: u64 = 500;
@@ -10,7 +11,7 @@ const POLL_TIMEOUT_SECS: u64 = 300;
 // Public types (shared with the frontend via Tauri commands)
 // ---------------------------------------------------------------------------
 
-/// A voice profile available on the local Voicebox server.
+/// A voice profile available on the local TTS sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalVoice {
     pub id: String,
@@ -19,7 +20,7 @@ pub struct LocalVoice {
     pub language: String,
 }
 
-/// Status of a model on the local Voicebox server.
+/// Status of a model on the local TTS sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub model_name: String,
@@ -31,7 +32,7 @@ pub struct ModelInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Internal types for Voicebox API responses
+// Internal types for sidecar API responses
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -53,19 +54,24 @@ struct GenerationStatus {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ModelsResponse {
+    pub models: Vec<ModelInfo>,
+}
+
 // ---------------------------------------------------------------------------
-// Core speech-to-speech function
+// Core speech-to-speech function (uses managed sidecar)
 // ---------------------------------------------------------------------------
 
-/// Send audio to a local Voicebox server for voice transformation.
+/// Send audio to the managed TTS sidecar for voice transformation.
 ///
 /// The flow is:
-/// 1. POST multipart to `{endpoint}/transcribe` to get text from audio
-/// 2. POST JSON to `{endpoint}/generate` with profile_id + transcribed text
-/// 3. Poll `{endpoint}/generate/{id}/status` until completed or failed
-/// 4. Download result from `{endpoint}/audio/{id}` and save to `output_wav`
+/// 1. POST multipart to `/transcribe` to get text from audio
+/// 2. POST JSON to `/generate` with profile_id + transcribed text
+/// 3. Poll `/generate/{id}/status` until completed or failed (plain JSON)
+/// 4. Download result from `/audio/{id}` and save to `output_wav`
 pub async fn speech_to_speech(
-    endpoint: &str,
+    port: u16,
     profile_id: &str,
     input_wav: &Path,
     output_wav: &Path,
@@ -73,19 +79,19 @@ pub async fn speech_to_speech(
     let audio_bytes = std::fs::read(input_wav)
         .map_err(|e| format!("Failed to read input audio: {e}"))?;
 
+    let base = format!("http://127.0.0.1:{}", port);
+
     log::info!(
-        "[local_tts] S2S request: profile={}, input_size={}KB, endpoint={}",
+        "[local_tts] S2S request: profile={}, input_size={}KB, port={}",
         profile_id,
         audio_bytes.len() / 1024,
-        endpoint,
+        port,
     );
 
     let client = reqwest::Client::new();
-    let base = endpoint.trim_end_matches('/');
     let start = std::time::Instant::now();
 
     // --- Step 1: Transcribe audio to text ---
-    let transcribe_url = format!("{}/transcribe", base);
     let form = reqwest::multipart::Form::new()
         .part(
             "file",
@@ -96,7 +102,7 @@ pub async fn speech_to_speech(
         );
 
     let response = client
-        .post(&transcribe_url)
+        .post(format!("{}/transcribe", base))
         .multipart(form)
         .send()
         .await
@@ -126,15 +132,14 @@ pub async fn speech_to_speech(
     }
 
     // --- Step 2: Generate speech with voice profile ---
-    let generate_url = format!("{}/generate", base);
     let gen_body = serde_json::json!({
         "profile_id": profile_id,
         "text": transcription.text,
-        "engine": "qwen"
+        "language": "en"
     });
 
     let response = client
-        .post(&generate_url)
+        .post(format!("{}/generate", base))
         .json(&gen_body)
         .send()
         .await
@@ -158,12 +163,8 @@ pub async fn speech_to_speech(
         start.elapsed().as_secs_f32(),
     );
 
-    // --- Step 2: Poll for completion ---
-    let status_url = format!(
-        "{}/generate/{}/status",
-        endpoint.trim_end_matches('/'),
-        generation_id,
-    );
+    // --- Step 3: Poll for completion (plain JSON, not SSE) ---
+    let status_url = format!("{}/generate/{}/status", base, generation_id);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(POLL_TIMEOUT_SECS);
 
     loop {
@@ -187,17 +188,10 @@ pub async fn speech_to_speech(
             return Err(format!("Generation status check failed: {body}"));
         }
 
-        let body = poll_resp.text().await
-            .map_err(|e| format!("Failed to read generation status: {e}"))?;
-        // Status endpoint returns an SSE stream with multiple "data: {...}" lines.
-        // Parse the last event to get the most recent status.
-        let json_str = body.lines()
-            .rev()
-            .filter_map(|line| line.trim().strip_prefix("data:").map(|s| s.trim()))
-            .find(|s| !s.is_empty())
-            .unwrap_or("{}");
-        let gen_status: GenerationStatus = serde_json::from_str(json_str)
-            .map_err(|e| format!("Failed to parse generation status: {e} — json: {}", &json_str[..json_str.len().min(200)]))?;
+        let gen_status: GenerationStatus = poll_resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse generation status: {e}"))?;
 
         match gen_status.status.as_str() {
             "completed" => {
@@ -219,12 +213,8 @@ pub async fn speech_to_speech(
         }
     }
 
-    // --- Step 3: Download the result ---
-    let audio_url = format!(
-        "{}/audio/{}",
-        endpoint.trim_end_matches('/'),
-        generation_id,
-    );
+    // --- Step 4: Download the result ---
+    let audio_url = format!("{}/audio/{}", base, generation_id);
     let audio_resp = client
         .get(&audio_url)
         .send()
@@ -250,42 +240,25 @@ pub async fn speech_to_speech(
 }
 
 // ---------------------------------------------------------------------------
-// Tauri commands
+// Tauri commands (all use managed sidecar)
 // ---------------------------------------------------------------------------
 
-/// Check if the Voicebox server is reachable.
+/// Check if the TTS sidecar is running and healthy.
 #[tauri::command]
-pub async fn test_local_connection(endpoint: String) -> Result<bool, String> {
-    let url = format!("{}/health", endpoint.trim_end_matches('/'));
-    log::info!("[local_tts] Testing connection: {}", url);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            let ok = resp.status().is_success();
-            if ok {
-                log::info!("[local_tts] Connection OK");
-            } else {
-                log::warn!("[local_tts] Health check returned {}", resp.status());
-            }
-            Ok(ok)
-        }
-        Err(e) => {
-            log::warn!("[local_tts] Connection failed: {e}");
-            Ok(false)
-        }
+pub async fn test_local_connection(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app.state::<crate::sidecar::SidecarState>();
+    match crate::sidecar::get_port(&state) {
+        Some(p) => Ok(crate::sidecar::health_check(p).await),
+        None => Ok(false),
     }
 }
 
-/// List voice profiles available on the Voicebox server.
+/// List voice profiles available on the TTS sidecar.
 #[tauri::command]
-pub async fn list_local_voices(endpoint: String) -> Result<Vec<LocalVoice>, String> {
-    let url = format!("{}/profiles", endpoint.trim_end_matches('/'));
-    log::info!("[local_tts] Fetching voice profiles from {}", url);
+pub async fn list_local_voices(app: tauri::AppHandle) -> Result<Vec<LocalVoice>, String> {
+    let port = crate::sidecar::ensure_running(&app).await?;
+    let url = format!("http://127.0.0.1:{}/profiles", port);
+    log::info!("[local_tts] Fetching voice profiles from sidecar port {}", port);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -312,11 +285,12 @@ pub async fn list_local_voices(endpoint: String) -> Result<Vec<LocalVoice>, Stri
     Ok(voices)
 }
 
-/// Check the download/load status of models on the Voicebox server.
+/// Check the download/load status of models on the TTS sidecar.
 #[tauri::command]
-pub async fn check_model_status(endpoint: String) -> Result<Vec<ModelInfo>, String> {
-    let url = format!("{}/models/status", endpoint.trim_end_matches('/'));
-    log::info!("[local_tts] Checking model status at {}", url);
+pub async fn check_model_status(app: tauri::AppHandle) -> Result<Vec<ModelInfo>, String> {
+    let port = crate::sidecar::ensure_running(&app).await?;
+    let url = format!("http://127.0.0.1:{}/models/status", port);
+    log::info!("[local_tts] Checking model status on sidecar port {}", port);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -334,25 +308,26 @@ pub async fn check_model_status(endpoint: String) -> Result<Vec<ModelInfo>, Stri
         return Err(format!("Failed to get model status: {body}"));
     }
 
-    let models: Vec<ModelInfo> = response
+    let resp: ModelsResponse = response
         .json()
         .await
         .map_err(|e| format!("Failed to parse model status: {e}"))?;
 
-    log::info!("[local_tts] Model status: {} models", models.len());
-    Ok(models)
+    log::info!("[local_tts] Model status: {} models", resp.models.len());
+    Ok(resp.models)
 }
 
-/// Generic proxy for Voicebox API calls from the frontend.
-/// Routes through Rust to bypass webview CORS restrictions.
+/// Proxy a JSON request to the TTS sidecar (for frontend use).
 #[tauri::command]
-pub async fn voicebox_fetch(
-    url: String,
+pub async fn sidecar_fetch(
+    app: tauri::AppHandle,
+    path: String,
     method: String,
     body: Option<String>,
-    content_type: Option<String>,
 ) -> Result<String, String> {
-    log::info!("[local_tts] Proxy {} {}", method, url);
+    let port = crate::sidecar::ensure_running(&app).await?;
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    log::info!("[local_tts] Sidecar {} {}", method, url);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -366,11 +341,8 @@ pub async fn voicebox_fetch(
         _ => client.get(&url),
     };
 
-    if let Some(ct) = content_type {
-        req = req.header("Content-Type", ct);
-    }
     if let Some(b) = body {
-        req = req.body(b);
+        req = req.header("Content-Type", "application/json").body(b);
     }
 
     let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
@@ -384,15 +356,18 @@ pub async fn voicebox_fetch(
     Ok(text)
 }
 
-/// Upload bytes to Voicebox via multipart form (for sample uploads).
+/// Upload bytes to the TTS sidecar via multipart form (for sample uploads).
 #[tauri::command]
-pub async fn voicebox_upload(
-    url: String,
+pub async fn sidecar_upload(
+    app: tauri::AppHandle,
+    path: String,
     file_bytes: Vec<u8>,
     file_name: String,
     file_field: String,
     fields: std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
+    let port = crate::sidecar::ensure_running(&app).await?;
+    let url = format!("http://127.0.0.1:{}{}", port, path);
     log::info!("[local_tts] Upload to {} (file: {}, {}KB)", url, file_name, file_bytes.len() / 1024);
 
     let mut form = reqwest::multipart::Form::new()
@@ -483,8 +458,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_connection_returns_false_for_unreachable() {
-        // Port 1 is almost certainly not running a Voicebox server
-        let result = test_local_connection("http://127.0.0.1:1".to_string()).await;
-        assert_eq!(result.unwrap(), false);
+        // Port 1 should not have our sidecar — use health_check directly
+        let result = crate::sidecar::health_check(1).await;
+        assert!(!result);
     }
 }

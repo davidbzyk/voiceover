@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.12
+mlx>=0.22.0
+mlx-whisper>=0.4.0
+huggingface-hub>=0.25.0
+numpy>=1.26.0
+soundfile>=0.12.0
+qwen-tts>=0.3.0
+torch>=2.4.0

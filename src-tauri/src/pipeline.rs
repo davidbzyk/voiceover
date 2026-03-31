@@ -2,6 +2,7 @@ use crate::config;
 use crate::elevenlabs;
 use crate::ffmpeg;
 use crate::local_tts;
+use crate::sidecar;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
@@ -138,8 +139,9 @@ pub async fn process_recording(
             })
             .ok();
 
+        let port = sidecar::ensure_running(&app).await?;
         local_tts::speech_to_speech(
-            &config.local_endpoint,
+            port,
             &config.local_voice_profile_id,
             &extracted_wav,
             &transformed_audio,

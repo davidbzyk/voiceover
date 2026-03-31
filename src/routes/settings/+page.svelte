@@ -34,16 +34,7 @@
 		localConnected = null;
 		localError = '';
 		try {
-			if (isTauri()) {
-				localConnected = await tauriInvoke<boolean>('test_local_connection', {
-					endpoint: appState.config.local_endpoint
-				});
-			} else {
-				const resp = await fetch(`${appState.config.local_endpoint}/health`, {
-					signal: AbortSignal.timeout(5000)
-				});
-				localConnected = resp.ok;
-			}
+			localConnected = await tauriInvoke<boolean>('test_local_connection');
 			if (localConnected) {
 				await loadLocalVoices();
 			}
@@ -56,14 +47,7 @@
 
 	async function loadLocalVoices() {
 		try {
-			if (isTauri()) {
-				localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices', {
-					endpoint: appState.config.local_endpoint
-				});
-			} else {
-				const resp = await fetch(`${appState.config.local_endpoint}/profiles`);
-				if (resp.ok) localVoices = await resp.json();
-			}
+			localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
 		} catch (err) {
 			logger.error('settings', 'Failed to load local voices', err);
 		}
@@ -277,19 +261,7 @@
 					</button>
 				{/if}
 
-				<!-- Endpoint config (collapsible) -->
-				<button class="link-btn" onclick={() => (showEndpointConfig = !showEndpointConfig)}>
-					{showEndpointConfig ? 'Hide' : 'Show'} endpoint config
-				</button>
-				{#if showEndpointConfig}
-					<label class="field-label" for="local-endpoint">Voicebox Endpoint</label>
-					<input
-						id="local-endpoint"
-						bind:value={appState.config.local_endpoint}
-						placeholder="http://localhost:17493"
-						class="input"
-					/>
-				{/if}
+				<!-- Sidecar is auto-managed — no endpoint configuration needed -->
 			</div>
 		</div>
 	{:else}
