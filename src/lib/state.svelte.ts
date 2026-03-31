@@ -55,6 +55,9 @@ export type AppConfig = {
 		webcam_position: 'bottom-left' | 'bottom-right';
 	};
 	google_drive: GoogleDrive;
+	provider: string;
+	local_endpoint: string;
+	local_voice_profile_id: string;
 };
 
 export type RecordingState =
@@ -87,7 +90,10 @@ class AppState {
 			email: '',
 			connected: false,
 			expires_at: 0
-		}
+		},
+		provider: 'elevenlabs',
+		local_endpoint: 'http://localhost:17493',
+		local_voice_profile_id: ''
 	});
 
 	webcamStream = $state<MediaStream | null>(null);
@@ -108,7 +114,9 @@ class AppState {
 	);
 
 	isConfigured = $derived(
-		this.config.elevenlabs_api_key.length > 0 && this.config.voices.length > 0
+		this.config.provider === 'local'
+			? !!this.config.local_voice_profile_id
+			: this.config.elevenlabs_api_key.length > 0 && this.config.voices.length > 0
 	);
 
 	/**

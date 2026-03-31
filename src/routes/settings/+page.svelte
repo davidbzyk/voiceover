@@ -1,13 +1,86 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { appState, isTauri, type Voice } from '$lib/state.svelte';
+	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
+	import { onMount } from 'svelte';
 
 	let newVoiceName = $state('');
 	let newVoiceId = $state('');
 	let apiKeyVisible = $state(false);
 	let testingKey = $state(false);
 	let keyValid = $state<boolean | null>(null);
+
+	// Local TTS state
+	interface LocalVoice {
+		id: string;
+		name: string;
+		language: string;
+	}
+	let localConnected = $state<boolean | null>(null);
+	let localConnecting = $state(false);
+	let localVoices = $state<LocalVoice[]>([]);
+	let localError = $state('');
+	let showEndpointConfig = $state(false);
+
+	onMount(() => {
+		if (appState.config.provider === 'local') {
+			testLocalConnection();
+		}
+	});
+
+	async function testLocalConnection() {
+		localConnecting = true;
+		localConnected = null;
+		localError = '';
+		try {
+			if (isTauri()) {
+				localConnected = await tauriInvoke<boolean>('test_local_connection', {
+					endpoint: appState.config.local_endpoint
+				});
+			} else {
+				const resp = await fetch(`${appState.config.local_endpoint}/health`, {
+					signal: AbortSignal.timeout(5000)
+				});
+				localConnected = resp.ok;
+			}
+			if (localConnected) {
+				await loadLocalVoices();
+			}
+		} catch (err) {
+			localConnected = false;
+			localError = String(err);
+		}
+		localConnecting = false;
+	}
+
+	async function loadLocalVoices() {
+		try {
+			if (isTauri()) {
+				localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices', {
+					endpoint: appState.config.local_endpoint
+				});
+			} else {
+				const resp = await fetch(`${appState.config.local_endpoint}/profiles`);
+				if (resp.ok) localVoices = await resp.json();
+			}
+		} catch (err) {
+			logger.error('settings', 'Failed to load local voices', err);
+		}
+	}
+
+	async function setProvider(provider: string) {
+		appState.config.provider = provider;
+		await appState.saveConfig();
+		if (provider === 'local') {
+			testLocalConnection();
+		}
+	}
+
+	async function setLocalVoice(profileId: string) {
+		appState.config.local_voice_profile_id = profileId;
+		await appState.saveConfig();
+	}
 
 	async function saveAndBack() {
 		await appState.saveConfig();
@@ -128,72 +201,165 @@
 		<h2>Settings</h2>
 	</div>
 
-	<!-- ElevenLabs API Key -->
-	<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
-		<div class="section-title">ElevenLabs</div>
-		<div class="card">
-			<label class="field-label" for="api-key">API Key</label>
-			<div class="key-row">
-				<input
-					id="api-key"
-					type={apiKeyVisible ? 'text' : 'password'}
-					bind:value={appState.config.elevenlabs_api_key}
-					placeholder="sk-..."
-					class="input"
-					autocomplete="off"
-				/>
-				<button class="small-btn" onclick={() => (apiKeyVisible = !apiKeyVisible)}>
-					{apiKeyVisible ? '🙈' : '👁️'}
-				</button>
-				<button class="small-btn" onclick={testApiKey} disabled={testingKey}>
-					{testingKey ? '...' : 'Test'}
-				</button>
-			</div>
-			{#if keyValid === true}
-				<div class="status valid">✓ Valid API key</div>
-			{:else if keyValid === false}
-				<div class="status invalid">✕ Invalid API key{testError ? `: ${testError}` : ''}</div>
-			{/if}
-		</div>
-	</form>
-
-	<!-- Voice Collection -->
+	<!-- TTS Provider Toggle -->
 	<div class="section">
-		<div class="section-header">
-			<div class="section-title">Voice Collection</div>
-		</div>
-
+		<div class="section-title">TTS Provider</div>
 		<div class="card">
-			{#each appState.config.voices as voice}
-				<div class="voice-item" class:default={voice.is_default}>
-					<div class="voice-info">
-						<div class="voice-name">{voice.name}</div>
-						<div class="voice-id">{voice.id}</div>
-					</div>
-					<div class="voice-actions">
-						{#if voice.is_default}
-							<span class="default-badge">★ Default</span>
-						{:else}
-							<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
-						{/if}
-						<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
-					</div>
-				</div>
-			{/each}
-
-			<div class="add-voice">
-				<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
-				<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
+			<div class="provider-toggle">
 				<button
-					class="small-btn accent"
-					onclick={addVoice}
-					disabled={!newVoiceName.trim() || !newVoiceId.trim()}
+					class="provider-btn"
+					class:active={appState.config.provider === 'elevenlabs'}
+					onclick={() => setProvider('elevenlabs')}
 				>
-					+ Add
+					ElevenLabs
+				</button>
+				<button
+					class="provider-btn"
+					class:active={appState.config.provider === 'local'}
+					onclick={() => setProvider('local')}
+				>
+					Local
 				</button>
 			</div>
 		</div>
 	</div>
+
+	{#if appState.config.provider === 'local'}
+		<!-- Local TTS Configuration -->
+		<div class="section">
+			<div class="section-title">Local Voice Server</div>
+			<div class="card">
+				<!-- Connection status -->
+				<div class="connection-row">
+					{#if localConnecting}
+						<span class="status-dot connecting"></span>
+						<span class="connection-text">Connecting...</span>
+					{:else if localConnected === true}
+						<span class="status-dot connected"></span>
+						<span class="connection-text">Connected to Voicebox</span>
+					{:else if localConnected === false}
+						<span class="status-dot disconnected"></span>
+						<span class="connection-text">Not connected</span>
+					{:else}
+						<span class="status-dot"></span>
+						<span class="connection-text">Not checked</span>
+					{/if}
+					<button class="small-btn" onclick={testLocalConnection} disabled={localConnecting}>
+						{localConnecting ? '...' : 'Retry'}
+					</button>
+				</div>
+
+				{#if localError}
+					<div class="status invalid">{localError}</div>
+				{/if}
+
+				{#if localConnected}
+					<!-- Voice profile selection -->
+					<label class="field-label" for="local-voice">Voice Profile</label>
+					{#if localVoices.length > 0}
+						<select
+							id="local-voice"
+							class="input"
+							value={appState.config.local_voice_profile_id}
+							onchange={(e) => setLocalVoice((e.target as HTMLSelectElement).value)}
+						>
+							<option value="">Select a voice...</option>
+							{#each localVoices as voice}
+								<option value={voice.id}>{voice.name} ({voice.language})</option>
+							{/each}
+						</select>
+					{:else}
+						<div class="hint-text">No voice profiles found. Create one to get started.</div>
+					{/if}
+
+					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+						+ Create Voice
+					</button>
+				{/if}
+
+				<!-- Endpoint config (collapsible) -->
+				<button class="link-btn" onclick={() => (showEndpointConfig = !showEndpointConfig)}>
+					{showEndpointConfig ? 'Hide' : 'Show'} endpoint config
+				</button>
+				{#if showEndpointConfig}
+					<label class="field-label" for="local-endpoint">Voicebox Endpoint</label>
+					<input
+						id="local-endpoint"
+						bind:value={appState.config.local_endpoint}
+						placeholder="http://localhost:17493"
+						class="input"
+					/>
+				{/if}
+			</div>
+		</div>
+	{:else}
+		<!-- ElevenLabs API Key -->
+		<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
+			<div class="section-title">ElevenLabs</div>
+			<div class="card">
+				<label class="field-label" for="api-key">API Key</label>
+				<div class="key-row">
+					<input
+						id="api-key"
+						type={apiKeyVisible ? 'text' : 'password'}
+						bind:value={appState.config.elevenlabs_api_key}
+						placeholder="sk-..."
+						class="input"
+						autocomplete="off"
+					/>
+					<button class="small-btn" onclick={() => (apiKeyVisible = !apiKeyVisible)}>
+						{apiKeyVisible ? '🙈' : '👁️'}
+					</button>
+					<button class="small-btn" onclick={testApiKey} disabled={testingKey}>
+						{testingKey ? '...' : 'Test'}
+					</button>
+				</div>
+				{#if keyValid === true}
+					<div class="status valid">✓ Valid API key</div>
+				{:else if keyValid === false}
+					<div class="status invalid">✕ Invalid API key{testError ? `: ${testError}` : ''}</div>
+				{/if}
+			</div>
+		</form>
+
+		<!-- Voice Collection -->
+		<div class="section">
+			<div class="section-header">
+				<div class="section-title">Voice Collection</div>
+			</div>
+
+			<div class="card">
+				{#each appState.config.voices as voice}
+					<div class="voice-item" class:default={voice.is_default}>
+						<div class="voice-info">
+							<div class="voice-name">{voice.name}</div>
+							<div class="voice-id">{voice.id}</div>
+						</div>
+						<div class="voice-actions">
+							{#if voice.is_default}
+								<span class="default-badge">★ Default</span>
+							{:else}
+								<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
+							{/if}
+							<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
+						</div>
+					</div>
+				{/each}
+
+				<div class="add-voice">
+					<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
+					<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
+					<button
+						class="small-btn accent"
+						onclick={addVoice}
+						disabled={!newVoiceName.trim() || !newVoiceId.trim()}
+					>
+						+ Add
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Output -->
 	<div class="section">
@@ -323,6 +489,18 @@
 	.input:focus {
 		border-color: #f97316;
 	}
+	select.input {
+		appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2364748b' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 10px center;
+		padding-right: 28px;
+		cursor: pointer;
+	}
+	select.input option {
+		background: #0f172a;
+		color: #cbd5e1;
+	}
 	.key-row {
 		display: flex;
 		gap: 6px;
@@ -356,6 +534,73 @@
 	.status.invalid {
 		color: #ef4444;
 	}
+
+	/* Provider toggle */
+	.provider-toggle {
+		display: flex;
+		gap: 4px;
+		background: #0f172a;
+		border-radius: 6px;
+		padding: 3px;
+	}
+	.provider-btn {
+		flex: 1;
+		background: transparent;
+		border: none;
+		color: #64748b;
+		padding: 8px 12px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 13px;
+		font-weight: 500;
+		transition: all 0.15s;
+	}
+	.provider-btn.active {
+		background: #334155;
+		color: #f1f5f9;
+	}
+	.provider-btn:hover:not(.active) {
+		color: #94a3b8;
+	}
+
+	/* Local connection status */
+	.connection-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.status-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #475569;
+		flex-shrink: 0;
+	}
+	.status-dot.connected {
+		background: #22c55e;
+	}
+	.status-dot.disconnected {
+		background: #ef4444;
+	}
+	.status-dot.connecting {
+		background: #f59e0b;
+		animation: pulse 1s infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
+	}
+	.connection-text {
+		font-size: 12px;
+		color: #cbd5e1;
+		flex: 1;
+	}
+	.hint-text {
+		font-size: 11px;
+		color: #64748b;
+		line-height: 1.4;
+	}
+
 	.voice-item {
 		display: flex;
 		justify-content: space-between;
