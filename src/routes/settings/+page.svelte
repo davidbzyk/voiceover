@@ -17,47 +17,33 @@
 		name: string;
 		language: string;
 	}
-	let localConnected = $state<boolean | null>(null);
-	let localConnecting = $state(false);
 	let localVoices = $state<LocalVoice[]>([]);
+	let localLoading = $state(false);
 	let localError = $state('');
-	let showEndpointConfig = $state(false);
 
 	onMount(() => {
 		if (appState.config.provider === 'local') {
-			testLocalConnection();
+			loadLocalVoices();
 		}
 	});
 
-	async function testLocalConnection() {
-		localConnecting = true;
-		localConnected = null;
-		localError = '';
-		try {
-			localConnected = await tauriInvoke<boolean>('test_local_connection');
-			if (localConnected) {
-				await loadLocalVoices();
-			}
-		} catch (err) {
-			localConnected = false;
-			localError = String(err);
-		}
-		localConnecting = false;
-	}
-
 	async function loadLocalVoices() {
+		localLoading = true;
+		localError = '';
 		try {
 			localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
 		} catch (err) {
+			localError = 'TTS engine unavailable. Try restarting the app.';
 			logger.error('settings', 'Failed to load local voices', err);
 		}
+		localLoading = false;
 	}
 
 	async function setProvider(provider: string) {
 		appState.config.provider = provider;
 		await appState.saveConfig();
 		if (provider === 'local') {
-			testLocalConnection();
+			loadLocalVoices();
 		}
 	}
 
@@ -211,33 +197,13 @@
 	{#if appState.config.provider === 'local'}
 		<!-- Local TTS Configuration -->
 		<div class="section">
-			<div class="section-title">Local Voice Server</div>
+			<div class="section-title">Local Voice (Apple Silicon)</div>
 			<div class="card">
-				<!-- Connection status -->
-				<div class="connection-row">
-					{#if localConnecting}
-						<span class="status-dot connecting"></span>
-						<span class="connection-text">Connecting...</span>
-					{:else if localConnected === true}
-						<span class="status-dot connected"></span>
-						<span class="connection-text">Connected to Voicebox</span>
-					{:else if localConnected === false}
-						<span class="status-dot disconnected"></span>
-						<span class="connection-text">Not connected</span>
-					{:else}
-						<span class="status-dot"></span>
-						<span class="connection-text">Not checked</span>
-					{/if}
-					<button class="small-btn" onclick={testLocalConnection} disabled={localConnecting}>
-						{localConnecting ? '...' : 'Retry'}
-					</button>
-				</div>
-
-				{#if localError}
+				{#if localLoading}
+					<div class="hint-text">Loading voices...</div>
+				{:else if localError}
 					<div class="status invalid">{localError}</div>
-				{/if}
-
-				{#if localConnected}
+				{:else}
 					<!-- Voice profile selection -->
 					<label class="field-label" for="local-voice">Voice Profile</label>
 					{#if localVoices.length > 0}
@@ -253,15 +219,13 @@
 							{/each}
 						</select>
 					{:else}
-						<div class="hint-text">No voice profiles found. Create one to get started.</div>
+						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
 					{/if}
-
-					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
-						+ Create Voice
-					</button>
 				{/if}
 
-				<!-- Sidecar is auto-managed — no endpoint configuration needed -->
+				<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+					+ Create Voice
+				</button>
 			</div>
 		</div>
 	{:else}
