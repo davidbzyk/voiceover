@@ -499,38 +499,6 @@
 		color: #94a3b8;
 	}
 
-	/* Local connection status */
-	.connection-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-	.status-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: #475569;
-		flex-shrink: 0;
-	}
-	.status-dot.connected {
-		background: #22c55e;
-	}
-	.status-dot.disconnected {
-		background: #ef4444;
-	}
-	.status-dot.connecting {
-		background: #f59e0b;
-		animation: pulse 1s infinite;
-	}
-	@keyframes pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
-	}
-	.connection-text {
-		font-size: 12px;
-		color: #cbd5e1;
-		flex: 1;
-	}
 	.hint-text {
 		font-size: 11px;
 		color: #64748b;
