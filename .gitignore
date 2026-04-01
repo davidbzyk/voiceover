@@ -44,3 +44,6 @@ src-tauri/sidecar/.venv/
 
 # Superpowers
 .superpowers/
+.hex-skills/
+Plans/
+docs/
