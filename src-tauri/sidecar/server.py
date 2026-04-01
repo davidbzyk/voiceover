@@ -289,6 +289,7 @@ async def generate(request: dict):
         from chunked_tts import (
             assemble_timed_segments,
             concatenate_audio_chunks,
+            pad_audio_to_match_timing,
             split_text_into_chunks,
         )
 
@@ -355,6 +356,14 @@ async def generate(request: dict):
                         if seg_sr is None:
                             seg_sr = sub_sr
                     seg_audio = concatenate_audio_chunks(sub_audios, seg_sr)
+
+                # Insert proportional silences between words to match
+                # original speaker's pacing (TTS always runs faster)
+                word_timing = seg.get("words", [])
+                if word_timing and seg_sr:
+                    seg_audio = pad_audio_to_match_timing(
+                        seg_audio, seg_sr, word_timing
+                    )
 
                 tts_segments.append((seg_audio, seg_start, seg_end))
                 if sample_rate is None:

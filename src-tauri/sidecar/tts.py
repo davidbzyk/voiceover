@@ -40,7 +40,8 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
 
     Takes Whisper's word-level output and groups consecutive words into
     phrases wherever there's a pause >= min_pause_sec between words.
-    Each phrase becomes a segment with precise start/end timestamps.
+    Each phrase becomes a segment with precise start/end timestamps and
+    the original word timing for proportional silence insertion.
     """
     if not words:
         return []
@@ -48,6 +49,30 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
     phrases = []
     current_words = []
     current_start = None
+
+    def _finalize_phrase(word_list, start):
+        phrase_text = "".join(
+            w.get("word") or w.get("text") or "" for w in word_list
+        ).strip()
+        phrase_end = float(word_list[-1].get("end", 0))
+        if not phrase_text:
+            return None
+        # Build word timing for proportional silence insertion
+        word_timing = []
+        for w in word_list:
+            wt = (w.get("word") or w.get("text") or "").strip()
+            if wt:
+                word_timing.append({
+                    "word": wt,
+                    "start": float(w.get("start", 0)),
+                    "end": float(w.get("end", 0)),
+                })
+        return {
+            "start": start,
+            "end": phrase_end,
+            "text": phrase_text,
+            "words": word_timing,
+        }
 
     for word_info in words:
         word_start = float(word_info.get("start", 0))
@@ -58,40 +83,25 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
             continue
 
         if current_start is None:
-            # First word
             current_start = word_start
             current_words.append(word_info)
         else:
-            # Check gap between previous word end and this word start
             prev_end = float(current_words[-1].get("end", 0))
             gap = word_start - prev_end
 
             if gap >= min_pause_sec:
-                # Pause detected — finalize current phrase
-                phrase_text = "".join(w.get("word") or w.get("text") or "" for w in current_words).strip()
-                phrase_end = float(current_words[-1].get("end", 0))
-                if phrase_text:
-                    phrases.append({
-                        "start": current_start,
-                        "end": phrase_end,
-                        "text": phrase_text,
-                    })
-                # Start new phrase
+                phrase = _finalize_phrase(current_words, current_start)
+                if phrase:
+                    phrases.append(phrase)
                 current_start = word_start
                 current_words = [word_info]
             else:
                 current_words.append(word_info)
 
-    # Finalize last phrase
     if current_words:
-        phrase_text = "".join(w.get("word") or w.get("text") or "" for w in current_words).strip()
-        phrase_end = float(current_words[-1].get("end", 0))
-        if phrase_text:
-            phrases.append({
-                "start": current_start,
-                "end": phrase_end,
-                "text": phrase_text,
-            })
+        phrase = _finalize_phrase(current_words, current_start)
+        if phrase:
+            phrases.append(phrase)
 
     return phrases
 

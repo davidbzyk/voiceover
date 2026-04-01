@@ -194,6 +194,16 @@ pub async fn process_recording(
     log::info!("[pipeline] Splicing audio into video");
     ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
 
+    // Copy transcript alongside the final video (if local TTS generated one)
+    if use_local {
+        let transcript_src = transformed_audio.with_extension("txt");
+        if transcript_src.exists() {
+            let transcript_dst = final_path.with_extension("txt");
+            std::fs::copy(&transcript_src, &transcript_dst).ok();
+            log::info!("[pipeline] Transcript saved: {:?}", transcript_dst);
+        }
+    }
+
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
         final_path.display(),
@@ -210,6 +220,7 @@ pub async fn process_recording(
     cleanup_temp(&recording);
     cleanup_temp(&extracted_wav);
     cleanup_temp(&transformed_audio);
+    cleanup_temp(&transformed_audio.with_extension("txt"));
 
     Ok(final_path.to_string_lossy().to_string())
 }

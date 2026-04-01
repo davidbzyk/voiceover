@@ -144,6 +144,77 @@ def concatenate_audio_chunks(
 
 
 # ---------------------------------------------------------------------------
+# Proportional silence insertion
+# ---------------------------------------------------------------------------
+
+
+def pad_audio_to_match_timing(
+    audio: np.ndarray,
+    sample_rate: int,
+    word_timing: list,
+) -> np.ndarray:
+    """Insert silence between words in TTS audio to match original speech pacing.
+
+    TTS generates continuous speech without the natural micro-pauses between
+    words that the original speaker had. This estimates where each word boundary
+    falls in the TTS output (proportional by character count), then inserts
+    silence at those points to match the original inter-word gaps.
+
+    Args:
+        audio: TTS-generated audio for the phrase.
+        sample_rate: Audio sample rate.
+        word_timing: List of {"word": str, "start": float, "end": float}
+                     from the original Whisper transcription.
+    """
+    if not word_timing or len(word_timing) < 2 or len(audio) == 0:
+        return audio
+
+    # Calculate original inter-word gaps (the pauses TTS didn't reproduce)
+    gaps = []
+    for i in range(1, len(word_timing)):
+        gap = word_timing[i]["start"] - word_timing[i - 1]["end"]
+        gaps.append(max(0.0, gap))
+
+    total_gap = sum(gaps)
+    if total_gap < 0.05:
+        # Less than 50ms total gap — not worth inserting
+        return audio
+
+    # Estimate word boundaries in TTS audio proportional to character count
+    words_text = [w["word"] for w in word_timing]
+    char_counts = [len(w) for w in words_text]
+    total_chars = sum(char_counts)
+    if total_chars == 0:
+        return audio
+
+    # Build the padded output by splitting TTS audio at estimated word
+    # boundaries and inserting silence proportional to original gaps
+    pieces = []
+    audio_pos = 0
+
+    for i, char_count in enumerate(char_counts):
+        # Proportion of TTS audio this word occupies
+        proportion = char_count / total_chars
+        word_samples = int(proportion * len(audio))
+
+        # Extract this word's audio
+        word_end = min(audio_pos + word_samples, len(audio))
+        pieces.append(audio[audio_pos:word_end])
+        audio_pos = word_end
+
+        # Insert silence matching the original gap after this word
+        if i < len(gaps) and gaps[i] > 0.01:  # skip tiny gaps < 10ms
+            silence_samples = int(gaps[i] * sample_rate)
+            pieces.append(np.zeros(silence_samples, dtype=np.float32))
+
+    # Append any remaining audio
+    if audio_pos < len(audio):
+        pieces.append(audio[audio_pos:])
+
+    return np.concatenate(pieces) if pieces else audio
+
+
+# ---------------------------------------------------------------------------
 # Timestamp-aware audio assembly
 # ---------------------------------------------------------------------------
 

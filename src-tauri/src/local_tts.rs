@@ -36,10 +36,20 @@ pub struct ModelInfo {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+struct TranscriptionWord {
+    #[serde(alias = "text")]
+    word: String,
+    start: f64,
+    end: f64,
+}
+
+#[derive(Debug, Deserialize)]
 struct TranscriptionSegment {
     start: f64,
     end: f64,
     text: String,
+    #[serde(default)]
+    words: Vec<TranscriptionWord>,
 }
 
 #[derive(Deserialize)]
@@ -140,16 +150,46 @@ pub async fn speech_to_speech(
         return Err("Transcription returned empty text — no speech detected in recording".to_string());
     }
 
+    // Save transcript alongside the output for debugging/review
+    let transcript_path = output_wav.with_extension("txt");
+    let mut transcript = format!("Duration: {:.3}s\n\n", transcription.duration);
+    for seg in &transcription.segments {
+        transcript.push_str(&format!(
+            "[{:.3}s - {:.3}s] {}\n",
+            seg.start, seg.end, seg.text.trim()
+        ));
+        for w in &seg.words {
+            transcript.push_str(&format!(
+                "  [{:.3}s - {:.3}s] {}\n",
+                w.start, w.end, w.word.trim()
+            ));
+        }
+    }
+    transcript.push_str(&format!("\nFull text:\n{}\n", transcription.text));
+    if let Err(e) = std::fs::write(&transcript_path, &transcript) {
+        log::warn!("[local_tts] Failed to save transcript: {e}");
+    } else {
+        log::info!("[local_tts] Transcript saved: {:?}", transcript_path);
+    }
+
     // --- Step 2: Generate speech with voice profile ---
     // Include segments and original_duration for timestamp-synchronized generation
     let segments_json: Vec<serde_json::Value> = transcription
         .segments
         .iter()
         .map(|s| {
+            let words_json: Vec<serde_json::Value> = s.words.iter().map(|w| {
+                serde_json::json!({
+                    "word": w.word,
+                    "start": w.start,
+                    "end": w.end,
+                })
+            }).collect();
             serde_json::json!({
                 "start": s.start,
                 "end": s.end,
                 "text": s.text,
+                "words": words_json,
             })
         })
         .collect();
