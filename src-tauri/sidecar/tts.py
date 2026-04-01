@@ -35,11 +35,45 @@ LANGUAGE_CODE_TO_NAME = {
 _whisper_model = None
 
 
+def _filter_segments(raw_segments: list) -> list:
+    """Filter hallucinated Whisper segments and fix overlapping timestamps.
+
+    Removes segments with high no_speech_prob (>0.6), high compression_ratio
+    (>2.4, indicates repetitive/hallucinated text), or empty text.
+    Clamps overlapping timestamps so segment[n+1].start >= segment[n].end.
+    """
+    filtered = []
+    for seg in raw_segments:
+        if not isinstance(seg, dict):
+            continue
+        if seg.get("no_speech_prob", 0) > 0.6:
+            continue
+        if seg.get("compression_ratio", 0) > 2.4:
+            continue
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        filtered.append({
+            "start": float(seg.get("start", 0)),
+            "end": float(seg.get("end", 0)),
+            "text": text,
+        })
+
+    # Fix overlapping timestamps
+    for i in range(1, len(filtered)):
+        if filtered[i]["start"] < filtered[i - 1]["end"]:
+            filtered[i]["start"] = filtered[i - 1]["end"]
+
+    return filtered
+
+
 def transcribe(audio_path: str, models_dir: str) -> dict:
     """Transcribe audio file using MLX Whisper via mlx-audio.
 
     Uses mlx_audio.stt.load() which handles model loading correctly
     in PyInstaller binaries (unlike mlx_whisper which has npz issues).
+
+    Returns dict with text, duration, and segments (with timestamps).
     """
     global _whisper_model
 
@@ -54,22 +88,25 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
 
     result = _whisper_model.generate(str(audio_path))
 
-    # Extract text from result
+    # Extract text and raw segments from result
+    raw_segments = []
     if isinstance(result, str):
         text = result.strip()
     elif isinstance(result, dict):
         text = result.get("text", "").strip()
+        raw_segments = result.get("segments", []) or []
     elif hasattr(result, "text"):
         text = result.text.strip()
+        raw_segments = getattr(result, "segments", None) or []
     else:
         # Generator of results — collect all text
-        segments = list(result)
+        collected = list(result)
         text = " ".join(
             s.text.strip() if hasattr(s, "text") else str(s).strip()
-            for s in segments
+            for s in collected
         ).strip()
 
-    # Estimate duration from audio file
+    # Get precise duration from audio file
     duration = 0.0
     try:
         import soundfile as sf
@@ -79,7 +116,13 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
     except Exception:
         pass
 
-    return {"text": text, "duration": duration}
+    segments = _filter_segments(raw_segments)
+    logger.info(
+        "Transcribed: %.1fs audio -> %d chars, %d segments (from %d raw)",
+        duration, len(text), len(segments), len(raw_segments),
+    )
+
+    return {"text": text, "duration": duration, "segments": segments}
 
 
 # ---------------------------------------------------------------------------

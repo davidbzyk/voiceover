@@ -26,7 +26,7 @@ pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
 pub(crate) fn replace_audio_args(input_video: &str, new_audio: &str, output: &str) -> Vec<String> {
     ["-y", "-i", input_video, "-i", new_audio, "-map", "0:v", "-map", "1:a",
      "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
-     "-c:a", "aac", "-shortest", output]
+     "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
@@ -152,6 +152,15 @@ mod tests {
         assert!(args.contains(&"libx264".to_string()));
         assert!(args.contains(&"aac".to_string()));
         assert!(args.contains(&"pad=ceil(iw/2)*2:ceil(ih/2)*2".to_string()));
+    }
+
+    #[test]
+    fn replace_audio_args_no_shortest_flag() {
+        let args = replace_audio_args("video.webm", "audio.mp3", "output.mp4");
+        assert!(
+            !args.contains(&"-shortest".to_string()),
+            "replace_audio_args must not use -shortest (audio should match video duration)"
+        );
     }
 
     #[test]

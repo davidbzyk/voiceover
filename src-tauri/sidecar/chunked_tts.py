@@ -1,7 +1,10 @@
-"""Chunked TTS generation utilities.
+"""Chunked TTS generation and timed audio assembly utilities.
 
 Splits long text into sentence-boundary chunks, generates audio per-chunk,
 and concatenates with crossfade. Ported from Voicebox with minimal changes.
+
+Also provides timestamp-aware audio assembly: placing TTS segments at their
+original timestamps with silence gaps and optional time-stretching.
 
 Short text (≤ max_chunk_chars) uses the single-shot fast path with zero overhead.
 """
@@ -138,3 +141,125 @@ def concatenate_audio_chunks(
             result = np.concatenate([result, chunk])
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Timestamp-aware audio assembly
+# ---------------------------------------------------------------------------
+
+STRETCH_THRESHOLD = 0.15  # Only time-stretch if >15% duration mismatch
+STRETCH_MIN_RATE = 0.25
+STRETCH_MAX_RATE = 4.0
+
+
+def apply_fade(
+    audio: np.ndarray,
+    sample_rate: int,
+    fade_ms: int = 5,
+) -> np.ndarray:
+    """Apply fade-in and fade-out to prevent clicks at segment boundaries."""
+    fade_samples = int(sample_rate * fade_ms / 1000)
+    if len(audio) < 2 * fade_samples:
+        return audio
+
+    audio = audio.copy()
+    audio[:fade_samples] *= np.linspace(0, 1, fade_samples, dtype=np.float32)
+    audio[-fade_samples:] *= np.linspace(1, 0, fade_samples, dtype=np.float32)
+    return audio
+
+
+def time_stretch_segment(
+    audio: np.ndarray,
+    sample_rate: int,
+    rate: float,
+) -> np.ndarray:
+    """Stretch or compress audio to fit a target duration without pitch change.
+
+    Args:
+        audio: Input audio array (float32).
+        sample_rate: Audio sample rate.
+        rate: Stretch factor. >1.0 = speed up (shorter output),
+              <1.0 = slow down (longer output).
+              rate = actual_duration / target_duration
+
+    Uses pyrubberband (highest quality for speech) with librosa as fallback.
+    """
+    if len(audio) == 0 or abs(rate - 1.0) < 0.01:
+        return audio
+
+    rate = max(STRETCH_MIN_RATE, min(rate, STRETCH_MAX_RATE))
+
+    try:
+        import pyrubberband as pyrb
+        return pyrb.time_stretch(audio, sample_rate, rate, rbargs={"-c": "6"}).astype(
+            np.float32
+        )
+    except (ImportError, FileNotFoundError):
+        pass
+
+    try:
+        import librosa
+        return librosa.effects.time_stretch(audio, rate=rate).astype(np.float32)
+    except ImportError:
+        pass
+
+    logger.warning("No time-stretch library available; returning audio unchanged")
+    return audio
+
+
+def assemble_timed_segments(
+    tts_segments: List[Tuple[np.ndarray, float, float]],
+    original_duration: float,
+    sample_rate: int,
+) -> np.ndarray:
+    """Assemble TTS audio segments at original timestamps with silence gaps.
+
+    Args:
+        tts_segments: List of (audio_array, original_start_sec, original_end_sec).
+        original_duration: Total duration of the original recording in seconds.
+        sample_rate: Target sample rate (must match TTS output).
+
+    Returns:
+        Assembled float32 audio array padded to exactly original_duration.
+    """
+    total_samples = int(original_duration * sample_rate)
+    output = np.zeros(total_samples, dtype=np.float32)
+
+    if not tts_segments:
+        return output
+
+    for audio, start_sec, end_sec in tts_segments:
+        if len(audio) == 0:
+            continue
+
+        start_sample = int(start_sec * sample_rate)
+        target_duration = end_sec - start_sec
+        if target_duration <= 0:
+            continue
+
+        target_samples = int(target_duration * sample_rate)
+        actual_samples = len(audio)
+
+        # Time-stretch if duration mismatch exceeds threshold
+        if actual_samples > 0 and target_samples > 0:
+            rate = actual_samples / target_samples
+            if abs(rate - 1.0) > STRETCH_THRESHOLD:
+                audio = time_stretch_segment(audio, sample_rate, rate)
+                actual_samples = len(audio)
+
+        # Pad or truncate to fit target duration
+        if actual_samples < target_samples:
+            audio = np.pad(audio, (0, target_samples - actual_samples))
+        elif actual_samples > target_samples:
+            audio = audio[:target_samples]
+
+        # Apply fade to prevent clicks at boundaries
+        audio = apply_fade(audio, sample_rate)
+
+        # Place in output buffer with bounds checking
+        end_sample = min(start_sample + len(audio), total_samples)
+        place_len = end_sample - start_sample
+        if place_len > 0:
+            output[start_sample:end_sample] = audio[:place_len]
+
+    return output

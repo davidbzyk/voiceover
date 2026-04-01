@@ -257,10 +257,17 @@ async def transcribe_path(request: dict):
 
 @app.post("/generate")
 async def generate(request: dict):
-    """Start voice generation. Returns immediately with a generation ID."""
+    """Start voice generation. Returns immediately with a generation ID.
+
+    When ``segments`` (with timestamps) and ``original_duration`` are provided,
+    generates TTS per-segment and assembles at original timestamps with silence
+    gaps. Without segments, falls back to character-based chunked generation.
+    """
     profile_id = request.get("profile_id", "")
     text = request.get("text", "")
     language = request.get("language", "en")
+    segments = request.get("segments", []) or []
+    original_duration = request.get("original_duration", 0.0)
 
     if not profile_id or not text:
         return JSONResponse(
@@ -279,6 +286,7 @@ async def generate(request: dict):
             load_qwen_model,
         )
         from chunked_tts import (
+            assemble_timed_segments,
             concatenate_audio_chunks,
             split_text_into_chunks,
         )
@@ -301,25 +309,83 @@ async def generate(request: dict):
         ref_texts = [s["reference_text"] for s in samples]
         voice_prompt = await combine_voice_prompts(audio_paths, ref_texts, cache_dir)
 
-        # Generate speech (with chunking for long text)
         _generations[gen_id]["status"] = "generating"
-        chunks = split_text_into_chunks(text)
 
-        if len(chunks) <= 1:
-            audio, sample_rate = await generate_speech(text, voice_prompt, language)
-        else:
-            logger.info(f"Chunked generation: {len(chunks)} chunks")
-            audio_chunks = []
+        if segments and original_duration > 0:
+            # --- Timestamp-synchronized generation ---
+            logger.info(
+                f"Segment-aware generation: {len(segments)} segments, "
+                f"original_duration={original_duration:.1f}s"
+            )
+            tts_segments = []
             sample_rate = None
-            for i, chunk_text in enumerate(chunks):
-                chunk_seed = i  # Deterministic per chunk
-                chunk_audio, chunk_sr = await generate_speech(
-                    chunk_text, voice_prompt, language, seed=chunk_seed
+
+            for i, seg in enumerate(segments):
+                seg_text = seg.get("text", "").strip()
+                seg_start = float(seg.get("start", 0))
+                seg_end = float(seg.get("end", 0))
+                if not seg_text or seg_end <= seg_start:
+                    continue
+
+                logger.info(
+                    f"Generating segment {i + 1}/{len(segments)}: "
+                    f"[{seg_start:.1f}s-{seg_end:.1f}s] "
+                    f"({len(seg_text)} chars)"
                 )
-                audio_chunks.append(chunk_audio)
+
+                # Sub-chunk long segments (>800 chars) and crossfade
+                sub_chunks = split_text_into_chunks(seg_text)
+                if len(sub_chunks) <= 1:
+                    seg_audio, seg_sr = await generate_speech(
+                        seg_text, voice_prompt, language, seed=i
+                    )
+                else:
+                    logger.info(
+                        f"  Sub-chunking segment {i + 1}: "
+                        f"{len(sub_chunks)} sub-chunks"
+                    )
+                    sub_audios = []
+                    seg_sr = None
+                    for j, sub_text in enumerate(sub_chunks):
+                        sub_audio, sub_sr = await generate_speech(
+                            sub_text, voice_prompt, language, seed=i * 100 + j
+                        )
+                        sub_audios.append(sub_audio)
+                        if seg_sr is None:
+                            seg_sr = sub_sr
+                    seg_audio = concatenate_audio_chunks(sub_audios, seg_sr)
+
+                tts_segments.append((seg_audio, seg_start, seg_end))
                 if sample_rate is None:
-                    sample_rate = chunk_sr
-            audio = concatenate_audio_chunks(audio_chunks, sample_rate)
+                    sample_rate = seg_sr
+
+            if sample_rate is None:
+                raise ValueError("No segments produced audio")
+
+            audio = assemble_timed_segments(
+                tts_segments, original_duration, sample_rate
+            )
+        else:
+            # --- Original character-based chunked generation ---
+            chunks = split_text_into_chunks(text)
+
+            if len(chunks) <= 1:
+                audio, sample_rate = await generate_speech(
+                    text, voice_prompt, language
+                )
+            else:
+                logger.info(f"Chunked generation: {len(chunks)} chunks")
+                audio_chunks = []
+                sample_rate = None
+                for i, chunk_text in enumerate(chunks):
+                    chunk_seed = i  # Deterministic per chunk
+                    chunk_audio, chunk_sr = await generate_speech(
+                        chunk_text, voice_prompt, language, seed=chunk_seed
+                    )
+                    audio_chunks.append(chunk_audio)
+                    if sample_rate is None:
+                        sample_rate = chunk_sr
+                audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
         # Save to file
         import soundfile as sf

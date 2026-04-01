@@ -35,11 +35,19 @@ pub struct ModelInfo {
 // Internal types for sidecar API responses
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Deserialize)]
+struct TranscriptionSegment {
+    start: f64,
+    end: f64,
+    text: String,
+}
+
 #[derive(Deserialize)]
 struct TranscriptionResponse {
     text: String,
-    #[allow(dead_code)]
     duration: f64,
+    #[serde(default)]
+    segments: Vec<TranscriptionSegment>,
 }
 
 #[derive(Deserialize)]
@@ -121,9 +129,10 @@ pub async fn speech_to_speech(
         .map_err(|e| format!("Failed to parse transcription: {e} — body: {}", &body_text[..body_text.len().min(200)]))?;
 
     log::info!(
-        "[local_tts] Transcribed: {:.1}s audio -> {} chars, elapsed={:.1}s",
+        "[local_tts] Transcribed: {:.1}s audio -> {} chars, {} segments, elapsed={:.1}s",
         transcription.duration,
         transcription.text.len(),
+        transcription.segments.len(),
         start.elapsed().as_secs_f32(),
     );
 
@@ -132,10 +141,25 @@ pub async fn speech_to_speech(
     }
 
     // --- Step 2: Generate speech with voice profile ---
+    // Include segments and original_duration for timestamp-synchronized generation
+    let segments_json: Vec<serde_json::Value> = transcription
+        .segments
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "start": s.start,
+                "end": s.end,
+                "text": s.text,
+            })
+        })
+        .collect();
+
     let gen_body = serde_json::json!({
         "profile_id": profile_id,
         "text": transcription.text,
-        "language": "en"
+        "language": "en",
+        "segments": segments_json,
+        "original_duration": transcription.duration,
     });
 
     let response = client
@@ -495,6 +519,44 @@ mod tests {
         assert_eq!(v["id"], "prof_1");
         assert_eq!(v["name"], "Test");
         assert_eq!(v["language"], "en");
+    }
+
+    #[test]
+    fn transcription_response_deserializes_with_segments() {
+        let json = r#"{
+            "text": "Hello world",
+            "duration": 5.2,
+            "segments": [
+                {"start": 0.0, "end": 1.5, "text": "Hello"},
+                {"start": 2.0, "end": 3.8, "text": "world"}
+            ]
+        }"#;
+        let resp: TranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.text, "Hello world");
+        assert!((resp.duration - 5.2).abs() < 0.01);
+        assert_eq!(resp.segments.len(), 2);
+        assert!((resp.segments[0].start - 0.0).abs() < 0.01);
+        assert!((resp.segments[0].end - 1.5).abs() < 0.01);
+        assert_eq!(resp.segments[0].text, "Hello");
+        assert!((resp.segments[1].start - 2.0).abs() < 0.01);
+        assert_eq!(resp.segments[1].text, "world");
+    }
+
+    #[test]
+    fn transcription_response_deserializes_without_segments() {
+        let json = r#"{"text": "Hello world", "duration": 3.0}"#;
+        let resp: TranscriptionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.text, "Hello world");
+        assert!(resp.segments.is_empty());
+    }
+
+    #[test]
+    fn transcription_segment_deserializes() {
+        let json = r#"{"start": 1.23, "end": 4.56, "text": "test segment"}"#;
+        let seg: TranscriptionSegment = serde_json::from_str(json).unwrap();
+        assert!((seg.start - 1.23).abs() < 0.001);
+        assert!((seg.end - 4.56).abs() < 0.001);
+        assert_eq!(seg.text, "test segment");
     }
 
     #[tokio::test]
