@@ -99,6 +99,13 @@ pub struct AppConfig {
     /// Voice profile ID to use with the local Voicebox server
     #[serde(default)]
     pub local_voice_profile_id: String,
+    /// Local TTS mode: "tts" (text-to-speech via Qwen) or "vc" (voice conversion via CosyVoice)
+    #[serde(default = "default_local_tts_mode")]
+    pub local_tts_mode: String,
+}
+
+fn default_local_tts_mode() -> String {
+    "tts".to_string()
 }
 
 fn default_output_dir() -> String {
@@ -128,6 +135,7 @@ impl Default for AppConfig {
             provider: default_provider(),
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
+            local_tts_mode: default_local_tts_mode(),
         }
     }
 }
@@ -337,6 +345,7 @@ mod tests {
             provider: "elevenlabs".to_string(),
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
+            local_tts_mode: "tts".to_string(),
         };
 
         let json = serde_json::to_string(&config).unwrap();

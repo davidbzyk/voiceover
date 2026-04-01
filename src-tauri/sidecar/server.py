@@ -450,6 +450,157 @@ async def get_audio(gen_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Voice Conversion (Speech-to-Speech)
+# ---------------------------------------------------------------------------
+
+_vc_model = None
+_vc_model_name = None
+
+
+@app.post("/voice-convert")
+async def voice_convert(request: dict):
+    """Start voice conversion (speech-to-speech). Preserves original timing.
+
+    Uses CosyVoice2 via mlx-audio to convert the source audio to the target
+    voice while keeping the exact pacing, pauses, and prosody of the original.
+    For recordings longer than 30s, processes in overlapping chunks.
+    """
+    profile_id = request.get("profile_id", "")
+    source_audio_path = request.get("source_audio_path", "")
+
+    if not profile_id or not source_audio_path:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "profile_id and source_audio_path are required"},
+        )
+
+    gen_id = str(uuid.uuid4())
+    _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
+
+    async def _do_voice_convert():
+        import asyncio
+        import soundfile as sf
+        import mlx.core as mx
+        from mlx_audio.tts.utils import load_model
+        from mlx_audio.tts.generate import load_audio
+        from profiles import get_samples
+
+        models_dir = str(DATA_DIR / "models")
+
+        # Load CosyVoice2 model
+        _generations[gen_id]["status"] = "loading_model"
+        global _vc_model, _vc_model_name
+
+        vc_model_id = "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"
+        if _vc_model is None or _vc_model_name != vc_model_id:
+            logger.info(f"Loading voice conversion model: {vc_model_id}")
+            os.environ["HF_HUB_CACHE"] = models_dir
+
+            def _load():
+                global _vc_model, _vc_model_name
+                _vc_model = load_model(vc_model_id)
+                _vc_model_name = vc_model_id
+
+            await asyncio.to_thread(_load)
+            logger.info("Voice conversion model loaded")
+
+        # Get reference audio from voice profile — use all samples up to 30s
+        _generations[gen_id]["status"] = "preparing_voice"
+        samples = get_samples(DATA_DIR, profile_id)
+        if not samples:
+            raise ValueError(f"No samples found for profile {profile_id}")
+
+        model_sr = _vc_model.sample_rate
+        max_ref_samples = int(30 * model_sr)  # CosyVoice2 accepts up to 30s ref
+
+        ref_parts = []
+        total_ref = 0
+        for sample in samples:
+            if total_ref >= max_ref_samples:
+                break
+            part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
+            remaining = max_ref_samples - total_ref
+            if len(part) > remaining:
+                part = part[:remaining]
+            ref_parts.append(part)
+            total_ref += len(part)
+            logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
+
+        ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
+        logger.info(
+            f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
+            f"source={source_audio_path}"
+        )
+
+        source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+
+        chunk_duration = 25  # CosyVoice2 limit is 30s, use 25 for safety
+        chunk_samples = int(chunk_duration * model_sr)
+
+        _generations[gen_id]["status"] = "generating"
+
+        def _convert_chunk(chunk_audio):
+            """Run voice conversion on a single chunk (blocking, for thread pool)."""
+            results = _vc_model.generate(
+                text="",
+                ref_audio=ref_audio,
+                source_audio=chunk_audio,
+                verbose=False,
+            )
+            audio_parts = []
+            for result in results:
+                audio_parts.append(np.array(result.audio, dtype=np.float32).flatten())
+            if not audio_parts:
+                return np.array([], dtype=np.float32)
+            return np.concatenate(audio_parts)
+
+        source_np = np.array(source_audio) if isinstance(source_audio, mx.array) else source_audio
+
+        if len(source_np) <= chunk_samples:
+            logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
+            audio = await asyncio.to_thread(_convert_chunk, source_audio)
+            sample_rate = model_sr
+        else:
+            # Chunk and stitch for long recordings
+            total_samples = len(source_np)
+            overlap_samples = int(1.0 * model_sr)
+            step = chunk_samples - overlap_samples
+            n_chunks = max(1, (total_samples - overlap_samples + step - 1) // step)
+            logger.info(f"Voice conversion: {n_chunks} chunks ({total_samples/model_sr:.1f}s total)")
+
+            converted_pieces = []
+            pos = 0
+            for i in range(n_chunks):
+                end = min(pos + chunk_samples, total_samples)
+                chunk = mx.array(source_np[pos:end], dtype=mx.float32)
+                logger.info(f"  Converting chunk {i+1}/{n_chunks} ({(end-pos)/model_sr:.1f}s)")
+                piece = await asyncio.to_thread(_convert_chunk, chunk)
+                if len(piece) > 0:
+                    converted_pieces.append(piece)
+                pos += step
+                if pos >= total_samples:
+                    break
+
+            if not converted_pieces:
+                raise ValueError("Voice conversion produced no audio")
+
+            from chunked_tts import concatenate_audio_chunks
+            audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
+            sample_rate = model_sr
+
+        # Save
+        gen_dir = DATA_DIR / "generations"
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = gen_dir / f"{gen_id}.wav"
+        sf.write(str(audio_path), audio, sample_rate)
+        _generations[gen_id]["audio_path"] = str(audio_path)
+        logger.info(f"Voice conversion {gen_id}: saved {audio_path} ({len(audio)} samples, {len(audio)/sample_rate:.1f}s)")
+
+    await _generation_queue.put((gen_id, _do_voice_convert()))
+    return {"id": gen_id}
+
+
+# ---------------------------------------------------------------------------
 # YouTube extraction
 # ---------------------------------------------------------------------------
 

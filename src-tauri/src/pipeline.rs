@@ -154,12 +154,23 @@ pub async fn process_recording(
             .ok();
 
         let port = sidecar::ensure_running(&app).await?;
-        local_tts::speech_to_speech(
-            port,
-            &config.local_voice_profile_id,
-            &extracted_wav,
-            &transformed_audio,
-        ).await?;
+        if config.local_tts_mode == "vc" {
+            log::info!("[pipeline] Using voice conversion (CosyVoice S2S)");
+            local_tts::voice_convert(
+                port,
+                &config.local_voice_profile_id,
+                &extracted_wav,
+                &transformed_audio,
+            ).await?;
+        } else {
+            log::info!("[pipeline] Using text-to-speech (Qwen TTS)");
+            local_tts::speech_to_speech(
+                port,
+                &config.local_voice_profile_id,
+                &extracted_wav,
+                &transformed_audio,
+            ).await?;
+        }
     } else {
         on_event
             .send(PipelineEvent::Progress {

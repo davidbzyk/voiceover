@@ -59,6 +59,7 @@ export type AppConfig = {
 	/** @deprecated Kept for backward compatibility with old config files. Not used — sidecar runs on managed port. */
 	local_endpoint?: string;
 	local_voice_profile_id: string;
+	local_tts_mode: string;
 };
 
 export type RecordingState =
@@ -93,7 +94,8 @@ class AppState {
 			expires_at: 0
 		},
 		provider: 'elevenlabs',
-		local_voice_profile_id: ''
+		local_voice_profile_id: '',
+		local_tts_mode: 'tts'
 	});
 
 	webcamStream = $state<MediaStream | null>(null);

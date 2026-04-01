@@ -253,6 +253,28 @@
 					+ Create Voice
 				</button>
 			</div>
+
+			<div class="section-header">
+				<div class="section-title">Voice Mode</div>
+			</div>
+			<div class="card">
+				<div class="hint-text" style="margin-bottom: 8px">
+					<strong>Text-to-Speech:</strong> Transcribes then generates new speech (faster, less sync)<br>
+					<strong>Voice Conversion:</strong> Converts your voice directly (slower, preserves timing)
+				</div>
+				<div class="toggle-row">
+					<button
+						class="toggle-btn"
+						class:active={appState.config.local_tts_mode !== 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
+					>Text-to-Speech</button>
+					<button
+						class="toggle-btn"
+						class:active={appState.config.local_tts_mode === 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
+					>Voice Conversion</button>
+				</div>
+			</div>
 		</div>
 	{:else}
 		<!-- ElevenLabs API Key -->
@@ -605,5 +627,25 @@
 		font-size: 10px;
 		color: #64748b;
 		line-height: 1.4;
+	}
+	.toggle-row {
+		display: flex;
+		gap: 8px;
+	}
+	.toggle-btn {
+		flex: 1;
+		padding: 8px 12px;
+		border: 1px solid #334155;
+		border-radius: 6px;
+		background: transparent;
+		color: #94a3b8;
+		font-size: 12px;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.toggle-btn.active {
+		background: #1e293b;
+		border-color: #6366f1;
+		color: #e2e8f0;
 	}
 </style>

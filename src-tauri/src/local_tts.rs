@@ -303,6 +303,128 @@ pub async fn speech_to_speech(
     Ok(())
 }
 
+/// Voice conversion (speech-to-speech): preserves original timing.
+///
+/// Sends the source audio to the sidecar's `/voice-convert` endpoint which
+/// uses CosyVoice2 to convert the voice while keeping the exact pacing.
+/// Same poll/download pattern as speech_to_speech.
+pub async fn voice_convert(
+    port: u16,
+    profile_id: &str,
+    input_wav: &Path,
+    output_wav: &Path,
+) -> Result<(), String> {
+    let base = format!("http://127.0.0.1:{}", port);
+    let client = reqwest::Client::new();
+    let start = std::time::Instant::now();
+
+    log::info!(
+        "[local_tts] Voice conversion: profile={}, input={:?}, port={}",
+        profile_id, input_wav, port,
+    );
+
+    // Submit voice conversion job
+    let body = serde_json::json!({
+        "profile_id": profile_id,
+        "source_audio_path": input_wav.to_str().unwrap_or(""),
+    });
+
+    let response = client
+        .post(format!("{}/voice-convert", base))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Voice convert request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Voice conversion failed: {body}"));
+    }
+
+    let gen_resp: GenerateResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse voice-convert response: {e}"))?;
+
+    let generation_id = gen_resp.id;
+    log::info!(
+        "[local_tts] Voice conversion submitted: id={}, elapsed={:.1}s",
+        generation_id, start.elapsed().as_secs_f32(),
+    );
+
+    // Poll for completion (same pattern as speech_to_speech)
+    let status_url = format!("{}/generate/{}/status", base, generation_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(POLL_TIMEOUT_SECS);
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err(format!(
+                "Voice conversion timed out after {}s", POLL_TIMEOUT_SECS,
+            ));
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+
+        let poll_resp = client
+            .get(&status_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to poll voice conversion status: {e}"))?;
+
+        if !poll_resp.status().is_success() {
+            let body = poll_resp.text().await.unwrap_or_default();
+            return Err(format!("Voice conversion status check failed: {body}"));
+        }
+
+        let gen_status: GenerationStatus = poll_resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse voice conversion status: {e}"))?;
+
+        match gen_status.status.as_str() {
+            "completed" => {
+                log::info!(
+                    "[local_tts] Voice conversion completed: id={}, elapsed={:.1}s",
+                    generation_id, start.elapsed().as_secs_f32(),
+                );
+                break;
+            }
+            "failed" => {
+                let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
+                return Err(format!("Voice conversion failed: {err_msg}"));
+            }
+            other => {
+                log::debug!("[local_tts] Voice conversion status: {} ({})", other, generation_id);
+            }
+        }
+    }
+
+    // Download result
+    let audio_url = format!("{}/audio/{}", base, generation_id);
+    let audio_resp = client
+        .get(&audio_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download converted audio: {e}"))?;
+
+    if !audio_resp.status().is_success() {
+        let body = audio_resp.text().await.unwrap_or_default();
+        return Err(format!("Audio download failed: {body}"));
+    }
+
+    let bytes = audio_resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read audio response: {e}"))?;
+
+    log::info!("[local_tts] Downloaded converted audio: {}KB", bytes.len() / 1024);
+
+    std::fs::write(output_wav, &bytes)
+        .map_err(|e| format!("Failed to save converted audio: {e}"))?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands (all use managed sidecar)
 // ---------------------------------------------------------------------------
