@@ -233,24 +233,14 @@ def assemble_timed_segments(
             continue
 
         start_sample = int(start_sec * sample_rate)
-        target_duration = end_sec - start_sec
-        if target_duration <= 0:
+        target_samples = int((end_sec - start_sec) * sample_rate)
+        if target_samples <= 0:
             continue
 
-        target_samples = int(target_duration * sample_rate)
-        actual_samples = len(audio)
-
-        # Time-stretch if duration mismatch exceeds threshold
-        if actual_samples > 0 and target_samples > 0:
-            rate = actual_samples / target_samples
-            if abs(rate - 1.0) > STRETCH_THRESHOLD:
-                audio = time_stretch_segment(audio, sample_rate, rate)
-                actual_samples = len(audio)
-
-        # Pad or truncate to fit target duration
-        if actual_samples < target_samples:
-            audio = np.pad(audio, (0, target_samples - actual_samples))
-        elif actual_samples > target_samples:
+        # Truncate if TTS audio exceeds the segment window (prevents overlap
+        # with the next segment). If shorter, silence fills the gap naturally
+        # since the output buffer is pre-filled with zeros.
+        if len(audio) > target_samples:
             audio = audio[:target_samples]
 
         # Apply fade to prevent clicks at boundaries
