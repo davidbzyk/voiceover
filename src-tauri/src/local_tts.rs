@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 /// Default polling interval when waiting for generation to complete.
@@ -78,6 +78,98 @@ pub(crate) struct ModelsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Shared poll-and-download helper
+// ---------------------------------------------------------------------------
+
+/// Poll the sidecar for generation completion, then download the result.
+///
+/// This is the common pattern shared by `speech_to_speech` and `voice_convert`:
+/// 1. Poll `/generate/{id}/status` in a loop until completed or failed
+/// 2. Download audio from `/audio/{id}`
+/// 3. Save to `output_wav`
+async fn poll_and_download(
+    client: &reqwest::Client,
+    base_url: &str,
+    generation_id: &str,
+    output_wav: &Path,
+    poll_interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Result<PathBuf, String> {
+    let status_url = format!("{}/generate/{}/status", base_url, generation_id);
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err(format!(
+                "Local TTS timed out after {}s waiting for generation {}",
+                timeout.as_secs(), generation_id,
+            ));
+        }
+
+        tokio::time::sleep(poll_interval).await;
+
+        let poll_resp = client
+            .get(&status_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to poll generation status: {e}"))?;
+
+        if !poll_resp.status().is_success() {
+            let body = poll_resp.text().await.unwrap_or_default();
+            return Err(format!("Generation status check failed: {body}"));
+        }
+
+        let gen_status: GenerationStatus = poll_resp
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse generation status: {e}"))?;
+
+        match gen_status.status.as_str() {
+            "completed" => {
+                log::info!(
+                    "[local_tts] Generation completed: id={}",
+                    generation_id,
+                );
+                break;
+            }
+            "failed" => {
+                let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
+                log::error!("[local_tts] Generation failed: id={}, error={}", generation_id, err_msg);
+                return Err(format!("Local TTS generation failed: {err_msg}"));
+            }
+            other => {
+                log::debug!("[local_tts] Generation status: {} ({})", other, generation_id);
+            }
+        }
+    }
+
+    // Download the result
+    let audio_url = format!("{}/audio/{}", base_url, generation_id);
+    let audio_resp = client
+        .get(&audio_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download generated audio: {e}"))?;
+
+    if !audio_resp.status().is_success() {
+        let body = audio_resp.text().await.unwrap_or_default();
+        return Err(format!("Audio download failed: {body}"));
+    }
+
+    let bytes = audio_resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read audio response: {e}"))?;
+
+    log::info!("[local_tts] Downloaded audio: {}KB", bytes.len() / 1024);
+
+    std::fs::write(output_wav, &bytes)
+        .map_err(|e| format!("Failed to save audio: {e}"))?;
+
+    Ok(output_wav.to_path_buf())
+}
+
+// ---------------------------------------------------------------------------
 // Core speech-to-speech function (uses managed sidecar)
 // ---------------------------------------------------------------------------
 
@@ -106,7 +198,10 @@ pub async fn speech_to_speech(
         port,
     );
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
     let start = std::time::Instant::now();
 
     // --- Step 1: Transcribe audio to text ---
@@ -227,78 +322,20 @@ pub async fn speech_to_speech(
         start.elapsed().as_secs_f32(),
     );
 
-    // --- Step 3: Poll for completion (plain JSON, not SSE) ---
-    let status_url = format!("{}/generate/{}/status", base, generation_id);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(POLL_TIMEOUT_SECS);
+    // --- Step 3 & 4: Poll for completion and download result ---
+    poll_and_download(
+        &client,
+        &base,
+        &generation_id,
+        output_wav,
+        std::time::Duration::from_millis(POLL_INTERVAL_MS),
+        std::time::Duration::from_secs(POLL_TIMEOUT_SECS),
+    ).await?;
 
-    loop {
-        if std::time::Instant::now() > deadline {
-            return Err(format!(
-                "Local TTS timed out after {}s waiting for generation {}",
-                POLL_TIMEOUT_SECS, generation_id,
-            ));
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-
-        let poll_resp = client
-            .get(&status_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to poll generation status: {e}"))?;
-
-        if !poll_resp.status().is_success() {
-            let body = poll_resp.text().await.unwrap_or_default();
-            return Err(format!("Generation status check failed: {body}"));
-        }
-
-        let gen_status: GenerationStatus = poll_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse generation status: {e}"))?;
-
-        match gen_status.status.as_str() {
-            "completed" => {
-                log::info!(
-                    "[local_tts] Generation completed: id={}, total_elapsed={:.1}s",
-                    generation_id,
-                    start.elapsed().as_secs_f32(),
-                );
-                break;
-            }
-            "failed" => {
-                let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
-                log::error!("[local_tts] Generation failed: id={}, error={}", generation_id, err_msg);
-                return Err(format!("Local TTS generation failed: {err_msg}"));
-            }
-            other => {
-                log::debug!("[local_tts] Generation status: {} ({})", other, generation_id);
-            }
-        }
-    }
-
-    // --- Step 4: Download the result ---
-    let audio_url = format!("{}/audio/{}", base, generation_id);
-    let audio_resp = client
-        .get(&audio_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download generated audio: {e}"))?;
-
-    if !audio_resp.status().is_success() {
-        let body = audio_resp.text().await.unwrap_or_default();
-        return Err(format!("Audio download failed: {body}"));
-    }
-
-    let bytes = audio_resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read audio response: {e}"))?;
-
-    log::info!("[local_tts] Downloaded audio: {}KB", bytes.len() / 1024);
-
-    std::fs::write(output_wav, &bytes)
-        .map_err(|e| format!("Failed to save transformed audio: {e}"))?;
+    log::info!(
+        "[local_tts] S2S complete: total_elapsed={:.1}s",
+        start.elapsed().as_secs_f32(),
+    );
 
     Ok(())
 }
@@ -315,7 +352,10 @@ pub async fn voice_convert(
     output_wav: &Path,
 ) -> Result<(), String> {
     let base = format!("http://127.0.0.1:{}", port);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
     let start = std::time::Instant::now();
 
     log::info!(
@@ -324,9 +364,11 @@ pub async fn voice_convert(
     );
 
     // Submit voice conversion job
+    let input_path_str = input_wav.to_str()
+        .ok_or_else(|| "Input audio path contains non-UTF8 characters".to_string())?;
     let body = serde_json::json!({
         "profile_id": profile_id,
-        "source_audio_path": input_wav.to_str().unwrap_or(""),
+        "source_audio_path": input_path_str,
     });
 
     let response = client
@@ -352,75 +394,20 @@ pub async fn voice_convert(
         generation_id, start.elapsed().as_secs_f32(),
     );
 
-    // Poll for completion (same pattern as speech_to_speech)
-    let status_url = format!("{}/generate/{}/status", base, generation_id);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(POLL_TIMEOUT_SECS);
+    // Poll for completion and download result
+    poll_and_download(
+        &client,
+        &base,
+        &generation_id,
+        output_wav,
+        std::time::Duration::from_millis(POLL_INTERVAL_MS),
+        std::time::Duration::from_secs(POLL_TIMEOUT_SECS),
+    ).await?;
 
-    loop {
-        if std::time::Instant::now() > deadline {
-            return Err(format!(
-                "Voice conversion timed out after {}s", POLL_TIMEOUT_SECS,
-            ));
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-
-        let poll_resp = client
-            .get(&status_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to poll voice conversion status: {e}"))?;
-
-        if !poll_resp.status().is_success() {
-            let body = poll_resp.text().await.unwrap_or_default();
-            return Err(format!("Voice conversion status check failed: {body}"));
-        }
-
-        let gen_status: GenerationStatus = poll_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse voice conversion status: {e}"))?;
-
-        match gen_status.status.as_str() {
-            "completed" => {
-                log::info!(
-                    "[local_tts] Voice conversion completed: id={}, elapsed={:.1}s",
-                    generation_id, start.elapsed().as_secs_f32(),
-                );
-                break;
-            }
-            "failed" => {
-                let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
-                return Err(format!("Voice conversion failed: {err_msg}"));
-            }
-            other => {
-                log::debug!("[local_tts] Voice conversion status: {} ({})", other, generation_id);
-            }
-        }
-    }
-
-    // Download result
-    let audio_url = format!("{}/audio/{}", base, generation_id);
-    let audio_resp = client
-        .get(&audio_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download converted audio: {e}"))?;
-
-    if !audio_resp.status().is_success() {
-        let body = audio_resp.text().await.unwrap_or_default();
-        return Err(format!("Audio download failed: {body}"));
-    }
-
-    let bytes = audio_resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read audio response: {e}"))?;
-
-    log::info!("[local_tts] Downloaded converted audio: {}KB", bytes.len() / 1024);
-
-    std::fs::write(output_wav, &bytes)
-        .map_err(|e| format!("Failed to save converted audio: {e}"))?;
+    log::info!(
+        "[local_tts] Voice conversion complete: total_elapsed={:.1}s",
+        start.elapsed().as_secs_f32(),
+    );
 
     Ok(())
 }
@@ -545,6 +532,9 @@ pub async fn extract_youtube_audio(
 }
 
 /// Proxy a JSON request to the TTS sidecar (for frontend use).
+// TODO: Replace generic sidecar tunnel with typed Tauri commands for defense-in-depth.
+// Currently, the frontend controls the path parameter, which could theoretically target
+// any sidecar endpoint. Typed commands would restrict to known operations.
 #[tauri::command]
 pub async fn sidecar_fetch(
     app: tauri::AppHandle,
@@ -719,6 +709,22 @@ mod tests {
         assert!((seg.start - 1.23).abs() < 0.001);
         assert!((seg.end - 4.56).abs() < 0.001);
         assert_eq!(seg.text, "test segment");
+    }
+
+    #[test]
+    fn transcription_word_deserializes_with_word_key() {
+        let json = r#"{"word": "hello", "start": 0.5, "end": 1.0}"#;
+        let word: TranscriptionWord = serde_json::from_str(json).unwrap();
+        assert_eq!(word.word, "hello");
+        assert_eq!(word.start, 0.5);
+        assert_eq!(word.end, 1.0);
+    }
+
+    #[test]
+    fn transcription_word_deserializes_with_text_alias() {
+        let json = r#"{"text": "world", "start": 1.0, "end": 2.0}"#;
+        let word: TranscriptionWord = serde_json::from_str(json).unwrap();
+        assert_eq!(word.word, "world");
     }
 
     #[tokio::test]

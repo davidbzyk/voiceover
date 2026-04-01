@@ -211,6 +211,12 @@ pub async fn upload_to_drive(
     on_event: Channel<DriveEvent>,
 ) -> Result<String, String> {
     let path = Path::new(&file_path);
+    let canonical = path.canonicalize().map_err(|e| format!("Invalid file path: {}", e))?;
+    // Reject paths containing ".." components (defense in depth)
+    if file_path.contains("..") {
+        return Err("File path must not contain '..' components".to_string());
+    }
+    let path = canonical.as_path();
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())

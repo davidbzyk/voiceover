@@ -4,7 +4,7 @@ Splits long text into sentence-boundary chunks, generates audio per-chunk,
 and concatenates with crossfade. Ported from Voicebox with minimal changes.
 
 Also provides timestamp-aware audio assembly: placing TTS segments at their
-original timestamps with silence gaps and optional time-stretching.
+original timestamps with silence gaps.
 
 Short text (≤ max_chunk_chars) uses the single-shot fast path with zero overhead.
 """

@@ -45,25 +45,41 @@ The entire pipeline happens in one app. Your pacing, pauses, and emphasis are pr
 ## Architecture
 
 ```
-Frontend (Svelte 5 + TypeScript)          Backend (Rust)
-┌──────────────────────────┐    Tauri     ┌──────────────────────────┐
-│ Home Screen              │   Commands   │ prerequisites.rs         │
-│ Recording Widget         │ ◄──────────► │ config.rs                │
-│ Preview & Process        │   + Channel  │ ffmpeg.rs                │
-│ Settings                 │    Events    │ elevenlabs.rs            │
-│                          │             │ pipeline.rs              │
-│ recorder.svelte.ts       │             │ google_drive.rs          │
-│ state.svelte.ts          │             │ commands/recording.rs    │
-│ logger.ts                │             │ commands/window.rs       │
-│ WebcamBubble.svelte      │             │                          │
-└──────────────────────────┘             └──────────────────────────┘
+SvelteKit Frontend (TypeScript)
+    ↓ Tauri IPC (invoke)
+Rust Backend (Tauri v2)
+    ↓ HTTP (localhost)
+Python Sidecar (FastAPI + Qwen TTS / CosyVoice3)
 ```
+
+```
+Frontend (Svelte 5 + TypeScript)          Backend (Rust)                Python Sidecar (FastAPI)
+┌──────────────────────────┐    Tauri     ┌──────────────────────────┐    HTTP     ┌──────────────────────┐
+│ Home Screen              │   Commands   │ prerequisites.rs         │  localhost  │ server.py            │
+│ Recording Widget         │ ◄──────────► │ config.rs                │ ◄─────────► │ tts.py               │
+│ Preview & Process        │   + Channel  │ ffmpeg.rs                │             │ profiles.py          │
+│ Settings                 │    Events    │ elevenlabs.rs            │             │ chunked_tts.py       │
+│                          │              │ pipeline.rs              │             │                      │
+│ recorder.svelte.ts       │              │ local_tts.rs             │             │ Whisper (transcribe)  │
+│ state.svelte.ts          │              │ sidecar.rs               │             │ Qwen TTS (generate)   │
+│ logger.ts                │              │ google_drive.rs          │             │ CosyVoice3 (convert)  │
+│ WebcamBubble.svelte      │              │ commands/recording.rs    │             │                      │
+└──────────────────────────┘              └──────────────────────────┘             └──────────────────────┘
+```
+
+The **Python sidecar** is a FastAPI server that runs as a managed subprocess, started automatically on app launch. It handles:
+- **Transcription** — Whisper Large v3 Turbo (MLX) for speech-to-text
+- **TTS generation** — Qwen TTS with voice cloning from audio samples
+- **Voice conversion** — CosyVoice3 speech-to-speech that preserves original timing and prosody
+
+The frontend never calls the sidecar directly — all requests route through the Rust backend via `sidecar_fetch` / `sidecar_upload` commands.
 
 **Processing pipeline:**
 
 ```
 ElevenLabs:  Record → Extract Audio → ElevenLabs S2S → Splice New Audio → Final Video
-Voicebox:    Record → Extract Audio → Transcribe → Qwen TTS Generate → Splice → Final Video
+Local TTS:   Record → Extract Audio → Transcribe (Whisper) → Qwen TTS Generate → Splice → Final Video
+Local VC:    Record → Extract Audio → CosyVoice3 Voice Conversion → Splice → Final Video
 ```
 
 - Desktop mode: ffmpeg CLI handles extraction and splicing
@@ -146,7 +162,9 @@ When running via `pnpm tauri dev`, you can use the app in Chrome at `http://loca
 - Splices video + audio using ffmpeg.wasm (loaded from `static/ffmpeg/`)
 - Stores settings in `localStorage`
 
-Settings entered in the desktop app sync to the browser via `static/_config.json`.
+**Config precedence:**
+1. **Tauri app config** — stored in the OS app data directory (primary, used at runtime)
+2. **`static/_config.json`** — development/build-time fallback only, stripped from production builds
 
 ## Testing
 
@@ -232,15 +250,20 @@ You can create a voice profile directly from VoiceOver:
 
 Or create profiles in the Voicebox web UI at `http://localhost:17493`.
 
-**3. Select the provider:**
+**3. Select the provider and mode:**
 
 1. In **Settings**, switch the provider toggle to **Local**
 2. Select your voice profile from the dropdown
-3. Record as normal — VoiceOver will transcribe your audio, generate new speech with your cloned voice via Qwen TTS, and splice it into the final video
+3. Choose a **local TTS mode** (controlled by the `local_tts_mode` setting):
+
+| Mode | How it works | Best for |
+|------|-------------|----------|
+| **Text-to-Speech (TTS)** | Transcribes your audio to text (Whisper), then regenerates speech with Qwen TTS using your voice profile | Clean re-generation with a cloned voice; output follows the *words* of your recording |
+| **Voice Conversion (VC)** | Uses CosyVoice3 to convert your voice directly to the target voice | Preserving your exact timing, pacing, and prosody; speech-to-speech with natural cadence |
+
+4. Record as normal — VoiceOver processes the audio through the selected pipeline and splices the result into the final video
 
 **Supported audio formats for samples:** `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.aac`, `.webm`, `.opus` (max 50MB per sample)
-
-**How it works under the hood:** Unlike ElevenLabs (which does direct speech-to-speech), Voicebox uses a two-step process: your recorded audio is first transcribed to text, then Qwen TTS regenerates the speech using your voice profile. This means the output follows the *words* of your recording but with the cloned voice's characteristics.
 
 ### Google Drive Setup (Optional)
 
@@ -257,7 +280,7 @@ After saving, the app provides a shareable Google Drive link:
 ### Settings Storage
 
 - **Desktop app:** `~/.local/share/com.voiceover.app/config.json` (Linux) or `~/Library/Application Support/com.voiceover.app/config.json` (macOS)
-- **Browser mode:** `localStorage` + `static/_config.json` bridge
+- **Browser mode:** `localStorage` (with `static/_config.json` as dev-only fallback, stripped from production builds)
 
 ## Project Structure
 
@@ -296,6 +319,12 @@ voiceover/
 │       └── commands/
 │           ├── recording.rs      # Chunk saving, finalization
 │           └── window.rs         # Widget window management
+├── src-tauri/sidecar/            # Python TTS sidecar (FastAPI)
+│   ├── server.py                 # Main FastAPI server
+│   ├── tts.py                    # Qwen TTS synthesis + Whisper transcription
+│   ├── profiles.py               # Voice profile management
+│   ├── chunked_tts.py            # Chunked generation for long text
+│   └── requirements.txt          # Python dependencies (mlx, qwen-tts, torch)
 ├── static/
 │   └── ffmpeg/                   # ffmpeg.wasm core (browser mode)
 ├── package.json
@@ -313,10 +342,66 @@ voiceover/
 | Backend language | Rust |
 | Video processing | ffmpeg (CLI) / ffmpeg.wasm (browser) |
 | Voice API (cloud) | ElevenLabs Speech-to-Speech v1 |
-| Voice API (local) | Voicebox + Qwen TTS |
+| Voice API (local) | Python sidecar: Qwen TTS (text-to-speech) + CosyVoice3 (voice conversion) |
+| Transcription | MLX Whisper Large v3 Turbo |
 | HTTP client | reqwest (Rust) / fetch (browser) |
 | Cloud upload | Google Drive API v3 |
 | State management | Svelte 5 runes |
+
+## Command & API Reference
+
+### Tauri Commands
+
+These are the IPC commands exposed by the Rust backend, invoked from the frontend via `tauriInvoke()`.
+
+| Command | Description |
+|---|---|
+| `check_prerequisites` | Verify system dependencies (ffmpeg) |
+| `get_config` | Read app configuration |
+| `save_config` | Write app configuration |
+| `save_recording_chunk` | Save a recording chunk to disk |
+| `finalize_recording` | Finalize recording and produce output file |
+| `get_temp_dir` | Get the app's temp directory path |
+| `read_file_bytes` | Read a file as raw bytes |
+| `create_widget_window` | Open the floating recording widget |
+| `close_widget_window` | Close the floating recording widget |
+| `process_recording` | Run the full processing pipeline (extract, transform, splice) |
+| `test_api_key` | Validate an ElevenLabs API key |
+| `test_local_connection` | Check sidecar connectivity |
+| `list_local_voices` | List voice profiles from the sidecar |
+| `check_model_status` | Check if TTS models are downloaded/loaded |
+| `extract_youtube_audio` | Extract audio from a YouTube URL via the sidecar |
+| `sidecar_fetch` | Proxy a GET/POST request to the sidecar |
+| `sidecar_upload` | Proxy a file upload to the sidecar |
+| `get_sidecar_status` | Get sidecar process status |
+| `check_models_downloaded` | Check if required models are available |
+| `download_model` | Download a model from HuggingFace |
+| `get_models_disk_usage` | Get disk usage of downloaded models |
+| `google_drive_connect` | Start Google Drive OAuth2 flow |
+| `google_drive_disconnect` | Disconnect Google Drive |
+| `upload_to_drive` | Upload a file to Google Drive |
+
+### Sidecar Routes
+
+HTTP endpoints served by the Python FastAPI sidecar on localhost.
+
+| Route | Method | Description |
+|---|---|---|
+| `/health` | GET | Health check + model availability |
+| `/transcribe` | POST | Transcribe uploaded audio (Whisper) |
+| `/transcribe-path` | POST | Transcribe audio from a file path on disk |
+| `/generate` | POST | Start TTS generation (returns generation ID) |
+| `/generate/{gen_id}/status` | GET | Poll generation status |
+| `/audio/{gen_id}` | GET | Download generated audio |
+| `/voice-convert` | POST | Voice conversion via CosyVoice3 (speech-to-speech) |
+| `/extract-youtube` | POST | Download YouTube audio, extract and clip to WAV |
+| `/profiles` | GET | List all voice profiles |
+| `/profiles` | POST | Create a new voice profile |
+| `/profiles/{id}/samples` | POST | Upload a voice sample to a profile |
+| `/profiles/{id}/samples/from-path` | POST | Add a voice sample from a file path on disk |
+| `/profiles/{id}` | DELETE | Delete a voice profile |
+| `/models/status` | GET | Get model download/load status |
+| `/models/download` | POST | Download a model (streams progress as SSE) |
 
 ## Debugging
 
@@ -351,7 +436,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 - **Browser mode output is WebM** (not MP4) — Chrome's MediaRecorder uses VP8 which can't be muxed into MP4 without re-encoding. Desktop mode outputs MP4 via system ffmpeg.
 - **getDisplayMedia in Tauri webview** — WebKitGTK on Linux may not grant screen capture permission. Use browser mode (Chrome) for recording on Linux.
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
-- **Voicebox local TTS** — requires Voicebox running separately at `localhost:17493`. Voice quality depends on your audio samples and hardware (Apple Silicon recommended for Qwen TTS via MLX).
+- **Local TTS sidecar** — Apple Silicon recommended (Qwen TTS and CosyVoice3 run via MLX). Voice quality depends on your audio samples.
 - **ffmpeg.wasm first load** — ~32MB download on first use in browser mode (cached after).
 - **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect). Once connected, uploads work from both desktop and browser.
 - **Webcam requires camera permission** — prompted on first use.

@@ -62,7 +62,23 @@ DATA_DIR: Path = Path("/tmp/voiceover-tts")
 
 # Generation queue: serial processing to prevent GPU contention
 _generation_queue: asyncio.Queue = asyncio.Queue()
-_generations: dict = {}  # id -> {status, error, audio_path}
+_generations: dict = {}  # id -> {status, error, audio_path, completed_at}
+
+
+def _cleanup_generations():
+    """Remove completed generations older than 1 hour."""
+    now = time.time()
+    expired = [gid for gid, gen in _generations.items()
+               if gen.get("completed_at", now) < now - 3600
+               and gen.get("status") in ("completed", "error")]
+    for gid in expired:
+        audio_path = _generations[gid].get("audio_path")
+        if audio_path and Path(audio_path).exists():
+            Path(audio_path).unlink(missing_ok=True)
+        del _generations[gid]
+    if expired:
+        logger.info(f"Cleaned up {len(expired)} old generation(s)")
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -149,18 +165,44 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _run_generation(gen_id: str, generate_fn):
+    """Shared lifecycle for TTS/VC generation tasks.
+
+    Calls generate_fn() which must return (audio_data, sample_rate, log_label).
+    Handles saving the WAV, marking status as completed/error, and logging.
+    """
+    import soundfile as sf
+
+    try:
+        audio, sample_rate, log_label = await generate_fn()
+
+        # Save to file
+        gen_dir = DATA_DIR / "generations"
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = gen_dir / f"{gen_id}.wav"
+        sf.write(str(audio_path), audio, sample_rate)
+        _generations[gen_id]["audio_path"] = str(audio_path)
+        _generations[gen_id]["status"] = "completed"
+        _generations[gen_id]["completed_at"] = time.time()
+        logger.info(f"{log_label} {gen_id}: saved {audio_path} ({len(audio)} samples, {len(audio)/sample_rate:.1f}s)")
+    except Exception as e:
+        logger.error(f"Generation {gen_id} failed: {e}")
+        _generations[gen_id]["status"] = "error"
+        _generations[gen_id]["error"] = str(e)
+        _generations[gen_id]["completed_at"] = time.time()
+
+
 async def _generation_worker():
     """Process generation requests one at a time."""
     while True:
         gen_id, coro = await _generation_queue.get()
         try:
-            _generations[gen_id]["status"] = "generating"
             await coro
-            _generations[gen_id]["status"] = "completed"
         except Exception as e:
-            logger.error(f"Generation {gen_id} failed: {e}")
-            _generations[gen_id]["status"] = "failed"
+            logger.error(f"Generation {gen_id} failed (unhandled): {e}")
+            _generations[gen_id]["status"] = "error"
             _generations[gen_id]["error"] = str(e)
+            _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
 
@@ -170,8 +212,20 @@ async def _generation_worker():
 # ---------------------------------------------------------------------------
 
 
+_model_cache: dict = {}  # keyword -> (is_available, timestamp)
+_MODEL_CACHE_TTL = 30  # seconds
+
+
 def _is_model_downloaded(models_dir: Path, keyword: str) -> bool:
     """Check if a model matching keyword is in the HF cache."""
+    cache_key = keyword
+    now = time.time()
+    if cache_key in _model_cache:
+        cached_result, cached_time = _model_cache[cache_key]
+        if now - cached_time < _MODEL_CACHE_TTL:
+            return cached_result
+
+    result = False
     try:
         from huggingface_hub import scan_cache_dir
 
@@ -179,10 +233,12 @@ def _is_model_downloaded(models_dir: Path, keyword: str) -> bool:
             cache_info = scan_cache_dir(str(models_dir))
             for repo in cache_info.repos:
                 if keyword in repo.repo_id.lower():
-                    return True
+                    result = True
+                    break
     except Exception:
         pass
-    return False
+    _model_cache[cache_key] = (result, now)
+    return result
 
 
 @app.get("/health")
@@ -264,6 +320,7 @@ async def generate(request: dict):
     generates TTS per-segment and assembles at original timestamps with silence
     gaps. Without segments, falls back to character-based chunked generation.
     """
+    _cleanup_generations()
     profile_id = request.get("profile_id", "")
     text = request.get("text", "")
     language = request.get("language", "en")
@@ -327,6 +384,7 @@ async def generate(request: dict):
                 seg_start = float(seg.get("start", 0))
                 seg_end = float(seg.get("end", 0))
                 if not seg_text or seg_end <= seg_start:
+                    logger.info("Skipping segment %d: %s", i, "empty text" if not seg_text else f"end ({seg_end}) <= start ({seg_start})")
                     continue
 
                 logger.info(
@@ -406,17 +464,9 @@ async def generate(request: dict):
                 elif len(audio) > target_samples:
                     audio = audio[:target_samples]
 
-        # Save to file
-        import soundfile as sf
+        return audio, sample_rate, "Generation"
 
-        gen_dir = DATA_DIR / "generations"
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        audio_path = gen_dir / f"{gen_id}.wav"
-        sf.write(str(audio_path), audio, sample_rate)
-        _generations[gen_id]["audio_path"] = str(audio_path)
-        logger.info(f"Generation {gen_id}: saved {audio_path} ({len(audio)} samples)")
-
-    await _generation_queue.put((gen_id, _do_generate()))
+    await _generation_queue.put((gen_id, _run_generation(gen_id, _do_generate)))
     return {"id": gen_id}
 
 
@@ -461,10 +511,11 @@ _vc_model_name = None
 async def voice_convert(request: dict):
     """Start voice conversion (speech-to-speech). Preserves original timing.
 
-    Uses CosyVoice2 via mlx-audio to convert the source audio to the target
+    Uses CosyVoice3 via mlx-audio to convert the source audio to the target
     voice while keeping the exact pacing, pauses, and prosody of the original.
-    For recordings longer than 30s, processes in overlapping chunks.
+    For recordings longer than 25s, processes in overlapping chunks.
     """
+    _cleanup_generations()
     profile_id = request.get("profile_id", "")
     source_audio_path = request.get("source_audio_path", "")
 
@@ -473,6 +524,9 @@ async def voice_convert(request: dict):
             status_code=400,
             content={"error": "profile_id and source_audio_path are required"},
         )
+
+    if not Path(source_audio_path).exists():
+        return JSONResponse(status_code=400, content={"error": f"Source audio file not found: {source_audio_path}"})
 
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
@@ -487,7 +541,7 @@ async def voice_convert(request: dict):
 
         models_dir = str(DATA_DIR / "models")
 
-        # Load CosyVoice2 model
+        # Load CosyVoice3 model
         _generations[gen_id]["status"] = "loading_model"
         global _vc_model, _vc_model_name
 
@@ -498,8 +552,14 @@ async def voice_convert(request: dict):
 
             def _load():
                 global _vc_model, _vc_model_name
-                _vc_model = load_model(vc_model_id)
-                _vc_model_name = vc_model_id
+                try:
+                    model = load_model(vc_model_id)
+                    _vc_model = model
+                    _vc_model_name = vc_model_id
+                except Exception as e:
+                    _vc_model = None
+                    _vc_model_name = None
+                    raise
 
             await asyncio.to_thread(_load)
             logger.info("Voice conversion model loaded")
@@ -511,7 +571,7 @@ async def voice_convert(request: dict):
             raise ValueError(f"No samples found for profile {profile_id}")
 
         model_sr = _vc_model.sample_rate
-        max_ref_samples = int(30 * model_sr)  # CosyVoice2 accepts up to 30s ref
+        max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
 
         ref_parts = []
         ref_texts = []
@@ -540,6 +600,9 @@ async def voice_convert(request: dict):
 
             logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
 
+        if not ref_parts:
+            raise ValueError("No reference audio samples loaded successfully")
+
         ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
         # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
         # Partial text causes voice cloning degradation. When ref_text is None and
@@ -552,7 +615,7 @@ async def voice_convert(request: dict):
 
         source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
 
-        chunk_duration = 25  # CosyVoice2 limit is 30s, use 25 for safety
+        chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
         chunk_samples = int(chunk_duration * model_sr)
 
         _generations[gen_id]["status"] = "generating"
@@ -581,6 +644,8 @@ async def voice_convert(request: dict):
         if len(source_np) <= chunk_samples:
             logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
             audio = await asyncio.to_thread(_convert_chunk, source_audio)
+            if len(audio) == 0:
+                raise ValueError("Voice conversion produced empty audio for single chunk")
             sample_rate = model_sr
         else:
             # Chunk and stitch for long recordings
@@ -599,6 +664,8 @@ async def voice_convert(request: dict):
                 piece = await asyncio.to_thread(_convert_chunk, chunk)
                 if len(piece) > 0:
                     converted_pieces.append(piece)
+                else:
+                    logger.warning(f"  Chunk {i+1}/{n_chunks} produced empty audio")
                 pos += step
                 if pos >= total_samples:
                     break
@@ -610,15 +677,9 @@ async def voice_convert(request: dict):
             audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
             sample_rate = model_sr
 
-        # Save
-        gen_dir = DATA_DIR / "generations"
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        audio_path = gen_dir / f"{gen_id}.wav"
-        sf.write(str(audio_path), audio, sample_rate)
-        _generations[gen_id]["audio_path"] = str(audio_path)
-        logger.info(f"Voice conversion {gen_id}: saved {audio_path} ({len(audio)} samples, {len(audio)/sample_rate:.1f}s)")
+        return audio, sample_rate, "Voice conversion"
 
-    await _generation_queue.put((gen_id, _do_voice_convert()))
+    await _generation_queue.put((gen_id, _run_generation(gen_id, _do_voice_convert)))
     return {"id": gen_id}
 
 
@@ -639,6 +700,11 @@ async def extract_youtube(request: dict):
 
     if not url:
         return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"):
+        return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
 
     temp_dir = DATA_DIR / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)

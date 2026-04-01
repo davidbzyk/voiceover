@@ -3,6 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalTtsMode {
+    #[default]
+    Tts,
+    Vc,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Voice {
     pub id: String,
@@ -93,19 +101,15 @@ pub struct AppConfig {
     /// TTS provider: "elevenlabs" or "local"
     #[serde(default = "default_provider")]
     pub provider: String,
-    /// Endpoint for the local Voicebox server
+    /// Endpoint for the local TTS sidecar
     #[serde(default = "default_local_endpoint")]
     pub local_endpoint: String,
-    /// Voice profile ID to use with the local Voicebox server
+    /// Voice profile ID to use with the local TTS sidecar
     #[serde(default)]
     pub local_voice_profile_id: String,
     /// Local TTS mode: "tts" (text-to-speech via Qwen) or "vc" (voice conversion via CosyVoice)
-    #[serde(default = "default_local_tts_mode")]
-    pub local_tts_mode: String,
-}
-
-fn default_local_tts_mode() -> String {
-    "tts".to_string()
+    #[serde(default)]
+    pub local_tts_mode: LocalTtsMode,
 }
 
 fn default_output_dir() -> String {
@@ -135,7 +139,7 @@ impl Default for AppConfig {
             provider: default_provider(),
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
-            local_tts_mode: default_local_tts_mode(),
+            local_tts_mode: LocalTtsMode::default(),
         }
     }
 }
@@ -345,7 +349,7 @@ mod tests {
             provider: "elevenlabs".to_string(),
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
-            local_tts_mode: "tts".to_string(),
+            local_tts_mode: LocalTtsMode::Tts,
         };
 
         let json = serde_json::to_string(&config).unwrap();

@@ -1,5 +1,7 @@
 # Building & Releasing VoiceOver
 
+> **macOS only.** VoiceOver builds and runs on macOS (Apple Silicon or Intel). The local TTS sidecar uses MLX and works best on Apple Silicon.
+
 ## Prerequisites
 
 - **macOS** (Apple Silicon or Intel)
@@ -106,6 +108,23 @@ The .dmg is what you distribute. Users drag VoiceOver.app into their Application
 pnpm test:all          # Frontend + Rust tests
 pnpm test              # Frontend only
 pnpm test:rust         # Rust only
+```
+
+## Sidecar Development
+
+The Python TTS sidecar can be run standalone for development and testing:
+
+```bash
+python3 -m venv .sidecar-venv
+source .sidecar-venv/bin/activate
+pip install -r src-tauri/sidecar/requirements.txt
+python src-tauri/sidecar/server.py --port 8123 --data-dir /tmp/voiceover-tts
+```
+
+To build the sidecar as a standalone binary (bundled into the app for distribution):
+
+```bash
+cd src-tauri/sidecar && pyinstaller voiceover-tts.spec
 ```
 
 ## Notes

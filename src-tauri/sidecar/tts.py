@@ -76,7 +76,6 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
 
     for word_info in words:
         word_start = float(word_info.get("start", 0))
-        word_end = float(word_info.get("end", 0))
         word_text = (word_info.get("word") or word_info.get("text") or "").strip()
 
         if not word_text:
@@ -134,12 +133,16 @@ def _filter_segments(raw_segments: list) -> list:
             "start": float(seg.get("start", 0)),
             "end": float(seg.get("end", 0)),
             "text": text,
+            "words": [],
         })
 
     # Fix overlapping timestamps
     for i in range(1, len(filtered)):
         if filtered[i]["start"] < filtered[i - 1]["end"]:
             filtered[i]["start"] = filtered[i - 1]["end"]
+
+    # Remove degenerate segments created by clamping
+    filtered = [seg for seg in filtered if seg["end"] > seg["start"]]
 
     return filtered
 
@@ -158,9 +161,9 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
 
     if _whisper_model is None:
         logger.info("Loading Whisper model (first use)...")
-        from mlx_audio.stt import load
+        from mlx_audio.stt.utils import load_model as load_stt_model
 
-        _whisper_model = load("openai/whisper-large-v3-turbo")
+        _whisper_model = load_stt_model("mlx-community/whisper-large-v3-turbo")
         logger.info("Whisper model loaded")
 
     # Use word_timestamps=True for precise per-word timing
@@ -196,8 +199,8 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
 
         info = sf.info(audio_path)
         duration = info.duration
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).warning("Could not read audio duration from %s: %s", audio_path, e)
 
     # Collect all words across segments and group into phrases by pauses
     all_words = []

@@ -71,7 +71,7 @@ export class VoiceboxClient {
 		referenceText: string
 	): Promise<unknown> {
 		const buffer = await audioFile.arrayBuffer();
-		const fileBytes = Array.from(new Uint8Array(buffer));
+		const fileBytes = new Uint8Array(buffer);
 		const result = await tauriInvoke<string>('sidecar_upload', {
 			path: `/profiles/${profileId}/samples`,
 			fileBytes,

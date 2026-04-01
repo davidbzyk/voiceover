@@ -110,7 +110,7 @@ pub async fn process_recording(
 
     let temp_dir = recording.parent().unwrap_or(std::path::Path::new("/tmp"));
     let extracted_wav = temp_dir.join(format!("extracted-{timestamp}.wav"));
-    // ElevenLabs outputs MP3; local Voicebox outputs WAV.
+    // ElevenLabs outputs MP3; local TTS sidecar outputs WAV.
     // ffmpeg's replace_audio handles both (transcodes to AAC).
     let transformed_audio = if use_local {
         temp_dir.join(format!("transformed-{timestamp}.wav"))
@@ -154,7 +154,7 @@ pub async fn process_recording(
             .ok();
 
         let port = sidecar::ensure_running(&app).await?;
-        if config.local_tts_mode == "vc" {
+        if config.local_tts_mode == config::LocalTtsMode::Vc {
             log::info!("[pipeline] Using voice conversion (CosyVoice S2S)");
             local_tts::voice_convert(
                 port,
@@ -210,8 +210,10 @@ pub async fn process_recording(
         let transcript_src = transformed_audio.with_extension("txt");
         if transcript_src.exists() {
             let transcript_dst = final_path.with_extension("txt");
-            std::fs::copy(&transcript_src, &transcript_dst).ok();
-            log::info!("[pipeline] Transcript saved: {:?}", transcript_dst);
+            match std::fs::copy(&transcript_src, &transcript_dst) {
+                Ok(_) => log::info!("[pipeline] Transcript saved: {:?}", transcript_dst),
+                Err(e) => log::warn!("[pipeline] Failed to copy transcript: {}", e),
+            }
         }
     }
 

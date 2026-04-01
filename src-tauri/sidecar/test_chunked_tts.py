@@ -6,6 +6,7 @@ import pytest
 from chunked_tts import (
     assemble_timed_segments,
     concatenate_audio_chunks,
+    pad_audio_to_match_timing,
     split_text_into_chunks,
 )
 
@@ -177,3 +178,87 @@ class TestAssembleTimedSegments:
         # Should not crash, audio truncated to fit buffer
         assert len(result) == int(5.0 * SR)
         assert np.mean(np.abs(result[int(4.0 * SR):])) > 0.3
+
+
+# ---------------------------------------------------------------------------
+# pad_audio_to_match_timing
+# ---------------------------------------------------------------------------
+
+
+class TestPadAudioToMatchTiming:
+    def _make_audio(self, duration_s: float, sr: int = 24000) -> np.ndarray:
+        """Helper: create a non-silent audio array of given duration."""
+        samples = int(duration_s * sr)
+        return np.random.randn(samples).astype(np.float32)
+
+    def test_empty_word_timing_returns_unchanged(self):
+        audio = self._make_audio(1.0)
+        result = pad_audio_to_match_timing(audio, 24000, [])
+        np.testing.assert_array_equal(result, audio)
+
+    def test_single_word_returns_unchanged(self):
+        audio = self._make_audio(1.0)
+        timing = [{"word": "Hello", "start": 0.0, "end": 1.0}]
+        result = pad_audio_to_match_timing(audio, 24000, timing)
+        np.testing.assert_array_equal(result, audio)
+
+    def test_small_gap_returns_unchanged(self):
+        """Total gaps under 50ms threshold should return audio unchanged."""
+        audio = self._make_audio(2.0)
+        timing = [
+            {"word": "Hello", "start": 0.0, "end": 0.98},
+            {"word": "world", "start": 1.0, "end": 2.0},  # 20ms gap
+        ]
+        result = pad_audio_to_match_timing(audio, 24000, timing)
+        np.testing.assert_array_equal(result, audio)
+
+    def test_gap_inserts_silence(self):
+        """A significant gap between words should make output longer."""
+        sr = 24000
+        audio = self._make_audio(2.0, sr)
+        timing = [
+            {"word": "Hello", "start": 0.0, "end": 1.0},
+            {"word": "world", "start": 1.5, "end": 2.0},  # 500ms gap
+        ]
+        result = pad_audio_to_match_timing(audio, sr, timing)
+        assert len(result) > len(audio), "Output should be longer due to inserted silence"
+
+    def test_returns_ndarray(self):
+        audio = self._make_audio(1.0)
+        timing = [{"word": "Hi", "start": 0.0, "end": 1.0}]
+        result = pad_audio_to_match_timing(audio, 24000, timing)
+        assert isinstance(result, np.ndarray)
+
+    def test_empty_audio_returns_unchanged(self):
+        """Empty audio array should be returned as-is."""
+        audio = np.array([], dtype=np.float32)
+        timing = [
+            {"word": "Hello", "start": 0.0, "end": 1.0},
+            {"word": "world", "start": 1.5, "end": 2.0},
+        ]
+        result = pad_audio_to_match_timing(audio, 24000, timing)
+        np.testing.assert_array_equal(result, audio)
+
+    def test_multiple_gaps_accumulate(self):
+        """Multiple gaps should all contribute to a longer output."""
+        sr = 24000
+        audio = self._make_audio(3.0, sr)
+        timing = [
+            {"word": "Hello", "start": 0.0, "end": 0.8},
+            {"word": "beautiful", "start": 1.3, "end": 2.0},  # 500ms gap
+            {"word": "world", "start": 2.8, "end": 3.0},      # 800ms gap
+        ]
+        result = pad_audio_to_match_timing(audio, sr, timing)
+        # Total gap is 1.3s which is well above 50ms threshold
+        assert len(result) > len(audio)
+
+    def test_output_dtype_is_float32(self):
+        """Output should be float32 regardless of inserted silence."""
+        sr = 24000
+        audio = self._make_audio(2.0, sr)
+        timing = [
+            {"word": "Hello", "start": 0.0, "end": 1.0},
+            {"word": "world", "start": 1.5, "end": 2.0},
+        ]
+        result = pad_audio_to_match_timing(audio, sr, timing)
+        assert result.dtype == np.float32
