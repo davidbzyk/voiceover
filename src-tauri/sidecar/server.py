@@ -22,22 +22,23 @@ from pathlib import Path
 import numpy as np
 from contextlib import asynccontextmanager
 
-# Monkey-patch transformers.check_model_inputs to handle both @decorator and
-# @decorator() call styles. qwen-tts 0.1.1 uses @check_model_inputs() (with
-# parens) but transformers 4.56+ defines it as a plain decorator.
+# Monkey-patch transformers.check_model_inputs to a no-op decorator.
+# qwen-tts 0.1.1 uses @check_model_inputs() (with parens as a decorator factory)
+# but the actual implementation in transformers 4.56-4.57 does complex kwargs
+# inspection that is incompatible with qwen-tts's forward() signatures.
+# We don't need its functionality (attention capture, cache management).
 import transformers.utils.generic as _tug
 
-_original_cmi = _tug.check_model_inputs
+
+def _noop_check_model_inputs(*args, **kwargs):
+    if args and callable(args[0]):
+        return args[0]  # @check_model_inputs without parens
+    def decorator(func):
+        return func
+    return decorator  # @check_model_inputs() with parens
 
 
-def _flexible_check_model_inputs(func=None):
-    if func is not None:
-        return _original_cmi(func)
-    # Called as @check_model_inputs() — return the decorator
-    return _original_cmi
-
-
-_tug.check_model_inputs = _flexible_check_model_inputs
+_tug.check_model_inputs = _noop_check_model_inputs
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile

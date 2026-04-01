@@ -35,6 +35,161 @@ LANGUAGE_CODE_TO_NAME = {
 _whisper_model = None
 
 
+def _find_speech_regions(
+    rms: np.ndarray,
+    threshold: float,
+    min_gap_frames: int,
+) -> list:
+    """Find contiguous speech regions in an RMS energy array.
+
+    Groups speech frames that are separated by fewer than min_gap_frames
+    of silence into the same region. Returns list of (onset_frame, offset_frame).
+    """
+    speech_mask = rms > threshold
+    regions = []
+    in_speech = False
+    onset = 0
+    silent_count = 0
+
+    for i, is_speech in enumerate(speech_mask):
+        if is_speech:
+            if not in_speech:
+                onset = i
+                in_speech = True
+            silent_count = 0
+        else:
+            if in_speech:
+                silent_count += 1
+                if silent_count >= min_gap_frames:
+                    regions.append((onset, i - silent_count + 1))
+                    in_speech = False
+                    silent_count = 0
+
+    if in_speech:
+        # Find last speech frame
+        last_speech = len(rms) - 1
+        while last_speech >= onset and not speech_mask[last_speech]:
+            last_speech -= 1
+        regions.append((onset, last_speech + 1))
+
+    return regions
+
+
+def _refine_segment_timestamps(audio_path: str, segments: list) -> list:
+    """Refine and split Whisper segments using energy-based voice activity detection.
+
+    Whisper often groups multiple speech bursts (separated by pauses) into a
+    single segment. This analyzes the actual audio waveform to:
+    1. Find precise speech onset/offset (trim leading/trailing silence)
+    2. Split segments that contain internal silence gaps into sub-segments
+
+    Text is split proportionally by speech duration when a segment is split.
+    """
+    import soundfile as sf
+
+    audio, sr = sf.read(audio_path, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio[:, 0]  # mono
+
+    frame_ms = 20
+    frame_len = int(sr * frame_ms / 1000)
+    n_frames = len(audio) // frame_len
+    if n_frames == 0:
+        return segments
+
+    # RMS energy per frame
+    rms = np.array([
+        np.sqrt(np.mean(audio[i * frame_len:(i + 1) * frame_len] ** 2))
+        for i in range(n_frames)
+    ], dtype=np.float32)
+
+    # Adaptive threshold: 3x the estimated noise floor
+    nonzero_rms = rms[rms > 0]
+    if len(nonzero_rms) == 0:
+        return segments
+    threshold = float(np.percentile(nonzero_rms, 15)) * 3
+    threshold = max(threshold, 0.005)
+
+    # Minimum silence gap to trigger a split (300ms)
+    min_gap_frames = int(0.3 * sr / frame_len)
+
+    refined = []
+    for seg in segments:
+        start_frame = int(seg["start"] * sr / frame_len)
+        end_frame = int(seg["end"] * sr / frame_len)
+        end_frame = min(end_frame, n_frames)
+
+        if start_frame >= end_frame:
+            refined.append(seg)
+            continue
+
+        seg_rms = rms[start_frame:end_frame]
+        regions = _find_speech_regions(seg_rms, threshold, min_gap_frames)
+
+        if not regions:
+            refined.append(seg)
+            continue
+
+        if len(regions) == 1:
+            # Single speech region — just refine start/end
+            onset, offset = regions[0]
+            refined_start = round((start_frame + onset) * frame_len / sr, 3)
+            refined_end = round((start_frame + offset) * frame_len / sr, 3)
+            refined.append({
+                "start": refined_start,
+                "end": refined_end,
+                "text": seg["text"],
+            })
+        else:
+            # Multiple speech regions — split segment at silence gaps
+            # Divide text proportionally by speech duration
+            region_durations = [(off - on) for on, off in regions]
+            total_speech = sum(region_durations)
+            text = seg["text"].strip()
+            text_pos = 0
+
+            for idx, (onset, offset) in enumerate(regions):
+                refined_start = round((start_frame + onset) * frame_len / sr, 3)
+                refined_end = round((start_frame + offset) * frame_len / sr, 3)
+
+                if idx == len(regions) - 1:
+                    # Last region gets remaining text
+                    sub_text = text[text_pos:].strip()
+                else:
+                    # Split text proportionally by speech duration
+                    proportion = region_durations[idx] / total_speech
+                    char_end = text_pos + int(len(text) * proportion)
+                    # Try to split at a word/sentence boundary
+                    split_at = char_end
+                    for offset_search in range(min(20, char_end - text_pos)):
+                        check = char_end + offset_search
+                        if check < len(text) and text[check] in " .,;!?":
+                            split_at = check + 1
+                            break
+                        check = char_end - offset_search
+                        if check > text_pos and text[check] in " .,;!?":
+                            split_at = check + 1
+                            break
+                    sub_text = text[text_pos:split_at].strip()
+                    text_pos = split_at
+
+                if sub_text:
+                    logger.info(
+                        "Split segment [%.1f-%.1f] -> sub %d/%d [%.1f-%.1f] '%s'",
+                        seg["start"], seg["end"],
+                        idx + 1, len(regions),
+                        refined_start, refined_end,
+                        sub_text[:40],
+                    )
+                    refined.append({
+                        "start": refined_start,
+                        "end": refined_end,
+                        "text": sub_text,
+                    })
+
+    return refined
+
+
 def _filter_segments(raw_segments: list) -> list:
     """Filter hallucinated Whisper segments and fix overlapping timestamps.
 
@@ -117,6 +272,7 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
         pass
 
     segments = _filter_segments(raw_segments)
+    segments = _refine_segment_timestamps(audio_path, segments)
     logger.info(
         "Transcribed: %.1fs audio -> %d chars, %d segments (from %d raw)",
         duration, len(text), len(segments), len(raw_segments),
