@@ -516,22 +516,35 @@ async def voice_convert(request: dict):
         ref_parts = []
         ref_texts = []
         total_ref = 0
+        all_have_text = True
         for sample in samples:
             if total_ref >= max_ref_samples:
                 break
             part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
             remaining = max_ref_samples - total_ref
-            if len(part) > remaining:
+            was_truncated = len(part) > remaining
+            if was_truncated:
                 part = part[:remaining]
             ref_parts.append(part)
             total_ref += len(part)
-            ref_text = sample.get("reference_text", "").strip()
-            if ref_text:
-                ref_texts.append(ref_text)
+
+            sample_text = sample.get("reference_text", "").strip()
+            if sample_text and not was_truncated:
+                ref_texts.append(sample_text)
+            elif was_truncated:
+                # Audio was truncated — omit transcript to avoid text/audio mismatch
+                all_have_text = False
+                logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
+            else:
+                all_have_text = False
+
             logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
 
         ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
-        ref_text = " ".join(ref_texts) if ref_texts else None
+        # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
+        # Partial text causes voice cloning degradation. When ref_text is None and
+        # stt_model is set, CosyVoice3 will auto-transcribe the reference audio.
+        ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
         logger.info(
             f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
             f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
@@ -546,12 +559,14 @@ async def voice_convert(request: dict):
 
         def _convert_chunk(chunk_audio):
             """Run voice conversion on a single chunk (blocking, for thread pool)."""
+            # When ref_text is available, skip auto-transcription (faster).
+            # When ref_text is None, let the model auto-transcribe for best quality.
             results = _vc_model.generate(
                 text="",
                 ref_audio=ref_audio,
                 ref_text=ref_text,
                 source_audio=chunk_audio,
-                stt_model=None,  # We provide ref_text, skip auto-transcription
+                stt_model=None if ref_text else "mlx-community/whisper-large-v3-turbo-4bit",
                 verbose=False,
             )
             audio_parts = []
