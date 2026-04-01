@@ -152,19 +152,26 @@ STRETCH_MIN_RATE = 0.25
 STRETCH_MAX_RATE = 4.0
 
 
-def apply_fade(
+def apply_fade_out(
     audio: np.ndarray,
     sample_rate: int,
-    fade_ms: int = 5,
+    fade_ms: int = 30,
 ) -> np.ndarray:
-    """Apply fade-in and fade-out to prevent clicks at segment boundaries."""
+    """Apply a Hann-window fade-out to the end of audio for smooth silence transition.
+
+    Only fades the tail — the start is left untouched so speech attacks are clean.
+    Uses a raised cosine (Hann) curve which sounds more natural than linear.
+    """
     fade_samples = int(sample_rate * fade_ms / 1000)
-    if len(audio) < 2 * fade_samples:
+    if len(audio) < fade_samples:
         return audio
 
     audio = audio.copy()
-    audio[:fade_samples] *= np.linspace(0, 1, fade_samples, dtype=np.float32)
-    audio[-fade_samples:] *= np.linspace(1, 0, fade_samples, dtype=np.float32)
+    # Raised cosine fade-out: (1 + cos(0..pi)) / 2 goes from 1 to 0
+    fade_out = ((1 + np.cos(np.linspace(0, np.pi, fade_samples))) / 2).astype(
+        np.float32
+    )
+    audio[-fade_samples:] *= fade_out
     return audio
 
 
@@ -214,6 +221,12 @@ def assemble_timed_segments(
 ) -> np.ndarray:
     """Assemble TTS audio segments at original timestamps with silence gaps.
 
+    Follows the open-dubbing approach: each segment's available window extends
+    to the START of the next segment (not its own end). TTS plays at natural
+    speed with no truncation or fading — it finishes when it finishes, and
+    silence fills the remaining gap. Only truncates if TTS would actually
+    overlap the next segment.
+
     Args:
         tts_segments: List of (audio_array, original_start_sec, original_end_sec).
         original_duration: Total duration of the original recording in seconds.
@@ -228,25 +241,29 @@ def assemble_timed_segments(
     if not tts_segments:
         return output
 
-    for audio, start_sec, end_sec in tts_segments:
+    for i, (audio, start_sec, end_sec) in enumerate(tts_segments):
         if len(audio) == 0:
             continue
 
         start_sample = int(start_sec * sample_rate)
-        target_samples = int((end_sec - start_sec) * sample_rate)
-        if target_samples <= 0:
+
+        # Available window extends to the start of the NEXT segment,
+        # not this segment's end. This gives TTS room to breathe.
+        if i + 1 < len(tts_segments):
+            next_start_sec = tts_segments[i + 1][1]  # next segment's start
+            max_end_sample = int(next_start_sec * sample_rate)
+        else:
+            max_end_sample = total_samples
+
+        available_samples = max_end_sample - start_sample
+        if available_samples <= 0:
             continue
 
-        # Truncate if TTS audio exceeds the segment window (prevents overlap
-        # with the next segment). If shorter, silence fills the gap naturally
-        # since the output buffer is pre-filled with zeros.
-        if len(audio) > target_samples:
-            audio = audio[:target_samples]
+        # Only truncate if TTS would overlap the next segment
+        if len(audio) > available_samples:
+            audio = audio[:available_samples]
 
-        # Apply fade to prevent clicks at boundaries
-        audio = apply_fade(audio, sample_rate)
-
-        # Place in output buffer with bounds checking
+        # Place in output buffer — no fading, natural TTS start and end
         end_sample = min(start_sample + len(audio), total_samples)
         place_len = end_sample - start_sample
         if place_len > 0:
