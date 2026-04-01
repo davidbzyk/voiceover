@@ -22,6 +22,23 @@ from pathlib import Path
 import numpy as np
 from contextlib import asynccontextmanager
 
+# Monkey-patch transformers.check_model_inputs to handle both @decorator and
+# @decorator() call styles. qwen-tts 0.1.1 uses @check_model_inputs() (with
+# parens) but transformers 4.56+ defines it as a plain decorator.
+import transformers.utils.generic as _tug
+
+_original_cmi = _tug.check_model_inputs
+
+
+def _flexible_check_model_inputs(func=None):
+    if func is not None:
+        return _original_cmi(func)
+    # Called as @check_model_inputs() — return the decorator
+    return _original_cmi
+
+
+_tug.check_model_inputs = _flexible_check_model_inputs
+
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -373,20 +390,27 @@ async def extract_youtube(request: dict):
     try:
         import subprocess
 
-        # Step 1: Download video with yt-dlp
+        # Step 1: Download video with yt-dlp (as library, not subprocess)
         logger.info(f"Downloading YouTube video: {url}")
         video_path = temp_dir / f"{output_id}.video"
-        dl_result = await asyncio.to_thread(
-            subprocess.run,
-            ["yt-dlp", "-o", str(video_path), "-q", "--no-warnings", url],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if dl_result.returncode != 0:
+
+        def _download():
+            import yt_dlp as ydl
+
+            opts = {
+                "outtmpl": str(video_path),
+                "quiet": True,
+                "no_warnings": True,
+            }
+            with ydl.YoutubeDL(opts) as dl:
+                dl.download([url])
+
+        try:
+            await asyncio.to_thread(_download)
+        except Exception as e:
             return JSONResponse(
                 status_code=400,
-                content={"error": f"Download failed: {dl_result.stderr.strip()}"},
+                content={"error": f"Download failed: {e}"},
             )
 
         # Find the actual downloaded file (yt-dlp may add extension)
@@ -616,6 +640,12 @@ def main():
         required=True,
         help="Parent process PID for watchdog",
     )
+    parser.add_argument(
+        "--ffmpeg",
+        type=str,
+        default="",
+        help="Path to ffmpeg binary (bundled in .app)",
+    )
     args = parser.parse_args()
 
     global DATA_DIR
@@ -626,6 +656,13 @@ def main():
     models_dir = DATA_DIR / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HUB_CACHE"] = str(models_dir)
+
+    # If a bundled ffmpeg path is provided, add its directory to PATH
+    # so that mlx-whisper and subprocess calls can find it.
+    if args.ffmpeg and Path(args.ffmpeg).exists():
+        ffmpeg_dir = str(Path(args.ffmpeg).parent)
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info(f"Added bundled ffmpeg to PATH: {ffmpeg_dir}")
 
     logger.info(
         f"Starting VoiceOver TTS sidecar: "

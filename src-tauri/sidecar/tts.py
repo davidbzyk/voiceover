@@ -1,7 +1,7 @@
 """TTS inference engine for VoiceOver sidecar.
 
-Whisper transcription + Qwen TTS generation.
-Ported from Voicebox pytorch_backend.py patterns.
+Whisper transcription (via mlx-audio) + Qwen TTS generation.
+Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
 """
 
 import asyncio
@@ -29,34 +29,55 @@ LANGUAGE_CODE_TO_NAME = {
 }
 
 # ---------------------------------------------------------------------------
-# Whisper transcription
+# Whisper transcription (using mlx-audio, same as Voicebox)
 # ---------------------------------------------------------------------------
 
-_whisper_loaded = False
+_whisper_model = None
 
 
 def transcribe(audio_path: str, models_dir: str) -> dict:
-    """Transcribe audio file using MLX Whisper."""
-    global _whisper_loaded
+    """Transcribe audio file using MLX Whisper via mlx-audio.
+
+    Uses mlx_audio.stt.load() which handles model loading correctly
+    in PyInstaller binaries (unlike mlx_whisper which has npz issues).
+    """
+    global _whisper_model
 
     os.environ["HF_HUB_CACHE"] = models_dir
 
-    import mlx_whisper
-
-    if not _whisper_loaded:
+    if _whisper_model is None:
         logger.info("Loading Whisper model (first use)...")
-        _whisper_loaded = True
+        from mlx_audio.stt import load
 
-    result = mlx_whisper.transcribe(
-        audio_path,
-        path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
-    )
+        _whisper_model = load("openai/whisper-large-v3-turbo")
+        logger.info("Whisper model loaded")
 
-    text = result.get("text", "").strip()
+    result = _whisper_model.generate(str(audio_path))
+
+    # Extract text from result
+    if isinstance(result, str):
+        text = result.strip()
+    elif isinstance(result, dict):
+        text = result.get("text", "").strip()
+    elif hasattr(result, "text"):
+        text = result.text.strip()
+    else:
+        # Generator of results — collect all text
+        segments = list(result)
+        text = " ".join(
+            s.text.strip() if hasattr(s, "text") else str(s).strip()
+            for s in segments
+        ).strip()
+
+    # Estimate duration from audio file
     duration = 0.0
-    segments = result.get("segments", [])
-    if segments:
-        duration = segments[-1].get("end", 0.0)
+    try:
+        import soundfile as sf
+
+        info = sf.info(audio_path)
+        duration = info.duration
+    except Exception:
+        pass
 
     return {"text": text, "duration": duration}
 
@@ -122,15 +143,14 @@ async def create_voice_prompt(
     audio_path: str,
     reference_text: str,
     cache_dir: Optional[str] = None,
-) -> dict:
+) -> list:
     """Create voice prompt from reference audio.
 
-    Ported from Voicebox pytorch_backend.py create_voice_prompt().
+    Returns a list of VoiceClonePromptItem (qwen-tts 0.1.x API).
     """
     if _qwen_model is None:
         raise RuntimeError("Qwen model not loaded")
 
-    # Check cache
     if cache_dir:
         cache_key = _cache_key(audio_path, reference_text)
         cached = _load_cached_prompt(cache_dir, cache_key)
@@ -145,47 +165,35 @@ async def create_voice_prompt(
             x_vector_only_mode=False,
         )
 
-    prompt = await asyncio.to_thread(_create_sync)
+    prompt_items = await asyncio.to_thread(_create_sync)
 
-    # Cache
     if cache_dir:
-        _save_cached_prompt(cache_dir, cache_key, prompt)
+        _save_cached_prompt(cache_dir, cache_key, prompt_items)
 
-    return prompt
+    return prompt_items
 
 
 async def combine_voice_prompts(
     audio_paths: list[str],
     reference_texts: list[str],
     cache_dir: Optional[str] = None,
-) -> dict:
-    """Combine multiple samples into a single voice prompt."""
-    if len(audio_paths) == 1:
-        return await create_voice_prompt(
-            audio_paths[0], reference_texts[0], cache_dir
-        )
-
-    # For multiple samples, create each prompt and average
-    # Following Voicebox's combine pattern
-    prompts = []
+) -> list:
+    """Combine multiple samples into a list of VoiceClonePromptItems."""
+    all_items = []
     for audio_path, ref_text in zip(audio_paths, reference_texts):
-        prompt = await create_voice_prompt(audio_path, ref_text, cache_dir)
-        prompts.append(prompt)
-
-    # Use the last prompt as the base (Voicebox behavior)
-    return prompts[-1]
+        items = await create_voice_prompt(audio_path, ref_text, cache_dir)
+        all_items.extend(items)
+    # Use only the last sample's prompt (consistent with Voicebox behavior)
+    return all_items[-1:] if all_items else []
 
 
 async def generate_speech(
     text: str,
-    voice_prompt: dict,
+    voice_prompt: list,
     language: str = "en",
     seed: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Generate speech from text using a voice prompt.
-
-    Returns (audio_array, sample_rate).
-    """
+    """Generate speech from text using voice clone prompt items."""
     if _qwen_model is None:
         raise RuntimeError("Qwen model not loaded")
 
@@ -197,7 +205,13 @@ async def generate_speech(
             if torch.backends.mps.is_available():
                 torch.mps.manual_seed(seed)
 
+        # Map language code to display name (capitalize for qwen-tts 0.1.x)
         lang_name = LANGUAGE_CODE_TO_NAME.get(language, "auto")
+        if lang_name != "auto":
+            lang_name = lang_name.capitalize()
+        else:
+            lang_name = "Auto"
+
         wavs, sample_rate = _qwen_model.generate_voice_clone(
             text=text,
             voice_clone_prompt=voice_prompt,
@@ -215,7 +229,6 @@ async def generate_speech(
 
 
 def _cache_key(audio_path: str, reference_text: str) -> str:
-    """Generate a cache key from audio file content + reference text."""
     h = hashlib.md5()
     try:
         h.update(Path(audio_path).read_bytes())
@@ -226,7 +239,6 @@ def _cache_key(audio_path: str, reference_text: str) -> str:
 
 
 def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
-    """Load a cached voice prompt from disk."""
     cache_path = Path(cache_dir) / f"{cache_key}.prompt"
     if not cache_path.exists():
         return None
@@ -239,7 +251,6 @@ def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
 
 
 def _save_cached_prompt(cache_dir: str, cache_key: str, prompt: dict) -> None:
-    """Save a voice prompt to disk cache."""
     cache_path = Path(cache_dir) / f"{cache_key}.prompt"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     try:

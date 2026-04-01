@@ -7,22 +7,54 @@ Build:
 Reference: voicebox/backend/voicebox-server.spec
 """
 
-import sys
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata, collect_submodules
 
 block_cipher = None
 
-# Collect all data/binaries for complex packages
-mlx_data, mlx_binaries, mlx_hiddenimports = collect_all("mlx")
-mlx_audio_data, mlx_audio_binaries, mlx_audio_hiddenimports = collect_all(
-    "mlx_audio"
-)
+datas = []
+binaries = []
+hiddenimports = []
+
+# Copy package metadata (required for safetensors format detection)
+datas += copy_metadata('safetensors')
+datas += copy_metadata('qwen-tts')
+datas += copy_metadata('requests')
+datas += copy_metadata('transformers')
+datas += copy_metadata('huggingface-hub')
+datas += copy_metadata('tokenizers')
+datas += copy_metadata('tqdm')
+
+# Collect submodules (ensures all .so native extensions are included)
+hiddenimports += collect_submodules('mlx')
+hiddenimports += collect_submodules('mlx_whisper')
+hiddenimports += collect_submodules('mlx_audio')
+
+# MLX needs its Metal shader library and native .dylib bundled explicitly
+tmp_ret = collect_all('mlx')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all('mlx_metal')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+# Collect all for complex packages
+for pkg in ["qwen_tts", "librosa", "lazy_loader", "mlx_audio"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d
+        binaries += b
+        hiddenimports += h
+    except Exception:
+        pass
 
 a = Analysis(
     ["server.py"],
     pathex=[],
-    binaries=mlx_binaries + mlx_audio_binaries,
-    datas=mlx_data + mlx_audio_data,
+    binaries=binaries,
+    datas=datas,
     hiddenimports=[
         # FastAPI + ASGI
         "fastapi",
@@ -43,24 +75,45 @@ a = Analysis(
         "anyio._backends._asyncio",
         "multipart",
         "python_multipart",
-        # MLX Whisper
+        # MLX
         "mlx",
         "mlx.core",
+        "mlx.nn",
         "mlx_whisper",
+        "mlx_audio",
+        "mlx_audio.stt",
+        # Qwen TTS
+        "qwen_tts",
+        "qwen_tts.core",
+        # PyTorch
+        "torch",
+        "torchaudio",
         # HuggingFace
         "huggingface_hub",
         "huggingface_hub.utils",
+        "safetensors",
+        "safetensors.torch",
+        "tokenizers",
+        "transformers",
+        # Audio
+        "soundfile",
+        "numpy",
+        "scipy",
+        "librosa",
+        # yt-dlp
+        "yt_dlp",
         # Our modules
         "tts",
+        "profiles",
+        "chunked_tts",
     ]
-    + mlx_hiddenimports
-    + mlx_audio_hiddenimports,
+    + hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Exclude NVIDIA/CUDA (Apple Silicon only)
-        "torch.cuda",
+        # Exclude NVIDIA packages (Apple Silicon only — keep torch.cuda as it's
+        # imported by mlx_audio for device detection and handles missing gracefully)
         "nvidia",
         "nvidia_cublas_cu11",
         "nvidia_cuda_nvrtc_cu11",
@@ -75,22 +128,15 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="voiceover-tts",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    upx_exclude=[],
     console=True,
     target_arch="arm64",
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="voiceover-tts",
 )

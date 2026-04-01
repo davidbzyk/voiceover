@@ -21,6 +21,8 @@ pub struct SidecarState {
     port: Mutex<Option<u16>>,
     /// Path to the app data directory passed to the sidecar.
     data_dir: Mutex<Option<PathBuf>>,
+    /// True while a startup is in progress (prevents concurrent restarts).
+    starting: Mutex<bool>,
 }
 
 impl Default for SidecarState {
@@ -29,6 +31,7 @@ impl Default for SidecarState {
             child: Mutex::new(None),
             port: Mutex::new(None),
             data_dir: Mutex::new(None),
+            starting: Mutex::new(false),
         }
     }
 }
@@ -102,6 +105,17 @@ fn find_available_port() -> Result<u16, String> {
 /// Allocates a random port, spawns the sidecar binary (or Python in dev mode),
 /// and polls `/health` until the server is ready.
 pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
+    let state = app.state::<SidecarState>();
+    *state.starting.lock().unwrap() = true;
+
+    let result = start_sidecar_inner(app).await;
+
+    let state = app.state::<SidecarState>();
+    *state.starting.lock().unwrap() = false;
+    result
+}
+
+async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
     let port = find_available_port()?;
     let data_dir = app
         .path()
@@ -111,12 +125,14 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
         .map_err(|e| format!("Failed to create data dir: {e}"))?;
 
     let parent_pid = std::process::id();
+    let ffmpeg_path = crate::ffmpeg::resolve_ffmpeg_path();
 
     log::info!(
-        "[sidecar] Starting: port={}, data_dir={:?}, parent_pid={}",
+        "[sidecar] Starting: port={}, data_dir={:?}, parent_pid={}, ffmpeg={:?}",
         port,
         data_dir,
-        parent_pid
+        parent_pid,
+        ffmpeg_path,
     );
 
     let child = if let Some(binary) = resolve_sidecar_path() {
@@ -129,6 +145,8 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
                 data_dir.to_str().unwrap_or("/tmp"),
                 "--parent-pid",
                 &parent_pid.to_string(),
+                "--ffmpeg",
+                ffmpeg_path.to_str().unwrap_or("ffmpeg"),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
@@ -163,6 +181,8 @@ pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
                 data_dir.to_str().unwrap_or("/tmp"),
                 "--parent-pid",
                 &parent_pid.to_string(),
+                "--ffmpeg",
+                ffmpeg_path.to_str().unwrap_or("ffmpeg"),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
@@ -261,6 +281,27 @@ pub fn stop_sidecar(state: &SidecarState) {
 /// Returns the port the sidecar is listening on.
 pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
     let state = app.state::<SidecarState>();
+
+    // If a startup is already in progress, wait for it instead of restarting
+    let is_starting = { *state.starting.lock().unwrap() };
+    if is_starting {
+        log::info!("[sidecar] Startup in progress — waiting...");
+        for _ in 0..120 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let done = !*state.starting.lock().unwrap();
+            if done {
+                break;
+            }
+        }
+        // After waiting, check if we have a port
+        let port = { *state.port.lock().unwrap() };
+        if let Some(p) = port {
+            if health_check(p).await {
+                return Ok(p);
+            }
+        }
+        return Err("TTS sidecar failed to start".to_string());
+    }
 
     // Check if we have a recorded port
     let port = { *state.port.lock().unwrap() };
