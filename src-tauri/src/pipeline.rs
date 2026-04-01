@@ -243,11 +243,16 @@ pub async fn process_recording(
         })
         .ok();
 
-    // Cleanup temp files
+    // Cleanup temp files from this pipeline run
     cleanup_temp(&recording);
     cleanup_temp(&extracted_wav);
     cleanup_temp(&transformed_audio);
     cleanup_temp(&transformed_audio.with_extension("txt"));
+
+    // Sweep stale artifacts from previous runs (>1 hour old)
+    crate::commands::recording::cleanup_stale_recordings(
+        std::time::Duration::from_secs(3600),
+    );
 
     Ok(final_path.to_string_lossy().to_string())
 }

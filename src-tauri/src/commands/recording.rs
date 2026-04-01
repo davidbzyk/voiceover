@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 /// Validate that a session_id contains only safe characters (alphanumeric, hyphens, underscores).
 fn validate_session_id(session_id: &str) -> Result<(), String> {
@@ -100,6 +101,70 @@ pub fn finalize_recording(session_id: String) -> Result<String, String> {
     fs::remove_dir_all(&dir).ok();
 
     Ok(output_path.to_string_lossy().to_string())
+}
+
+/// Remove stale recording artifacts from the temp directory.
+/// Cleans up: orphaned session chunk dirs, finalized WebMs, and extracted/transformed WAVs
+/// that are older than `max_age`. Called after successful pipeline completion and on app startup.
+pub fn cleanup_stale_recordings(max_age: Duration) {
+    let dir = temp_recording_dir();
+    let cutoff = SystemTime::now() - max_age;
+
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut removed = 0u32;
+    let mut freed = 0u64;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let modified = entry.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::now());
+
+        if modified > cutoff {
+            continue;
+        }
+
+        let size = if path.is_dir() {
+            fs_dir_size(&path)
+        } else {
+            entry.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+
+        let ok = if path.is_dir() {
+            fs::remove_dir_all(&path).is_ok()
+        } else if path.is_file() {
+            fs::remove_file(&path).is_ok()
+        } else {
+            false
+        };
+        if ok {
+            removed += 1;
+            freed += size;
+        }
+    }
+
+    if removed > 0 {
+        log::info!(
+            "[recording] Cleaned up {} stale artifacts ({:.1}MB freed)",
+            removed,
+            freed as f64 / 1_048_576.0,
+        );
+    }
+}
+
+fn fs_dir_size(path: &PathBuf) -> u64 {
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.metadata().map(|m| m.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
