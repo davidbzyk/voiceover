@@ -126,6 +126,19 @@ pub async fn process_recording(
         })
         .ok();
 
+    // Probe video duration before extraction — the video is the source of truth for timing.
+    // Audio tracks in WebM can be shorter than video (WebRTC records them independently).
+    let video_duration = match ffmpeg::probe_duration(&recording).await {
+        Ok(dur) => {
+            log::info!("[pipeline] Video duration: {:.1}s", dur);
+            Some(dur)
+        }
+        Err(e) => {
+            log::warn!("[pipeline] Could not probe video duration: {} (will use audio duration)", e);
+            None
+        }
+    };
+
     log::info!("[pipeline] Extracting audio to {:?}", extracted_wav);
     ffmpeg::extract_audio(&recording, &extracted_wav).await?;
     let wav_size = std::fs::metadata(&extracted_wav).map(|m| m.len()).unwrap_or(0);
@@ -169,6 +182,7 @@ pub async fn process_recording(
                 &config.local_voice_profile_id,
                 &extracted_wav,
                 &transformed_audio,
+                video_duration,
             ).await?;
         }
     } else {

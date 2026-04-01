@@ -81,6 +81,84 @@ pub async fn replace_audio(
     Ok(())
 }
 
+/// Probe the duration of a media file using ffprobe (falls back to ffmpeg -i).
+/// Returns duration in seconds, or an error if it can't be determined.
+pub async fn probe_duration(input: &Path) -> Result<f64, String> {
+    let input_str = input.to_str()
+        .ok_or_else(|| "Path contains non-UTF8 characters".to_string())?;
+
+    // Try ffprobe first (more reliable for WebM containers)
+    let ffprobe_path = resolve_ffmpeg_path()
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("ffprobe");
+    let ffprobe_bin = if ffprobe_path.exists() {
+        ffprobe_path
+    } else {
+        PathBuf::from("ffprobe")
+    };
+
+    let output = Command::new(&ffprobe_bin)
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "csv=p=0",
+            input_str,
+        ])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if let Ok(dur) = stdout.trim().parse::<f64>() {
+            if dur > 0.0 {
+                return Ok(dur);
+            }
+        }
+    }
+
+    // Fallback: use ffmpeg to decode and count frames (slower but works for WebM without duration)
+    let output = Command::new(resolve_ffmpeg_path())
+        .args([
+            "-i", input_str,
+            "-f", "null", "-",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to probe duration: {e}"))?;
+
+    // ffmpeg prints "Duration: HH:MM:SS.ms" or "time=HH:MM:SS.ms" in stderr
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Parse the last "time=" value (most accurate for variable-rate streams)
+    for line in stderr.lines().rev() {
+        if let Some(pos) = line.find("time=") {
+            let time_str = &line[pos + 5..];
+            if let Some(end) = time_str.find([' ', '\n']) {
+                if let Ok(dur) = parse_ffmpeg_time(&time_str[..end]) {
+                    return Ok(dur);
+                }
+            } else if let Ok(dur) = parse_ffmpeg_time(time_str.trim()) {
+                return Ok(dur);
+            }
+        }
+    }
+
+    Err("Could not determine media duration".to_string())
+}
+
+/// Parse HH:MM:SS.ms format to seconds.
+fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return Err(format!("Invalid time format: {time_str}"));
+    }
+    let hours: f64 = parts[0].parse().map_err(|_| "bad hours")?;
+    let minutes: f64 = parts[1].parse().map_err(|_| "bad minutes")?;
+    let seconds: f64 = parts[2].parse().map_err(|_| "bad seconds")?;
+    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
 /// Normalize a recording to MP4 format (handles platform codec differences).
 pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let args = normalize_args(

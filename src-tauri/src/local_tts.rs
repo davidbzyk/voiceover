@@ -185,6 +185,7 @@ pub async fn speech_to_speech(
     profile_id: &str,
     input_wav: &Path,
     output_wav: &Path,
+    video_duration: Option<f64>,
 ) -> Result<(), String> {
     let audio_bytes = std::fs::read(input_wav)
         .map_err(|e| format!("Failed to read input audio: {e}"))?;
@@ -289,12 +290,20 @@ pub async fn speech_to_speech(
         })
         .collect();
 
+    // Use video duration (if available) so TTS output matches the full video length,
+    // not just the extracted audio length (which can be shorter if audio track ends early).
+    let duration_for_assembly = video_duration.unwrap_or(transcription.duration);
+    log::info!(
+        "[local_tts] Duration for assembly: {:.1}s (video={:?}, audio={:.1}s)",
+        duration_for_assembly, video_duration, transcription.duration,
+    );
+
     let gen_body = serde_json::json!({
         "profile_id": profile_id,
         "text": transcription.text,
         "language": "en",
         "segments": segments_json,
-        "original_duration": transcription.duration,
+        "original_duration": duration_for_assembly,
     });
 
     let response = client
