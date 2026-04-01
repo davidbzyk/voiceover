@@ -17,69 +17,62 @@
 		name: string;
 		language: string;
 	}
-	let localConnected = $state<boolean | null>(null);
-	let localConnecting = $state(false);
 	let localVoices = $state<LocalVoice[]>([]);
+	let localLoading = $state(false);
 	let localError = $state('');
-	let showEndpointConfig = $state(false);
 
 	onMount(() => {
 		if (appState.config.provider === 'local') {
-			testLocalConnection();
+			loadLocalVoices();
 		}
 	});
 
-	async function testLocalConnection() {
-		localConnecting = true;
-		localConnected = null;
+	async function loadLocalVoices() {
+		localLoading = true;
 		localError = '';
 		try {
-			if (isTauri()) {
-				localConnected = await tauriInvoke<boolean>('test_local_connection', {
-					endpoint: appState.config.local_endpoint
-				});
-			} else {
-				const resp = await fetch(`${appState.config.local_endpoint}/health`, {
-					signal: AbortSignal.timeout(5000)
-				});
-				localConnected = resp.ok;
-			}
-			if (localConnected) {
-				await loadLocalVoices();
-			}
+			localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
 		} catch (err) {
-			localConnected = false;
-			localError = String(err);
-		}
-		localConnecting = false;
-	}
-
-	async function loadLocalVoices() {
-		try {
-			if (isTauri()) {
-				localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices', {
-					endpoint: appState.config.local_endpoint
-				});
-			} else {
-				const resp = await fetch(`${appState.config.local_endpoint}/profiles`);
-				if (resp.ok) localVoices = await resp.json();
-			}
-		} catch (err) {
+			localError = 'TTS engine unavailable. Try restarting the app.';
 			logger.error('settings', 'Failed to load local voices', err);
 		}
+		localLoading = false;
 	}
 
 	async function setProvider(provider: string) {
 		appState.config.provider = provider;
 		await appState.saveConfig();
 		if (provider === 'local') {
-			testLocalConnection();
+			loadLocalVoices();
 		}
 	}
 
 	async function setLocalVoice(profileId: string) {
 		appState.config.local_voice_profile_id = profileId;
 		await appState.saveConfig();
+	}
+
+	async function setDefaultLocalVoice(profileId: string) {
+		appState.config.local_voice_profile_id = profileId;
+		await appState.saveConfig();
+	}
+
+	async function removeLocalVoice(profileId: string) {
+		try {
+			await tauriInvoke<string>('sidecar_fetch', {
+				path: `/profiles/${profileId}`,
+				method: 'DELETE',
+				body: null,
+			});
+			// If we deleted the active voice, clear the selection
+			if (appState.config.local_voice_profile_id === profileId) {
+				appState.config.local_voice_profile_id = '';
+				await appState.saveConfig();
+			}
+			await loadLocalVoices();
+		} catch (err) {
+			logger.error('settings', 'Failed to delete voice profile', err);
+		}
 	}
 
 	async function saveAndBack() {
@@ -225,71 +218,40 @@
 	</div>
 
 	{#if appState.config.provider === 'local'}
-		<!-- Local TTS Configuration -->
+		<!-- Local Voice Collection -->
 		<div class="section">
-			<div class="section-title">Local Voice Server</div>
+			<div class="section-header">
+				<div class="section-title">Voice Collection</div>
+			</div>
 			<div class="card">
-				<!-- Connection status -->
-				<div class="connection-row">
-					{#if localConnecting}
-						<span class="status-dot connecting"></span>
-						<span class="connection-text">Connecting...</span>
-					{:else if localConnected === true}
-						<span class="status-dot connected"></span>
-						<span class="connection-text">Connected to Voicebox</span>
-					{:else if localConnected === false}
-						<span class="status-dot disconnected"></span>
-						<span class="connection-text">Not connected</span>
-					{:else}
-						<span class="status-dot"></span>
-						<span class="connection-text">Not checked</span>
-					{/if}
-					<button class="small-btn" onclick={testLocalConnection} disabled={localConnecting}>
-						{localConnecting ? '...' : 'Retry'}
-					</button>
-				</div>
-
-				{#if localError}
+				{#if localLoading}
+					<div class="hint-text">Loading voices...</div>
+				{:else if localError}
 					<div class="status invalid">{localError}</div>
+				{:else if localVoices.length > 0}
+					{#each localVoices as voice}
+						<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
+							<div class="voice-info">
+								<div class="voice-name">{voice.name}</div>
+								<div class="voice-id">{voice.id.slice(0, 20)}</div>
+							</div>
+							<div class="voice-actions">
+								{#if voice.id === appState.config.local_voice_profile_id}
+									<span class="default-badge">Default</span>
+								{:else}
+									<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
+								{/if}
+								<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
+							</div>
+						</div>
+					{/each}
+				{:else}
+					<div class="hint-text">No voice profiles yet. Create one to get started.</div>
 				{/if}
 
-				{#if localConnected}
-					<!-- Voice profile selection -->
-					<label class="field-label" for="local-voice">Voice Profile</label>
-					{#if localVoices.length > 0}
-						<select
-							id="local-voice"
-							class="input"
-							value={appState.config.local_voice_profile_id}
-							onchange={(e) => setLocalVoice((e.target as HTMLSelectElement).value)}
-						>
-							<option value="">Select a voice...</option>
-							{#each localVoices as voice}
-								<option value={voice.id}>{voice.name} ({voice.language})</option>
-							{/each}
-						</select>
-					{:else}
-						<div class="hint-text">No voice profiles found. Create one to get started.</div>
-					{/if}
-
-					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
-						+ Create Voice
-					</button>
-				{/if}
-
-				<!-- Endpoint config (collapsible) -->
-				<button class="link-btn" onclick={() => (showEndpointConfig = !showEndpointConfig)}>
-					{showEndpointConfig ? 'Hide' : 'Show'} endpoint config
+				<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+					+ Create Voice
 				</button>
-				{#if showEndpointConfig}
-					<label class="field-label" for="local-endpoint">Voicebox Endpoint</label>
-					<input
-						id="local-endpoint"
-						bind:value={appState.config.local_endpoint}
-						placeholder="http://localhost:17493"
-						class="input"
-					/>
-				{/if}
 			</div>
 		</div>
 	{:else}
@@ -563,38 +525,6 @@
 		color: #94a3b8;
 	}
 
-	/* Local connection status */
-	.connection-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-	.status-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: #475569;
-		flex-shrink: 0;
-	}
-	.status-dot.connected {
-		background: #22c55e;
-	}
-	.status-dot.disconnected {
-		background: #ef4444;
-	}
-	.status-dot.connecting {
-		background: #f59e0b;
-		animation: pulse 1s infinite;
-	}
-	@keyframes pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
-	}
-	.connection-text {
-		font-size: 12px;
-		color: #cbd5e1;
-		flex: 1;
-	}
 	.hint-text {
 		font-size: 11px;
 		color: #64748b;

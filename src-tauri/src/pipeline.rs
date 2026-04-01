@@ -2,6 +2,7 @@ use crate::config;
 use crate::elevenlabs;
 use crate::ffmpeg;
 use crate::local_tts;
+use crate::sidecar;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
@@ -28,7 +29,14 @@ pub async fn process_recording(
         return Err("Recording file not found".to_string());
     }
 
-    log::info!("[pipeline] Starting: voice_replacement={}, input={}", voice_replacement, recording_path);
+    // Log recording file details for debugging
+    let rec_meta = std::fs::metadata(&recording);
+    log::info!(
+        "[pipeline] Starting: voice_replacement={}, input={}, file_size={}KB",
+        voice_replacement,
+        recording_path,
+        rec_meta.as_ref().map(|m| m.len() / 1024).unwrap_or(0),
+    );
 
     let config = config::get_config(app.clone()).await?;
     let output_dir = PathBuf::from(&config.output_dir);
@@ -120,7 +128,14 @@ pub async fn process_recording(
 
     log::info!("[pipeline] Extracting audio to {:?}", extracted_wav);
     ffmpeg::extract_audio(&recording, &extracted_wav).await?;
-    log::info!("[pipeline] Audio extracted");
+    let wav_size = std::fs::metadata(&extracted_wav).map(|m| m.len()).unwrap_or(0);
+    // 16kHz mono 16-bit = 32000 bytes/sec
+    let wav_duration_est = wav_size as f64 / 32000.0;
+    log::info!(
+        "[pipeline] Audio extracted: {}KB (~{:.1}s)",
+        wav_size / 1024,
+        wav_duration_est,
+    );
 
     on_event
         .send(PipelineEvent::Progress {
@@ -138,8 +153,9 @@ pub async fn process_recording(
             })
             .ok();
 
+        let port = sidecar::ensure_running(&app).await?;
         local_tts::speech_to_speech(
-            &config.local_endpoint,
+            port,
             &config.local_voice_profile_id,
             &extracted_wav,
             &transformed_audio,

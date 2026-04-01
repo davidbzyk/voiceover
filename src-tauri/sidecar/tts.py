@@ -1,0 +1,261 @@
+"""TTS inference engine for VoiceOver sidecar.
+
+Whisper transcription (via mlx-audio) + Qwen TTS generation.
+Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
+"""
+
+import asyncio
+import hashlib
+import logging
+import os
+from pathlib import Path
+from typing import Optional, Tuple
+
+import numpy as np
+
+logger = logging.getLogger("voiceover-tts.engine")
+
+LANGUAGE_CODE_TO_NAME = {
+    "zh": "chinese",
+    "en": "english",
+    "ja": "japanese",
+    "ko": "korean",
+    "de": "german",
+    "fr": "french",
+    "ru": "russian",
+    "pt": "portuguese",
+    "es": "spanish",
+    "it": "italian",
+}
+
+# ---------------------------------------------------------------------------
+# Whisper transcription (using mlx-audio, same as Voicebox)
+# ---------------------------------------------------------------------------
+
+_whisper_model = None
+
+
+def transcribe(audio_path: str, models_dir: str) -> dict:
+    """Transcribe audio file using MLX Whisper via mlx-audio.
+
+    Uses mlx_audio.stt.load() which handles model loading correctly
+    in PyInstaller binaries (unlike mlx_whisper which has npz issues).
+    """
+    global _whisper_model
+
+    os.environ["HF_HUB_CACHE"] = models_dir
+
+    if _whisper_model is None:
+        logger.info("Loading Whisper model (first use)...")
+        from mlx_audio.stt import load
+
+        _whisper_model = load("openai/whisper-large-v3-turbo")
+        logger.info("Whisper model loaded")
+
+    result = _whisper_model.generate(str(audio_path))
+
+    # Extract text from result
+    if isinstance(result, str):
+        text = result.strip()
+    elif isinstance(result, dict):
+        text = result.get("text", "").strip()
+    elif hasattr(result, "text"):
+        text = result.text.strip()
+    else:
+        # Generator of results — collect all text
+        segments = list(result)
+        text = " ".join(
+            s.text.strip() if hasattr(s, "text") else str(s).strip()
+            for s in segments
+        ).strip()
+
+    # Estimate duration from audio file
+    duration = 0.0
+    try:
+        import soundfile as sf
+
+        info = sf.info(audio_path)
+        duration = info.duration
+    except Exception:
+        pass
+
+    return {"text": text, "duration": duration}
+
+
+# ---------------------------------------------------------------------------
+# Qwen TTS generation
+# ---------------------------------------------------------------------------
+
+_qwen_model = None
+_qwen_model_size = None
+
+
+def _get_device() -> str:
+    """Get the best available device for PyTorch."""
+    import torch
+
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:
+    """Load Qwen TTS model (async, runs blocking load in thread pool)."""
+    global _qwen_model, _qwen_model_size
+
+    if _qwen_model is not None and _qwen_model_size == model_size:
+        return
+
+    os.environ["HF_HUB_CACHE"] = models_dir
+
+    def _load_sync():
+        global _qwen_model, _qwen_model_size
+        import torch
+        from qwen_tts import Qwen3TTSModel
+
+        hf_map = {
+            "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        }
+        model_path = hf_map.get(model_size, hf_map["1.7B"])
+        device = _get_device()
+
+        logger.info(f"Loading Qwen TTS {model_size} on {device}...")
+        if device == "cpu":
+            _qwen_model = Qwen3TTSModel.from_pretrained(
+                model_path, torch_dtype=torch.float32, low_cpu_mem_usage=False,
+            )
+        else:
+            _qwen_model = Qwen3TTSModel.from_pretrained(
+                model_path, device_map=device, torch_dtype=torch.bfloat16,
+            )
+        _qwen_model_size = model_size
+        logger.info(f"Qwen TTS {model_size} loaded successfully")
+
+    await asyncio.to_thread(_load_sync)
+
+
+def is_qwen_loaded() -> bool:
+    return _qwen_model is not None
+
+
+async def create_voice_prompt(
+    audio_path: str,
+    reference_text: str,
+    cache_dir: Optional[str] = None,
+) -> list:
+    """Create voice prompt from reference audio.
+
+    Returns a list of VoiceClonePromptItem (qwen-tts 0.1.x API).
+    """
+    if _qwen_model is None:
+        raise RuntimeError("Qwen model not loaded")
+
+    if cache_dir:
+        cache_key = _cache_key(audio_path, reference_text)
+        cached = _load_cached_prompt(cache_dir, cache_key)
+        if cached is not None:
+            logger.info(f"Using cached voice prompt: {cache_key[:12]}...")
+            return cached
+
+    def _create_sync():
+        return _qwen_model.create_voice_clone_prompt(
+            ref_audio=str(audio_path),
+            ref_text=reference_text,
+            x_vector_only_mode=False,
+        )
+
+    prompt_items = await asyncio.to_thread(_create_sync)
+
+    if cache_dir:
+        _save_cached_prompt(cache_dir, cache_key, prompt_items)
+
+    return prompt_items
+
+
+async def combine_voice_prompts(
+    audio_paths: list[str],
+    reference_texts: list[str],
+    cache_dir: Optional[str] = None,
+) -> list:
+    """Combine multiple samples into a list of VoiceClonePromptItems."""
+    all_items = []
+    for audio_path, ref_text in zip(audio_paths, reference_texts):
+        items = await create_voice_prompt(audio_path, ref_text, cache_dir)
+        all_items.extend(items)
+    # Use only the last sample's prompt (consistent with Voicebox behavior)
+    return all_items[-1:] if all_items else []
+
+
+async def generate_speech(
+    text: str,
+    voice_prompt: list,
+    language: str = "en",
+    seed: Optional[int] = None,
+) -> Tuple[np.ndarray, int]:
+    """Generate speech from text using voice clone prompt items."""
+    if _qwen_model is None:
+        raise RuntimeError("Qwen model not loaded")
+
+    def _generate_sync():
+        import torch
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.backends.mps.is_available():
+                torch.mps.manual_seed(seed)
+
+        # Map language code to display name (capitalize for qwen-tts 0.1.x)
+        lang_name = LANGUAGE_CODE_TO_NAME.get(language, "auto")
+        if lang_name != "auto":
+            lang_name = lang_name.capitalize()
+        else:
+            lang_name = "Auto"
+
+        wavs, sample_rate = _qwen_model.generate_voice_clone(
+            text=text,
+            voice_clone_prompt=voice_prompt,
+            language=lang_name,
+        )
+        return wavs[0], sample_rate
+
+    audio, sample_rate = await asyncio.to_thread(_generate_sync)
+    return np.asarray(audio, dtype=np.float32), sample_rate
+
+
+# ---------------------------------------------------------------------------
+# Voice prompt caching
+# ---------------------------------------------------------------------------
+
+
+def _cache_key(audio_path: str, reference_text: str) -> str:
+    h = hashlib.md5()
+    try:
+        h.update(Path(audio_path).read_bytes())
+    except OSError:
+        h.update(audio_path.encode())
+    h.update(reference_text.encode())
+    return h.hexdigest()
+
+
+def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
+    cache_path = Path(cache_dir) / f"{cache_key}.prompt"
+    if not cache_path.exists():
+        return None
+    try:
+        import torch
+        return torch.load(cache_path, map_location="cpu", weights_only=False)
+    except Exception as e:
+        logger.warning(f"Failed to load cached prompt: {e}")
+        return None
+
+
+def _save_cached_prompt(cache_dir: str, cache_key: str, prompt: dict) -> None:
+    cache_path = Path(cache_dir) / f"{cache_key}.prompt"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import torch
+        torch.save(prompt, cache_path)
+        logger.info(f"Cached voice prompt: {cache_key[:12]}...")
+    except Exception as e:
+        logger.warning(f"Failed to cache voice prompt: {e}")

@@ -33,10 +33,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Create sidecar placeholder for Tauri build script
+      - name: Create sidecar placeholders for Tauri build script
         run: |
           mkdir -p src-tauri/binaries
           touch src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          touch src-tauri/binaries/voiceover-tts-aarch64-apple-darwin
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Install cargo-audit

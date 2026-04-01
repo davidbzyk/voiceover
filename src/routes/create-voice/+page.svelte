@@ -22,12 +22,21 @@
 	let createError = $state('');
 	let profileId = $state('');
 
-	// Step 3: Upload reference audio
+	// Step 3: Source voice sample (YouTube or file upload)
+	let sampleSource = $state<'youtube' | 'file'>('youtube');
+	let youtubeUrl = $state('');
+	let youtubeStart = $state('0');
+	let youtubeDuration = $state(30);
+	let extracting = $state(false);
+	let extractError = $state('');
 	let audioFile = $state<File | null>(null);
 	let referenceText = $state('');
+	let transcribing = $state(false);
 	let uploading = $state(false);
 	let uploadError = $state('');
 	let uploadedAudioUrl = $state('');
+	// Path to extracted audio on the sidecar filesystem (for YouTube flow)
+	let extractedAudioPath = $state('');
 
 	// Step 4: Test voice
 	let testText = $state('Hello, this is a test of my cloned voice.');
@@ -49,7 +58,7 @@
 	];
 
 	function getClient(): VoiceboxClient {
-		return new VoiceboxClient(appState.config.local_endpoint);
+		return new VoiceboxClient();
 	}
 
 	onMount(() => {
@@ -69,12 +78,10 @@
 			}
 
 			models = await client.getModelStatus();
-			const qwen = models.find(
-				(m) => m.model_name.toLowerCase().includes('qwen')
-			);
+			const allDownloaded = models.every((m) => m.downloaded);
 
-			// Auto-advance if Qwen is ready
-			if (qwen?.downloaded) {
+			// Auto-advance if all models are ready
+			if (allDownloaded) {
 				step = 2;
 			}
 		} catch (err) {
@@ -84,30 +91,32 @@
 		checkingHealth = false;
 	}
 
-	async function downloadQwen() {
+	async function downloadModels() {
 		downloading = true;
 		downloadError = '';
 		const client = getClient();
-		const qwen = models.find(
-			(m) => m.model_name.toLowerCase().includes('qwen')
-		);
-		if (!qwen) {
-			downloadError = 'Qwen model not found in model list.';
+		const missing = models.filter((m) => !m.downloaded);
+
+		if (missing.length === 0) {
+			step = 2;
 			downloading = false;
 			return;
 		}
 
 		try {
-			await client.downloadModel(qwen.model_name);
-			// Poll model status until downloaded
+			// Download each missing model
+			for (const model of missing) {
+				downloadError = `Downloading ${model.display_name}...`;
+				await client.downloadModel(model.model_name);
+			}
+			downloadError = '';
+
+			// Poll until all models show as downloaded
 			let attempts = 0;
 			while (attempts < 600) {
 				await new Promise((r) => setTimeout(r, 3000));
 				const updated = await client.getModelStatus();
-				const updatedQwen = updated.find(
-					(m) => m.model_name.toLowerCase().includes('qwen')
-				);
-				if (updatedQwen?.downloaded) {
+				if (updated.every((m) => m.downloaded)) {
 					models = updated;
 					step = 2;
 					downloading = false;
@@ -115,7 +124,7 @@
 				}
 				attempts++;
 			}
-			downloadError = 'Download timed out. Check the Voicebox server.';
+			downloadError = 'Download timed out. Try restarting the app.';
 		} catch (err) {
 			downloadError = String(err);
 		}
@@ -137,6 +146,34 @@
 		creating = false;
 	}
 
+	async function extractFromYouTube() {
+		extracting = true;
+		extractError = '';
+		try {
+			const { tauriInvoke } = await import('$lib/tauri');
+			const result = await tauriInvoke<{ audio_path: string; duration: number }>(
+				'extract_youtube_audio',
+				{ url: youtubeUrl, start: youtubeStart, duration: youtubeDuration }
+			);
+			extractedAudioPath = result.audio_path;
+			extracting = false;
+
+			// Auto-transcribe the extracted audio
+			transcribing = true;
+			const transcriptResult = await tauriInvoke<string>('sidecar_fetch', {
+				path: '/transcribe-path',
+				method: 'POST',
+				body: JSON.stringify({ audio_path: extractedAudioPath }),
+			});
+			const parsed = JSON.parse(transcriptResult);
+			referenceText = parsed.text || '';
+		} catch (err) {
+			extractError = String(err);
+		}
+		extracting = false;
+		transcribing = false;
+	}
+
 	function handleFileSelect(e: Event) {
 		const input = e.target as HTMLInputElement;
 		if (input.files && input.files.length > 0) {
@@ -144,15 +181,54 @@
 		}
 	}
 
-	async function uploadSample() {
+	async function transcribeUploadedFile() {
 		if (!audioFile) return;
+		transcribing = true;
+		uploadError = '';
+		try {
+			const client = getClient();
+			// Upload the file for transcription only
+			const { tauriInvoke } = await import('$lib/tauri');
+			const buffer = await audioFile.arrayBuffer();
+			const fileBytes = Array.from(new Uint8Array(buffer));
+			const result = await tauriInvoke<string>('sidecar_upload', {
+				path: '/transcribe',
+				fileBytes,
+				fileName: audioFile.name,
+				fileField: 'file',
+				fields: {}
+			});
+			const parsed = JSON.parse(result);
+			referenceText = parsed.text || '';
+		} catch (err) {
+			uploadError = `Transcription failed: ${err}`;
+		}
+		transcribing = false;
+	}
+
+	async function uploadSample() {
 		uploading = true;
 		uploadError = '';
 		const client = getClient();
 
 		try {
-			await client.uploadSample(profileId, audioFile, referenceText.trim());
-			uploadedAudioUrl = URL.createObjectURL(audioFile);
+			if (sampleSource === 'youtube' && extractedAudioPath) {
+				// YouTube flow: the audio is already on the sidecar filesystem
+				// Upload it as a sample using the path
+				const { tauriInvoke } = await import('$lib/tauri');
+				await tauriInvoke<string>('sidecar_fetch', {
+					path: `/profiles/${profileId}/samples/from-path`,
+					method: 'POST',
+					body: JSON.stringify({
+						audio_path: extractedAudioPath,
+						reference_text: referenceText.trim(),
+					}),
+				});
+			} else if (audioFile) {
+				// File upload flow
+				await client.uploadSample(profileId, audioFile, referenceText.trim());
+				uploadedAudioUrl = URL.createObjectURL(audioFile);
+			}
 			step = 4;
 		} catch (err) {
 			uploadError = String(err);
@@ -169,7 +245,7 @@
 		try {
 			const gen = await client.testGenerate(profileId, testText.trim());
 			await client.pollGenerationStatus(gen.id);
-			generatedAudioUrl = client.getAudioUrl(gen.id);
+			generatedAudioUrl = await client.getAudioUrl(gen.id);
 		} catch (err) {
 			generateError = String(err);
 		}
@@ -214,16 +290,11 @@
 				{:else if healthy === false}
 					<div class="status-row">
 						<span class="status-dot disconnected"></span>
-						<span>Voicebox is not running</span>
+						<span>TTS engine is not running</span>
 					</div>
 					<div class="hint-text">
-						Start Voicebox to continue. Make sure it is running at:
+						The local TTS sidecar failed to start. Try restarting the app.
 					</div>
-					<input
-						bind:value={appState.config.local_endpoint}
-						placeholder="http://localhost:17493"
-						class="input"
-					/>
 					{#if prerequisiteError}
 						<div class="status invalid">{prerequisiteError}</div>
 					{/if}
@@ -233,20 +304,22 @@
 				{:else if healthy === true}
 					<div class="status-row">
 						<span class="status-dot connected"></span>
-						<span>Voicebox connected</span>
+						<span>TTS engine ready</span>
 					</div>
 
-					{@const qwen = models.find((m) => m.model_name.toLowerCase().includes('qwen'))}
-					{#if qwen && !qwen.downloaded}
+					{@const missing = models.filter((m) => !m.downloaded)}
+					{#if missing.length > 0}
 						<div class="hint-text">
-							The Qwen3-TTS model (~3.4GB) needs to be downloaded before you can create a voice.
+							{missing.length === 1
+								? `${missing[0].display_name} needs to be downloaded.`
+								: `${missing.map((m) => m.display_name).join(' and ')} need to be downloaded (~4GB total).`}
 						</div>
 						<button
 							class="small-btn accent"
-							onclick={downloadQwen}
+							onclick={downloadModels}
 							disabled={downloading}
 						>
-							{downloading ? 'Downloading...' : 'Download Qwen3-TTS'}
+							{downloading ? 'Downloading...' : `Download ${missing.length === 1 ? missing[0].display_name : 'Models'}`}
 						</button>
 						{#if downloading}
 							<div class="progress-section">
@@ -259,18 +332,14 @@
 						{#if downloadError}
 							<div class="status invalid">{downloadError}</div>
 						{/if}
-					{:else if qwen && qwen.downloaded}
+					{:else}
 						<div class="status-row">
 							<span class="status-dot connected"></span>
-							<span>Qwen3-TTS model ready</span>
+							<span>All models ready</span>
 						</div>
 						<button class="small-btn accent" onclick={() => (step = 2)}>
 							Continue
 						</button>
-					{:else}
-						<div class="hint-text">
-							No Qwen model found. Check your Voicebox installation.
-						</div>
 					{/if}
 				{/if}
 			</div>
@@ -316,49 +385,123 @@
 		</div>
 	{/if}
 
-	<!-- Step 3: Upload Reference Audio -->
+	<!-- Step 3: Source Voice Sample -->
 	{#if step === 3}
 		<div class="section">
-			<div class="section-title">Upload Reference Audio</div>
+			<div class="section-title">Voice Sample</div>
 			<div class="card">
 				<div class="hint-text">
-					Use a clean 5-30 second recording for best results.
+					Provide a clean 5-30 second audio clip of the voice to clone.
 				</div>
 
-				<label class="field-label" for="audio-file">Audio File</label>
-				<input
-					id="audio-file"
-					type="file"
-					accept="audio/*"
-					onchange={handleFileSelect}
-					class="input file-input"
-				/>
+				<!-- Source selector -->
+				<div class="provider-toggle">
+					<button
+						class="provider-btn"
+						class:active={sampleSource === 'youtube'}
+						onclick={() => (sampleSource = 'youtube')}
+					>
+						YouTube URL
+					</button>
+					<button
+						class="provider-btn"
+						class:active={sampleSource === 'file'}
+						onclick={() => (sampleSource = 'file')}
+					>
+						Upload File
+					</button>
+				</div>
 
-				<label class="field-label" for="reference-text">Transcript of the Audio</label>
-				<textarea
-					id="reference-text"
-					bind:value={referenceText}
-					placeholder="Type the exact words spoken in the recording..."
-					class="input textarea"
-					rows="3"
-				></textarea>
+				{#if sampleSource === 'youtube'}
+					<!-- YouTube extraction -->
+					<label class="field-label" for="youtube-url">YouTube URL</label>
+					<input
+						id="youtube-url"
+						bind:value={youtubeUrl}
+						placeholder="https://www.youtube.com/watch?v=..."
+						class="input"
+					/>
 
-				{#if uploadError}
-					<div class="status invalid">{uploadError}</div>
+					<div class="inline-fields">
+						<div>
+							<label class="field-label" for="yt-start">Start time</label>
+							<input id="yt-start" bind:value={youtubeStart} placeholder="0:00" class="input small" />
+						</div>
+						<div>
+							<label class="field-label" for="yt-duration">Duration (s)</label>
+							<input id="yt-duration" type="number" bind:value={youtubeDuration} min="5" max="30" class="input small" />
+						</div>
+					</div>
+
+					<button
+						class="small-btn accent"
+						onclick={extractFromYouTube}
+						disabled={!youtubeUrl.trim() || extracting}
+					>
+						{extracting ? 'Extracting...' : 'Extract Audio'}
+					</button>
+
+					{#if extracting}
+						<div class="progress-section">
+							<div class="progress-bar"><div class="progress-fill indeterminate"></div></div>
+							<div class="hint-text">Downloading and extracting audio...</div>
+						</div>
+					{/if}
+
+					{#if extractError}
+						<div class="status invalid">{extractError}</div>
+					{/if}
+				{:else}
+					<!-- File upload -->
+					<label class="field-label" for="audio-file">Audio File (MP3, WAV, M4A)</label>
+					<input
+						id="audio-file"
+						type="file"
+						accept="audio/*"
+						onchange={handleFileSelect}
+						class="input file-input"
+					/>
+
+					{#if audioFile}
+						<button
+							class="small-btn"
+							onclick={transcribeUploadedFile}
+							disabled={transcribing}
+						>
+							{transcribing ? 'Transcribing...' : 'Auto-Transcribe'}
+						</button>
+					{/if}
 				{/if}
 
-				<button
-					class="small-btn accent"
-					onclick={uploadSample}
-					disabled={!audioFile || !referenceText.trim() || uploading}
-				>
-					{uploading ? 'Uploading...' : 'Upload'}
-				</button>
+				{#if transcribing}
+					<div class="progress-section">
+						<div class="progress-bar"><div class="progress-fill indeterminate"></div></div>
+						<div class="hint-text">Transcribing audio with Whisper...</div>
+					</div>
+				{/if}
 
-				{#if uploadedAudioUrl}
-					<audio controls src={uploadedAudioUrl} class="audio-player">
-						<track kind="captions" />
-					</audio>
+				<!-- Transcript (editable, shown after extraction/transcription or manual entry) -->
+				{#if extractedAudioPath || audioFile}
+					<label class="field-label" for="reference-text">Transcript (edit if needed)</label>
+					<textarea
+						id="reference-text"
+						bind:value={referenceText}
+						placeholder="The transcript will appear here after extraction, or type it manually..."
+						class="input textarea"
+						rows="3"
+					></textarea>
+
+					{#if uploadError}
+						<div class="status invalid">{uploadError}</div>
+					{/if}
+
+					<button
+						class="small-btn accent"
+						onclick={uploadSample}
+						disabled={!referenceText.trim() || uploading}
+					>
+						{uploading ? 'Saving...' : 'Save Sample & Continue'}
+					</button>
 				{/if}
 			</div>
 		</div>
@@ -674,5 +817,41 @@
 		font-size: 16px;
 		font-weight: 600;
 		color: #22c55e;
+	}
+	.provider-toggle {
+		display: flex;
+		gap: 4px;
+		background: #0f172a;
+		border-radius: 6px;
+		padding: 3px;
+	}
+	.provider-btn {
+		flex: 1;
+		background: transparent;
+		border: none;
+		color: #64748b;
+		padding: 8px 12px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 13px;
+		font-weight: 500;
+		transition: all 0.15s;
+	}
+	.provider-btn.active {
+		background: #334155;
+		color: #f1f5f9;
+	}
+	.provider-btn:hover:not(.active) {
+		color: #94a3b8;
+	}
+	.inline-fields {
+		display: flex;
+		gap: 10px;
+	}
+	.inline-fields > div {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 	}
 </style>

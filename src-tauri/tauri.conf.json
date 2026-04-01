@@ -37,7 +37,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/ffmpeg"
+      "binaries/ffmpeg",
+      "binaries/voiceover-tts"
     ]
   }
 }

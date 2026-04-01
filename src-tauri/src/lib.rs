@@ -4,13 +4,16 @@ mod elevenlabs;
 mod ffmpeg;
 mod google_drive;
 mod local_tts;
+mod models;
 mod pipeline;
 mod prerequisites;
 mod secrets;
+pub mod sidecar;
 mod tts_provider;
 
 use commands::recording;
 use commands::window;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,19 +23,29 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
 
             // Check prerequisites on startup
             let ffmpeg_ok = prerequisites::check_ffmpeg();
             if !ffmpeg_ok {
                 log::error!("ffmpeg not found on system PATH");
             }
+
+            // Initialize sidecar state
+            app.manage(sidecar::SidecarState::default());
+
+            // Start TTS sidecar in background (don't block app launch)
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match sidecar::start_sidecar(&app_handle).await {
+                    Ok(port) => log::info!("TTS sidecar started on port {}", port),
+                    Err(e) => log::warn!("TTS sidecar not started: {} (local TTS unavailable)", e),
+                }
+            });
 
             Ok(())
         })
@@ -51,8 +64,13 @@ pub fn run() {
             local_tts::test_local_connection,
             local_tts::list_local_voices,
             local_tts::check_model_status,
-            local_tts::voicebox_fetch,
-            local_tts::voicebox_upload,
+            local_tts::extract_youtube_audio,
+            local_tts::sidecar_fetch,
+            local_tts::sidecar_upload,
+            sidecar::get_sidecar_status,
+            models::check_models_downloaded,
+            models::download_model,
+            models::get_models_disk_usage,
             google_drive::google_drive_connect,
             google_drive::google_drive_disconnect,
             google_drive::upload_to_drive,

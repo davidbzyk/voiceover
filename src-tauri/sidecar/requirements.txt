@@ -1,0 +1,13 @@
+fastapi==0.115.0
+uvicorn==0.30.0
+python-multipart==0.0.12
+mlx==0.31.1
+mlx-whisper==0.4.3
+mlx-audio==0.4.2
+huggingface-hub==0.36.2
+numpy==2.4.4
+soundfile==0.13.1
+qwen-tts==0.1.1
+torch==2.11.0
+transformers==4.56.2
+yt-dlp==2026.3.17

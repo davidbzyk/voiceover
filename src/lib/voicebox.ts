@@ -1,10 +1,9 @@
 /**
- * Frontend API client for Voicebox local TTS server.
- * Routes through Tauri IPC when in desktop mode (avoids CORS),
- * falls back to direct fetch in browser mode.
+ * Frontend API client for the managed TTS sidecar.
+ * All requests route through Tauri IPC to the sidecar — no direct HTTP,
+ * no external Voicebox dependency.
  */
 
-import { isTauri } from './state.svelte';
 import { tauriInvoke } from './tauri';
 
 export interface VoiceboxProfile {
@@ -26,22 +25,10 @@ export interface VoiceboxGeneration {
 }
 
 export class VoiceboxClient {
-	constructor(private endpoint: string) {}
-
-	/** Check if Voicebox server is reachable and healthy */
+	/** Check if the TTS sidecar is running and healthy */
 	async checkHealth(): Promise<boolean> {
-		if (isTauri()) {
-			try {
-				return await tauriInvoke<boolean>('test_local_connection', { endpoint: this.endpoint });
-			} catch {
-				return false;
-			}
-		}
 		try {
-			const resp = await fetch(`${this.endpoint}/health`, {
-				signal: AbortSignal.timeout(5000)
-			});
-			return resp.ok;
+			return await tauriInvoke<boolean>('test_local_connection');
 		} catch {
 			return false;
 		}
@@ -49,50 +36,27 @@ export class VoiceboxClient {
 
 	/** List all voice profiles */
 	async listProfiles(): Promise<VoiceboxProfile[]> {
-		if (isTauri()) {
-			return tauriInvoke<VoiceboxProfile[]>('list_local_voices', { endpoint: this.endpoint });
-		}
-		const resp = await fetch(`${this.endpoint}/profiles`);
-		if (!resp.ok) throw new Error(`Failed to list profiles: ${resp.status}`);
-		return resp.json();
+		return tauriInvoke<VoiceboxProfile[]>('list_local_voices');
 	}
 
 	/** Get model download/load status */
 	async getModelStatus(): Promise<VoiceboxModelStatus[]> {
-		if (isTauri()) {
-			return tauriInvoke<VoiceboxModelStatus[]>('check_model_status', { endpoint: this.endpoint });
-		}
-		const resp = await fetch(`${this.endpoint}/models/status`);
-		if (!resp.ok) throw new Error(`Failed to get model status: ${resp.status}`);
-		return resp.json();
+		return tauriInvoke<VoiceboxModelStatus[]>('check_model_status');
 	}
 
-	/** Helper: JSON request routed through Tauri when available */
+	/** Helper: JSON request to sidecar via Tauri */
 	private async jsonRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-		const url = `${this.endpoint}${path}`;
-		if (isTauri()) {
-			const result = await tauriInvoke<string>('voicebox_fetch', {
-				url,
-				method,
-				body: body ? JSON.stringify(body) : null,
-				contentType: body ? 'application/json' : null
-			});
-			return JSON.parse(result);
-		}
-		const resp = await fetch(url, {
+		const result = await tauriInvoke<string>('sidecar_fetch', {
+			path,
 			method,
-			...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {})
+			body: body ? JSON.stringify(body) : null,
 		});
-		if (!resp.ok) {
-			const text = await resp.text();
-			throw new Error(`${method} ${path} failed: ${resp.status} ${text}`);
-		}
-		return resp.json();
+		return JSON.parse(result);
 	}
 
 	/** Trigger model download */
 	async downloadModel(modelName: string): Promise<void> {
-		await this.jsonRequest('/models/load', 'POST', { model_name: modelName });
+		await this.jsonRequest('/models/download', 'POST', { model_name: modelName });
 	}
 
 	/** Create a new voice profile */
@@ -106,30 +70,16 @@ export class VoiceboxClient {
 		audioFile: File,
 		referenceText: string
 	): Promise<unknown> {
-		if (isTauri()) {
-			const buffer = await audioFile.arrayBuffer();
-			const fileBytes = Array.from(new Uint8Array(buffer));
-			const result = await tauriInvoke<string>('voicebox_upload', {
-				url: `${this.endpoint}/profiles/${profileId}/samples`,
-				fileBytes,
-				fileName: audioFile.name,
-				fileField: 'file',
-				fields: { reference_text: referenceText }
-			});
-			return JSON.parse(result);
-		}
-		const formData = new FormData();
-		formData.append('file', audioFile);
-		formData.append('reference_text', referenceText);
-		const resp = await fetch(`${this.endpoint}/profiles/${profileId}/samples`, {
-			method: 'POST',
-			body: formData
+		const buffer = await audioFile.arrayBuffer();
+		const fileBytes = Array.from(new Uint8Array(buffer));
+		const result = await tauriInvoke<string>('sidecar_upload', {
+			path: `/profiles/${profileId}/samples`,
+			fileBytes,
+			fileName: audioFile.name,
+			fileField: 'audio',
+			fields: { reference_text: referenceText }
 		});
-		if (!resp.ok) {
-			const body = await resp.text();
-			throw new Error(`Failed to upload sample: ${resp.status} ${body}`);
-		}
-		return resp.json();
+		return JSON.parse(result);
 	}
 
 	/** Start a test generation */
@@ -138,7 +88,7 @@ export class VoiceboxClient {
 		text: string
 	): Promise<VoiceboxGeneration> {
 		return this.jsonRequest<VoiceboxGeneration>('/generate', 'POST', {
-			profile_id: profileId, text, engine: 'qwen'
+			profile_id: profileId, text, language: 'en'
 		});
 	}
 
@@ -162,8 +112,12 @@ export class VoiceboxClient {
 		throw new Error('Generation timed out');
 	}
 
-	/** Returns the audio URL for a completed generation */
-	getAudioUrl(generationId: string): string {
-		return `${this.endpoint}/audio/${generationId}`;
+	/** Get the audio URL for a completed generation.
+	 *  Fetches the sidecar port and constructs a direct localhost URL.
+	 */
+	async getAudioUrl(generationId: string): Promise<string> {
+		const status = await tauriInvoke<{ port: number | null }>('get_sidecar_status');
+		if (!status.port) throw new Error('TTS sidecar is not running');
+		return `http://127.0.0.1:${status.port}/audio/${generationId}`;
 	}
 }
