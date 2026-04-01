@@ -52,7 +52,7 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
     for word_info in words:
         word_start = float(word_info.get("start", 0))
         word_end = float(word_info.get("end", 0))
-        word_text = word_info.get("word", "").strip()
+        word_text = (word_info.get("word") or word_info.get("text") or "").strip()
 
         if not word_text:
             continue
@@ -68,7 +68,7 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
 
             if gap >= min_pause_sec:
                 # Pause detected — finalize current phrase
-                phrase_text = "".join(w.get("word", "") for w in current_words).strip()
+                phrase_text = "".join(w.get("word") or w.get("text") or "" for w in current_words).strip()
                 phrase_end = float(current_words[-1].get("end", 0))
                 if phrase_text:
                     phrases.append({
@@ -84,7 +84,7 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
 
     # Finalize last phrase
     if current_words:
-        phrase_text = "".join(w.get("word", "") for w in current_words).strip()
+        phrase_text = "".join(w.get("word") or w.get("text") or "" for w in current_words).strip()
         phrase_end = float(current_words[-1].get("end", 0))
         if phrase_text:
             phrases.append({
@@ -94,6 +94,14 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
             })
 
     return phrases
+
+
+def _is_hallucinated(seg: dict) -> bool:
+    """Check if a Whisper segment is likely hallucinated."""
+    return (
+        seg.get("no_speech_prob", 0) > 0.6
+        or seg.get("compression_ratio", 0) > 2.4
+    )
 
 
 def _filter_segments(raw_segments: list) -> list:
@@ -107,9 +115,7 @@ def _filter_segments(raw_segments: list) -> list:
     for seg in raw_segments:
         if not isinstance(seg, dict):
             continue
-        if seg.get("no_speech_prob", 0) > 0.6:
-            continue
-        if seg.get("compression_ratio", 0) > 2.4:
+        if _is_hallucinated(seg):
             continue
         text = seg.get("text", "").strip()
         if not text:
@@ -161,12 +167,17 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
         text = result.text.strip()
         raw_segments = getattr(result, "segments", None) or []
     else:
-        # Generator of results — collect all text
+        # Generator of results — collect text and segments
         collected = list(result)
         text = " ".join(
             s.text.strip() if hasattr(s, "text") else str(s).strip()
             for s in collected
         ).strip()
+        for s in collected:
+            if hasattr(s, "segments") and s.segments:
+                raw_segments.extend(s.segments)
+            elif isinstance(s, dict) and s.get("segments"):
+                raw_segments.extend(s["segments"])
 
     # Get precise duration from audio file
     duration = 0.0
@@ -181,11 +192,7 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
     # Collect all words across segments and group into phrases by pauses
     all_words = []
     for seg in raw_segments:
-        if not isinstance(seg, dict):
-            continue
-        if seg.get("no_speech_prob", 0) > 0.6:
-            continue
-        if seg.get("compression_ratio", 0) > 2.4:
+        if not isinstance(seg, dict) or _is_hallucinated(seg):
             continue
         words = seg.get("words", []) or []
         all_words.extend(words)

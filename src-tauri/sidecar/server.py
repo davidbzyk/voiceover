@@ -388,6 +388,15 @@ async def generate(request: dict):
                         sample_rate = chunk_sr
                 audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
+            # Pad or truncate to match original duration so ffmpeg
+            # (which no longer uses -shortest) doesn't produce mismatched output
+            if original_duration > 0 and sample_rate:
+                target_samples = int(original_duration * sample_rate)
+                if len(audio) < target_samples:
+                    audio = np.pad(audio, (0, target_samples - len(audio)))
+                elif len(audio) > target_samples:
+                    audio = audio[:target_samples]
+
         # Save to file
         import soundfile as sf
 

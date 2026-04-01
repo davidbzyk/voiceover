@@ -147,72 +147,6 @@ def concatenate_audio_chunks(
 # Timestamp-aware audio assembly
 # ---------------------------------------------------------------------------
 
-STRETCH_THRESHOLD = 0.15  # Only time-stretch if >15% duration mismatch
-STRETCH_MIN_RATE = 0.25
-STRETCH_MAX_RATE = 4.0
-
-
-def apply_fade_out(
-    audio: np.ndarray,
-    sample_rate: int,
-    fade_ms: int = 30,
-) -> np.ndarray:
-    """Apply a Hann-window fade-out to the end of audio for smooth silence transition.
-
-    Only fades the tail — the start is left untouched so speech attacks are clean.
-    Uses a raised cosine (Hann) curve which sounds more natural than linear.
-    """
-    fade_samples = int(sample_rate * fade_ms / 1000)
-    if len(audio) < fade_samples:
-        return audio
-
-    audio = audio.copy()
-    # Raised cosine fade-out: (1 + cos(0..pi)) / 2 goes from 1 to 0
-    fade_out = ((1 + np.cos(np.linspace(0, np.pi, fade_samples))) / 2).astype(
-        np.float32
-    )
-    audio[-fade_samples:] *= fade_out
-    return audio
-
-
-def time_stretch_segment(
-    audio: np.ndarray,
-    sample_rate: int,
-    rate: float,
-) -> np.ndarray:
-    """Stretch or compress audio to fit a target duration without pitch change.
-
-    Args:
-        audio: Input audio array (float32).
-        sample_rate: Audio sample rate.
-        rate: Stretch factor. >1.0 = speed up (shorter output),
-              <1.0 = slow down (longer output).
-              rate = actual_duration / target_duration
-
-    Uses pyrubberband (highest quality for speech) with librosa as fallback.
-    """
-    if len(audio) == 0 or abs(rate - 1.0) < 0.01:
-        return audio
-
-    rate = max(STRETCH_MIN_RATE, min(rate, STRETCH_MAX_RATE))
-
-    try:
-        import pyrubberband as pyrb
-        return pyrb.time_stretch(audio, sample_rate, rate, rbargs={"-c": "6"}).astype(
-            np.float32
-        )
-    except (ImportError, FileNotFoundError):
-        pass
-
-    try:
-        import librosa
-        return librosa.effects.time_stretch(audio, rate=rate).astype(np.float32)
-    except ImportError:
-        pass
-
-    logger.warning("No time-stretch library available; returning audio unchanged")
-    return audio
-
 
 def assemble_timed_segments(
     tts_segments: List[Tuple[np.ndarray, float, float]],
@@ -241,7 +175,7 @@ def assemble_timed_segments(
     if not tts_segments:
         return output
 
-    for i, (audio, start_sec, end_sec) in enumerate(tts_segments):
+    for i, (audio, start_sec, _end_sec) in enumerate(tts_segments):
         if len(audio) == 0:
             continue
 

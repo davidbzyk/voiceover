@@ -10,5 +10,4 @@ soundfile==0.13.1
 qwen-tts==0.1.1
 torch==2.11.0
 transformers==4.57.3
-pyrubberband>=0.4.0
 yt-dlp==2026.3.17
