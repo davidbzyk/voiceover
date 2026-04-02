@@ -343,9 +343,8 @@
 
 	{:else if activeTab === 'cloud'}
 		<!-- ElevenLabs API Key -->
-		{#if appState.config.provider === 'elevenlabs'}
-			<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
-				<div class="section-title">ElevenLabs API Key</div>
+		<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
+			<div class="section-title">ElevenLabs API Key</div>
 				<div class="card">
 					<label class="field-label" for="api-key">API Key</label>
 					<div class="key-row">
@@ -370,8 +369,7 @@
 						<div class="status invalid">✕ Invalid API key{testError ? `: ${testError}` : ''}</div>
 					{/if}
 				</div>
-			</form>
-		{/if}
+		</form>
 
 		<!-- Google Drive -->
 		<div class="section">
