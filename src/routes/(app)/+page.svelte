@@ -41,6 +41,12 @@
 	}
 
 	onMount(async () => {
+		// If there's a pending recording, redirect to preview
+		if (appState.recordingPath && ['recorded', 'processing', 'complete', 'saved'].includes(appState.recordingState)) {
+			goto('/preview');
+			return;
+		}
+
 		try {
 			audioDevices = await getAudioDevices();
 			if (audioDevices.length > 0) {
