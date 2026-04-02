@@ -8,12 +8,54 @@ Usage:
     python server.py --port 8123 --data-dir /path/to/data --parent-pid 12345
 """
 
+import sys
+import os
+
+# ---------------------------------------------------------------------------
+# PyInstaller frozen-binary guards — MUST run before any heavy imports.
+#
+# 1. Protect stdout/stderr: in frozen builds (especially Windows --noconsole)
+#    these can be None, causing crashes from print/logging/tqdm.
+# 2. freeze_support(): when multiprocessing spawns a child, PyInstaller
+#    re-executes this binary from the top. Without freeze_support() before
+#    heavy imports, torch/transformers run in the child, fail to find CLI
+#    args, and silently degrade (e.g. MPS → CPU fallback).
+# 3. Early-exit for frozen children invoked without sidecar CLI flags.
+# ---------------------------------------------------------------------------
+
+
+def _is_writable(stream):
+    """Check if a stream is usable for writing."""
+    if stream is None:
+        return False
+    try:
+        stream.write("")
+        return True
+    except Exception:
+        return False
+
+
+if not _is_writable(sys.stdout):
+    sys.stdout = open(os.devnull, "w")
+if not _is_writable(sys.stderr):
+    sys.stderr = open(os.devnull, "w")
+
+import multiprocessing
+multiprocessing.freeze_support()
+
+# In frozen builds, child processes re-enter this binary with no sidecar
+# flags (just the executable path). Exit immediately before heavy imports.
+if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+    sys.exit(0)
+
+# ---------------------------------------------------------------------------
+# All other imports — safe now that freeze_support has run.
+# ---------------------------------------------------------------------------
+
 import argparse
 import asyncio
 import logging
-import os
 import signal
-import sys
 import threading
 import time
 import uuid
@@ -1006,6 +1048,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
     main()

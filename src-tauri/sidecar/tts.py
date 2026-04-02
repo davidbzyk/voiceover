@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -240,9 +241,15 @@ def _get_device() -> str:
     """Get the best available device for PyTorch."""
     import torch
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    mps_built = hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
+    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    device = "mps" if mps_available else "cpu"
+
+    logger.info(
+        "Device selection: chosen=%s mps_built=%s mps_available=%s frozen=%s",
+        device, mps_built, mps_available, getattr(sys, "frozen", False),
+    )
+    return device
 
 
 async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:

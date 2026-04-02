@@ -42,7 +42,7 @@ echo "Using Python: $(python --version) at $(which python)"
 echo ""
 echo "─── Building with PyInstaller ───"
 cd "$SIDECAR_DIR"
-pyinstaller voiceover-tts.spec --noconfirm
+pyinstaller voiceover-tts.spec --noconfirm --clean
 DIST_BINARY="$SIDECAR_DIR/dist/voiceover-tts"
 
 if [ ! -f "$DIST_BINARY" ]; then
