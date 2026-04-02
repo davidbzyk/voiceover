@@ -251,6 +251,22 @@
 				</button>
 			</div>
 
+			{#if appState.config.provider === 'local'}
+				<!-- Voice mode toggle (TTS vs VC) -->
+				<div class="voice-mode-toggle">
+					<button
+						class="voice-mode-btn"
+						class:active={appState.config.local_tts_mode !== 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
+					>Text-to-Speech</button>
+					<button
+						class="voice-mode-btn"
+						class:active={appState.config.local_tts_mode === 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
+					>Voice Conversion</button>
+				</div>
+			{/if}
+
 			<!-- Voice selector based on provider -->
 			{#if appState.config.provider === 'elevenlabs'}
 				<div class="option-card">
@@ -448,6 +464,26 @@
 	.option-hint {
 		color: #64748b;
 		font-style: italic;
+	}
+	.voice-mode-toggle {
+		display: flex;
+		gap: 8px;
+	}
+	.voice-mode-btn {
+		flex: 1;
+		padding: 8px 12px;
+		border: 1px solid #334155;
+		border-radius: 6px;
+		background: transparent;
+		color: #94a3b8;
+		font-size: 12px;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.voice-mode-btn.active {
+		background: #1e293b;
+		border-color: #6366f1;
+		color: #e2e8f0;
 	}
 	.on {
 		color: #22c55e;
