@@ -9,8 +9,6 @@ Reference: voicebox/backend/voicebox-server.spec
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata, collect_submodules
 
-block_cipher = None
-
 datas = []
 binaries = []
 hiddenimports = []
@@ -40,8 +38,16 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
-# Collect all for complex packages
-for pkg in ["qwen_tts", "librosa", "lazy_loader", "mlx_audio"]:
+# qwen_tts uses inspect.getsource() at runtime to locate
+# modeling_qwen3_tts.py — needs physical .py source files bundled.
+# This MUST NOT be in a try/except: if it fails, generation silently breaks.
+tmp_ret = collect_all('qwen_tts')
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+# Collect all for complex packages (librosa needs lazy_loader stubs)
+for pkg in ["librosa", "lazy_loader", "mlx_audio"]:
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -115,15 +121,23 @@ a = Analysis(
         # Exclude NVIDIA packages (Apple Silicon only — keep torch.cuda as it's
         # imported by mlx_audio for device detection and handles missing gracefully)
         "nvidia",
-        "nvidia_cublas_cu11",
-        "nvidia_cuda_nvrtc_cu11",
-        "nvidia_cuda_runtime_cu11",
-        "nvidia_cudnn_cu11",
+        "nvidia.cublas",
+        "nvidia.cuda_cupti",
+        "nvidia.cuda_nvrtc",
+        "nvidia.cuda_runtime",
+        "nvidia.cudnn",
+        "nvidia.cufft",
+        "nvidia.curand",
+        "nvidia.cusolver",
+        "nvidia.cusparse",
+        "nvidia.nccl",
+        "nvidia.nvjitlink",
+        "nvidia.nvtx",
     ],
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -137,6 +151,11 @@ exe = EXE(
     strip=False,
     upx=False,
     upx_exclude=[],
+    runtime_tmpdir=None,
     console=True,
-    target_arch="arm64",
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
 )

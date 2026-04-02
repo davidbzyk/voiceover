@@ -29,7 +29,8 @@ export class VoiceboxClient {
 	async checkHealth(): Promise<boolean> {
 		try {
 			return await tauriInvoke<boolean>('test_local_connection');
-		} catch {
+		} catch (e) {
+			console.warn('[voicebox] Health check failed:', e);
 			return false;
 		}
 	}
@@ -71,7 +72,7 @@ export class VoiceboxClient {
 		referenceText: string
 	): Promise<unknown> {
 		const buffer = await audioFile.arrayBuffer();
-		const fileBytes = Array.from(new Uint8Array(buffer));
+		const fileBytes = new Uint8Array(buffer);
 		const result = await tauriInvoke<string>('sidecar_upload', {
 			path: `/profiles/${profileId}/samples`,
 			fileBytes,
@@ -92,18 +93,22 @@ export class VoiceboxClient {
 		});
 	}
 
-	/** Poll generation status until completed or failed */
+	/** Poll generation status until completed or failed.
+	 *  Uses a dedicated Tauri command with a long timeout to handle
+	 *  slow sidecar responses during ML inference.
+	 */
 	async pollGenerationStatus(generationId: string): Promise<string> {
 		const timeout = 300_000; // 5 minutes
-		const interval = 1000;
+		const interval = 2000;
 		const start = Date.now();
 
 		while (Date.now() - start < timeout) {
-			const data = await this.jsonRequest<{ status: string; error?: string }>(
-				`/generate/${generationId}/status`
+			const data = await tauriInvoke<{ status: string; error?: string }>(
+				'poll_generation',
+				{ generationId }
 			);
 			if (data.status === 'completed') return 'completed';
-			if (data.status === 'failed') {
+			if (data.status === 'error') {
 				throw new Error(data.error ?? 'Generation failed');
 			}
 			await new Promise((resolve) => setTimeout(resolve, interval));

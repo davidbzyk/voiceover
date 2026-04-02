@@ -5,6 +5,8 @@ pre-commit:
       run: pnpm test
     rust-tests:
       run: cd src-tauri && cargo test
+    sidecar-tests:
+      run: .sidecar-venv/bin/python -m pytest src-tauri/sidecar/test_tts.py src-tauri/sidecar/test_chunked_tts.py -q
     typecheck:
       run: pnpm check
 

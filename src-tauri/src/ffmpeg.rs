@@ -26,7 +26,7 @@ pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
 pub(crate) fn replace_audio_args(input_video: &str, new_audio: &str, output: &str) -> Vec<String> {
     ["-y", "-i", input_video, "-i", new_audio, "-map", "0:v", "-map", "1:a",
      "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
-     "-c:a", "aac", "-shortest", output]
+     "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
@@ -40,8 +40,8 @@ pub(crate) fn normalize_args(input: &str, output: &str) -> Vec<String> {
 /// Extract audio from a video file as 16kHz mono WAV (optimal for ElevenLabs S2S).
 pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
     let args = extract_audio_args(
-        input_video.to_str().unwrap(),
-        output_wav.to_str().unwrap(),
+        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_wav.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -64,9 +64,9 @@ pub async fn replace_audio(
     output_mp4: &Path,
 ) -> Result<(), String> {
     let args = replace_audio_args(
-        input_video.to_str().unwrap(),
-        new_audio.to_str().unwrap(),
-        output_mp4.to_str().unwrap(),
+        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        new_audio.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -81,11 +81,92 @@ pub async fn replace_audio(
     Ok(())
 }
 
+/// Probe the duration of a media file using ffprobe (falls back to ffmpeg -i).
+/// Returns duration in seconds, or an error if it can't be determined.
+pub async fn probe_duration(input: &Path) -> Result<f64, String> {
+    let input_str = input.to_str()
+        .ok_or_else(|| "Path contains non-UTF8 characters".to_string())?;
+
+    // Try ffprobe first (more reliable for WebM containers)
+    let ffprobe_path = resolve_ffmpeg_path()
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("ffprobe");
+    let ffprobe_bin = if ffprobe_path.exists() {
+        ffprobe_path
+    } else {
+        PathBuf::from("ffprobe")
+    };
+
+    let output = Command::new(&ffprobe_bin)
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=duration",
+            "-of", "csv=p=0",
+            input_str,
+        ])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if let Ok(dur) = stdout.trim().parse::<f64>() {
+            if dur > 0.0 {
+                return Ok(dur);
+            }
+        }
+        log::debug!("[ffmpeg] ffprobe returned non-positive or unparseable duration, falling back to ffmpeg decode");
+    } else {
+        log::debug!("[ffmpeg] ffprobe failed, falling back to ffmpeg decode");
+    }
+
+    // Fallback: use ffmpeg to decode and count frames (slower but works for WebM without duration)
+    let output = Command::new(resolve_ffmpeg_path())
+        .args([
+            "-i", input_str,
+            "-f", "null", "-",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to probe duration: {e}"))?;
+
+    // ffmpeg prints "Duration: HH:MM:SS.ms" or "time=HH:MM:SS.ms" in stderr
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Parse the last "time=" value (most accurate for variable-rate streams)
+    for line in stderr.lines().rev() {
+        if let Some(pos) = line.find("time=") {
+            let time_str = &line[pos + 5..];
+            if let Some(end) = time_str.find([' ', '\n']) {
+                if let Ok(dur) = parse_ffmpeg_time(&time_str[..end]) {
+                    return Ok(dur);
+                }
+            } else if let Ok(dur) = parse_ffmpeg_time(time_str.trim()) {
+                return Ok(dur);
+            }
+        }
+    }
+
+    Err("Could not determine media duration".to_string())
+}
+
+/// Parse HH:MM:SS.ms format to seconds.
+fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return Err(format!("Invalid time format: {time_str}"));
+    }
+    let hours: f64 = parts[0].parse().map_err(|_| "bad hours")?;
+    let minutes: f64 = parts[1].parse().map_err(|_| "bad minutes")?;
+    let seconds: f64 = parts[2].parse().map_err(|_| "bad seconds")?;
+    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
 /// Normalize a recording to MP4 format (handles platform codec differences).
 pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let args = normalize_args(
-        input.to_str().unwrap(),
-        output_mp4.to_str().unwrap(),
+        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -155,6 +236,15 @@ mod tests {
     }
 
     #[test]
+    fn replace_audio_args_no_shortest_flag() {
+        let args = replace_audio_args("video.webm", "audio.mp3", "output.mp4");
+        assert!(
+            !args.contains(&"-shortest".to_string()),
+            "replace_audio_args must not use -shortest (audio should match video duration)"
+        );
+    }
+
+    #[test]
     fn all_commands_use_overwrite_flag() {
         let extract = extract_audio_args("in.webm", "out.wav");
         let replace = replace_audio_args("in.webm", "audio.mp3", "out.mp4");
@@ -163,5 +253,45 @@ mod tests {
         assert_eq!(extract[0], "-y", "extract_audio_args should start with -y");
         assert_eq!(replace[0], "-y", "replace_audio_args should start with -y");
         assert_eq!(normalize[0], "-y", "normalize_args should start with -y");
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_valid_time() {
+        let result = parse_ffmpeg_time("01:23:45.678").unwrap();
+        let expected = 1.0 * 3600.0 + 23.0 * 60.0 + 45.678;
+        assert!(
+            (result - expected).abs() < 1e-6,
+            "expected {expected}, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_zero() {
+        let result = parse_ffmpeg_time("00:00:00.00").unwrap();
+        assert!(
+            result.abs() < 1e-9,
+            "expected 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_small_value() {
+        let result = parse_ffmpeg_time("00:00:00.001").unwrap();
+        assert!(
+            (result - 0.001).abs() < 1e-9,
+            "expected 0.001, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_invalid_input() {
+        let result = parse_ffmpeg_time("not-a-time");
+        assert!(result.is_err(), "expected Err for invalid input, got {result:?}");
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_wrong_format_too_few_parts() {
+        let result = parse_ffmpeg_time("1:2");
+        assert!(result.is_err(), "expected Err for wrong format, got {result:?}");
     }
 }

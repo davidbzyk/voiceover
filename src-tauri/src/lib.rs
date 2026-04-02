@@ -38,6 +38,11 @@ pub fn run() {
             // Initialize sidecar state
             app.manage(sidecar::SidecarState::default());
 
+            // Clean up stale recording artifacts from previous sessions (>1 hour old)
+            commands::recording::cleanup_stale_recordings(
+                std::time::Duration::from_secs(3600),
+            );
+
             // Start TTS sidecar in background (don't block app launch)
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -65,6 +70,7 @@ pub fn run() {
             local_tts::list_local_voices,
             local_tts::check_model_status,
             local_tts::extract_youtube_audio,
+            local_tts::poll_generation,
             local_tts::sidecar_fetch,
             local_tts::sidecar_upload,
             sidecar::get_sidecar_status,

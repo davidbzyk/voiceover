@@ -8,6 +8,7 @@ Each profile is a directory under {data_dir}/profiles/{uuid}/ containing:
 
 import json
 import logging
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -15,6 +16,12 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("voiceover-tts.profiles")
+
+
+def _validate_profile_id(profile_id: str) -> None:
+    """Validate profile_id is safe for use as a path component."""
+    if not re.match(r'^[a-zA-Z0-9_-]+$', profile_id):
+        raise ValueError(f"Invalid profile_id: {profile_id!r}")
 
 
 def _profiles_dir(data_dir: Path) -> Path:
@@ -40,6 +47,7 @@ def list_profiles(data_dir: Path) -> list[dict]:
 
 def get_profile(data_dir: Path, profile_id: str) -> Optional[dict]:
     """Get a single profile by ID."""
+    _validate_profile_id(profile_id)
     meta_file = _profiles_dir(data_dir) / profile_id / "profile.json"
     if not meta_file.exists():
         return None
@@ -66,6 +74,7 @@ def create_profile(data_dir: Path, name: str, language: str = "en") -> dict:
 
 def delete_profile(data_dir: Path, profile_id: str) -> bool:
     """Delete a voice profile and all its samples."""
+    _validate_profile_id(profile_id)
     profile_dir = _profiles_dir(data_dir) / profile_id
     if not profile_dir.exists():
         return False
@@ -81,6 +90,7 @@ def add_sample(
     reference_text: str,
 ) -> dict:
     """Add a voice sample to a profile."""
+    _validate_profile_id(profile_id)
     samples_dir = _profiles_dir(data_dir) / profile_id / "samples"
     if not samples_dir.exists():
         raise ValueError(f"Profile {profile_id} not found")
@@ -101,6 +111,7 @@ def add_sample(
 
 def get_samples(data_dir: Path, profile_id: str) -> list[dict]:
     """List all samples for a profile."""
+    _validate_profile_id(profile_id)
     samples_dir = _profiles_dir(data_dir) / profile_id / "samples"
     if not samples_dir.exists():
         return []

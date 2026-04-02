@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -35,11 +36,125 @@ LANGUAGE_CODE_TO_NAME = {
 _whisper_model = None
 
 
+def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
+    """Group word-level timestamps into phrases separated by pauses.
+
+    Takes Whisper's word-level output and groups consecutive words into
+    phrases wherever there's a pause >= min_pause_sec between words.
+    Each phrase becomes a segment with precise start/end timestamps and
+    the original word timing for proportional silence insertion.
+    """
+    if not words:
+        return []
+
+    phrases = []
+    current_words = []
+    current_start = None
+
+    def _finalize_phrase(word_list, start):
+        phrase_text = "".join(
+            w.get("word") or w.get("text") or "" for w in word_list
+        ).strip()
+        phrase_end = float(word_list[-1].get("end", 0))
+        if not phrase_text:
+            return None
+        # Build word timing for proportional silence insertion
+        word_timing = []
+        for w in word_list:
+            wt = (w.get("word") or w.get("text") or "").strip()
+            if wt:
+                word_timing.append({
+                    "word": wt,
+                    "start": float(w.get("start", 0)),
+                    "end": float(w.get("end", 0)),
+                })
+        return {
+            "start": start,
+            "end": phrase_end,
+            "text": phrase_text,
+            "words": word_timing,
+        }
+
+    for word_info in words:
+        word_start = float(word_info.get("start", 0))
+        word_text = (word_info.get("word") or word_info.get("text") or "").strip()
+
+        if not word_text:
+            continue
+
+        if current_start is None:
+            current_start = word_start
+            current_words.append(word_info)
+        else:
+            prev_end = float(current_words[-1].get("end", 0))
+            gap = word_start - prev_end
+
+            if gap >= min_pause_sec:
+                phrase = _finalize_phrase(current_words, current_start)
+                if phrase:
+                    phrases.append(phrase)
+                current_start = word_start
+                current_words = [word_info]
+            else:
+                current_words.append(word_info)
+
+    if current_words:
+        phrase = _finalize_phrase(current_words, current_start)
+        if phrase:
+            phrases.append(phrase)
+
+    return phrases
+
+
+def _is_hallucinated(seg: dict) -> bool:
+    """Check if a Whisper segment is likely hallucinated."""
+    return (
+        seg.get("no_speech_prob", 0) > 0.6
+        or seg.get("compression_ratio", 0) > 2.4
+    )
+
+
+def _filter_segments(raw_segments: list) -> list:
+    """Filter hallucinated Whisper segments and fix overlapping timestamps.
+
+    Removes segments with high no_speech_prob (>0.6), high compression_ratio
+    (>2.4, indicates repetitive/hallucinated text), or empty text.
+    Clamps overlapping timestamps so segment[n+1].start >= segment[n].end.
+    """
+    filtered = []
+    for seg in raw_segments:
+        if not isinstance(seg, dict):
+            continue
+        if _is_hallucinated(seg):
+            continue
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        filtered.append({
+            "start": float(seg.get("start", 0)),
+            "end": float(seg.get("end", 0)),
+            "text": text,
+            "words": [],
+        })
+
+    # Fix overlapping timestamps
+    for i in range(1, len(filtered)):
+        if filtered[i]["start"] < filtered[i - 1]["end"]:
+            filtered[i]["start"] = filtered[i - 1]["end"]
+
+    # Remove degenerate segments created by clamping
+    filtered = [seg for seg in filtered if seg["end"] > seg["start"]]
+
+    return filtered
+
+
 def transcribe(audio_path: str, models_dir: str) -> dict:
     """Transcribe audio file using MLX Whisper via mlx-audio.
 
     Uses mlx_audio.stt.load() which handles model loading correctly
     in PyInstaller binaries (unlike mlx_whisper which has npz issues).
+
+    Returns dict with text, duration, and segments (with timestamps).
     """
     global _whisper_model
 
@@ -47,39 +162,71 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
 
     if _whisper_model is None:
         logger.info("Loading Whisper model (first use)...")
-        from mlx_audio.stt import load
+        from mlx_audio.stt.utils import load_model as load_stt_model
 
-        _whisper_model = load("openai/whisper-large-v3-turbo")
+        _whisper_model = load_stt_model("mlx-community/whisper-large-v3-turbo")
         logger.info("Whisper model loaded")
 
-    result = _whisper_model.generate(str(audio_path))
+    # Use word_timestamps=True for precise per-word timing
+    result = _whisper_model.generate(str(audio_path), word_timestamps=True)
 
-    # Extract text from result
+    # Extract text and raw segments from result
+    raw_segments = []
     if isinstance(result, str):
         text = result.strip()
     elif isinstance(result, dict):
         text = result.get("text", "").strip()
+        raw_segments = result.get("segments", []) or []
     elif hasattr(result, "text"):
         text = result.text.strip()
+        raw_segments = getattr(result, "segments", None) or []
     else:
-        # Generator of results — collect all text
-        segments = list(result)
+        # Generator of results — collect text and segments
+        collected = list(result)
         text = " ".join(
             s.text.strip() if hasattr(s, "text") else str(s).strip()
-            for s in segments
+            for s in collected
         ).strip()
+        for s in collected:
+            if hasattr(s, "segments") and s.segments:
+                raw_segments.extend(s.segments)
+            elif isinstance(s, dict) and s.get("segments"):
+                raw_segments.extend(s["segments"])
 
-    # Estimate duration from audio file
+    # Get precise duration from audio file
     duration = 0.0
     try:
         import soundfile as sf
 
         info = sf.info(audio_path)
         duration = info.duration
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).warning("Could not read audio duration from %s: %s", audio_path, e)
 
-    return {"text": text, "duration": duration}
+    # Collect all words across segments and group into phrases by pauses
+    all_words = []
+    for seg in raw_segments:
+        if not isinstance(seg, dict) or _is_hallucinated(seg):
+            continue
+        words = seg.get("words", []) or []
+        all_words.extend(words)
+
+    if all_words:
+        # Word-level timestamps available — group into phrases by pauses
+        segments = _group_words_into_phrases(all_words, min_pause_sec=0.3)
+        logger.info(
+            "Transcribed: %.1fs audio -> %d chars, %d phrases (from %d words across %d raw segments)",
+            duration, len(text), len(segments), len(all_words), len(raw_segments),
+        )
+    else:
+        # Fallback to segment-level timestamps
+        segments = _filter_segments(raw_segments)
+        logger.info(
+            "Transcribed: %.1fs audio -> %d chars, %d segments (from %d raw, no word timestamps)",
+            duration, len(text), len(segments), len(raw_segments),
+        )
+
+    return {"text": text, "duration": duration, "segments": segments}
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +241,15 @@ def _get_device() -> str:
     """Get the best available device for PyTorch."""
     import torch
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    mps_built = hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
+    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    device = "mps" if mps_available else "cpu"
+
+    logger.info(
+        "Device selection: chosen=%s mps_built=%s mps_available=%s frozen=%s",
+        device, mps_built, mps_available, getattr(sys, "frozen", False),
+    )
+    return device
 
 
 async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:
@@ -229,7 +382,7 @@ async def generate_speech(
 
 
 def _cache_key(audio_path: str, reference_text: str) -> str:
-    h = hashlib.md5()
+    h = hashlib.sha256()
     try:
         h.update(Path(audio_path).read_bytes())
     except OSError:
@@ -244,7 +397,7 @@ def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
         return None
     try:
         import torch
-        return torch.load(cache_path, map_location="cpu", weights_only=False)
+        return torch.load(cache_path, map_location="cpu", weights_only=True)
     except Exception as e:
         logger.warning(f"Failed to load cached prompt: {e}")
         return None

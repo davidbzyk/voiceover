@@ -57,6 +57,12 @@
 		{ code: 'it', label: 'Italian' }
 	];
 
+	const YOUTUBE_URL_PATTERN = /^https?:\/\/(www\.)?(youtube\.com|youtu\.be|m\.youtube\.com)\//;
+
+	function isValidYouTubeUrl(url: string): boolean {
+		return YOUTUBE_URL_PATTERN.test(url.trim());
+	}
+
 	function getClient(): VoiceboxClient {
 		return new VoiceboxClient();
 	}
@@ -147,6 +153,10 @@
 	}
 
 	async function extractFromYouTube() {
+		if (!isValidYouTubeUrl(youtubeUrl)) {
+			extractError = 'Please enter a valid YouTube URL';
+			return;
+		}
 		extracting = true;
 		extractError = '';
 		try {
@@ -190,7 +200,7 @@
 			// Upload the file for transcription only
 			const { tauriInvoke } = await import('$lib/tauri');
 			const buffer = await audioFile.arrayBuffer();
-			const fileBytes = Array.from(new Uint8Array(buffer));
+			const fileBytes = new Uint8Array(buffer);
 			const result = await tauriInvoke<string>('sidecar_upload', {
 				path: '/transcribe',
 				fileBytes,
@@ -436,7 +446,7 @@
 					<button
 						class="small-btn accent"
 						onclick={extractFromYouTube}
-						disabled={!youtubeUrl.trim() || extracting}
+						disabled={!youtubeUrl.trim() || !isValidYouTubeUrl(youtubeUrl) || extracting}
 					>
 						{extracting ? 'Extracting...' : 'Extract Audio'}
 					</button>

@@ -17,7 +17,7 @@ TESTS=()
 cleanup() {
     kill $SIDECAR_PID 2>/dev/null || true
     wait $SIDECAR_PID 2>/dev/null || true
-    rm -rf "$DATA_DIR" /tmp/test-sine-*.wav 2>/dev/null || true
+    rm -rf "$DATA_DIR" /tmp/test-sine-*.wav /tmp/test-gen-*.wav 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -125,7 +125,53 @@ else
 fi
 
 echo ""
-echo "─── Test 8: YouTube extraction ───"
+echo "─── Test 8: TTS generation (end-to-end) ───"
+# This is the critical test — exercises the full generate→poll→audio path
+# that breaks in prod builds when qwen_tts source files aren't bundled.
+# Requires Qwen model to be downloaded; skip gracefully if not available.
+GEN_RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/generate" \
+    -H "Content-Type: application/json" \
+    -d "{\"profile_id\": \"$PROFILE_ID\", \"text\": \"Hello, this is a test.\", \"language\": \"en\"}" 2>&1)
+GEN_ID=$(echo "$GEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+if [ -n "$GEN_ID" ]; then
+    pass "POST /generate returns generation ID ($GEN_ID)"
+
+    # Poll for completion (up to 5 minutes for model loading + inference)
+    echo "  Polling generation status (up to 300s)..."
+    GEN_STATUS="pending"
+    for i in $(seq 1 150); do
+        STATUS_RESP=$(curl -sf "http://127.0.0.1:$PORT/generate/$GEN_ID/status" 2>&1)
+        GEN_STATUS=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null)
+        if [ "$GEN_STATUS" = "completed" ] || [ "$GEN_STATUS" = "error" ]; then
+            break
+        fi
+        sleep 2
+    done
+
+    if [ "$GEN_STATUS" = "completed" ]; then
+        pass "Generation completed"
+
+        # Fetch audio and check it's a valid non-empty WAV
+        AUDIO_HTTP=$(curl -sf -o /tmp/test-gen-$$.wav -w "%{http_code}" "http://127.0.0.1:$PORT/audio/$GEN_ID" 2>&1)
+        AUDIO_SIZE=$(stat -f%z /tmp/test-gen-$$.wav 2>/dev/null || echo "0")
+        if [ "$AUDIO_HTTP" = "200" ] && [ "$AUDIO_SIZE" -gt 1000 ]; then
+            pass "GET /audio/{id} returns WAV (${AUDIO_SIZE} bytes)"
+        else
+            fail "GET /audio/{id}" "HTTP=$AUDIO_HTTP size=$AUDIO_SIZE"
+        fi
+        rm -f /tmp/test-gen-$$.wav
+    elif [ "$GEN_STATUS" = "error" ]; then
+        GEN_ERR=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','unknown'))" 2>/dev/null)
+        fail "Generation failed" "$GEN_ERR"
+    else
+        fail "Generation poll" "Timed out (status=$GEN_STATUS)"
+    fi
+else
+    fail "POST /generate" "$GEN_RESP"
+fi
+
+echo ""
+echo "─── Test 9: YouTube extraction ───"
 YT=$(curl -sf -X POST http://127.0.0.1:$PORT/extract-youtube \
     -H "Content-Type: application/json" \
     -d '{"url": "https://www.youtube.com/watch?v=FQrGo1MJpYE", "start": "0", "duration": 5}' 2>&1)
@@ -136,7 +182,7 @@ else
 fi
 
 echo ""
-echo "─── Test 9: Model download (whisper) ───"
+echo "─── Test 10: Model download (whisper) ───"
 DL=$(curl -sf -X POST http://127.0.0.1:$PORT/models/download \
     -H "Content-Type: application/json" \
     -d '{"model_name": "whisper-large-v3-turbo"}' 2>&1)
@@ -147,7 +193,7 @@ else
 fi
 
 echo ""
-echo "─── Test 10: Delete profile ───"
+echo "─── Test 11: Delete profile ───"
 DEL=$(curl -sf -X DELETE "http://127.0.0.1:$PORT/profiles/$PROFILE_ID" 2>&1)
 if echo "$DEL" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('ok')==True" 2>/dev/null; then
     pass "DELETE /profiles/{id} removes profile"

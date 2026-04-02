@@ -110,7 +110,7 @@ pub async fn process_recording(
 
     let temp_dir = recording.parent().unwrap_or(std::path::Path::new("/tmp"));
     let extracted_wav = temp_dir.join(format!("extracted-{timestamp}.wav"));
-    // ElevenLabs outputs MP3; local Voicebox outputs WAV.
+    // ElevenLabs outputs MP3; local TTS sidecar outputs WAV.
     // ffmpeg's replace_audio handles both (transcodes to AAC).
     let transformed_audio = if use_local {
         temp_dir.join(format!("transformed-{timestamp}.wav"))
@@ -125,6 +125,19 @@ pub async fn process_recording(
             percent: 5.0,
         })
         .ok();
+
+    // Probe video duration before extraction — the video is the source of truth for timing.
+    // Audio tracks in WebM can be shorter than video (WebRTC records them independently).
+    let video_duration = match ffmpeg::probe_duration(&recording).await {
+        Ok(dur) => {
+            log::info!("[pipeline] Video duration: {:.1}s", dur);
+            Some(dur)
+        }
+        Err(e) => {
+            log::warn!("[pipeline] Could not probe video duration: {} (will use audio duration)", e);
+            None
+        }
+    };
 
     log::info!("[pipeline] Extracting audio to {:?}", extracted_wav);
     ffmpeg::extract_audio(&recording, &extracted_wav).await?;
@@ -154,12 +167,24 @@ pub async fn process_recording(
             .ok();
 
         let port = sidecar::ensure_running(&app).await?;
-        local_tts::speech_to_speech(
-            port,
-            &config.local_voice_profile_id,
-            &extracted_wav,
-            &transformed_audio,
-        ).await?;
+        if config.local_tts_mode == config::LocalTtsMode::Vc {
+            log::info!("[pipeline] Using voice conversion (CosyVoice S2S)");
+            local_tts::voice_convert(
+                port,
+                &config.local_voice_profile_id,
+                &extracted_wav,
+                &transformed_audio,
+            ).await?;
+        } else {
+            log::info!("[pipeline] Using text-to-speech (Qwen TTS)");
+            local_tts::speech_to_speech(
+                port,
+                &config.local_voice_profile_id,
+                &extracted_wav,
+                &transformed_audio,
+                video_duration,
+            ).await?;
+        }
     } else {
         on_event
             .send(PipelineEvent::Progress {
@@ -170,7 +195,7 @@ pub async fn process_recording(
 
         elevenlabs::speech_to_speech(
             &config.elevenlabs_api_key,
-            voice_id.as_deref().unwrap(),
+            voice_id.as_deref().ok_or_else(|| "ElevenLabs voice ID is required but not configured".to_string())?,
             &extracted_wav,
             &transformed_audio,
         ).await?;
@@ -194,6 +219,18 @@ pub async fn process_recording(
     log::info!("[pipeline] Splicing audio into video");
     ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
 
+    // Copy transcript alongside the final video (if local TTS generated one)
+    if use_local {
+        let transcript_src = transformed_audio.with_extension("txt");
+        if transcript_src.exists() {
+            let transcript_dst = final_path.with_extension("txt");
+            match std::fs::copy(&transcript_src, &transcript_dst) {
+                Ok(_) => log::info!("[pipeline] Transcript saved: {:?}", transcript_dst),
+                Err(e) => log::warn!("[pipeline] Failed to copy transcript: {}", e),
+            }
+        }
+    }
+
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
         final_path.display(),
@@ -206,10 +243,16 @@ pub async fn process_recording(
         })
         .ok();
 
-    // Cleanup temp files
+    // Cleanup temp files from this pipeline run
     cleanup_temp(&recording);
     cleanup_temp(&extracted_wav);
     cleanup_temp(&transformed_audio);
+    cleanup_temp(&transformed_audio.with_extension("txt"));
+
+    // Sweep stale artifacts from previous runs (>1 hour old)
+    crate::commands::recording::cleanup_stale_recordings(
+        std::time::Duration::from_secs(3600),
+    );
 
     Ok(final_path.to_string_lossy().to_string())
 }
