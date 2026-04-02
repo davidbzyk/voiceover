@@ -54,6 +54,7 @@ if getattr(sys, "frozen", False) and len(sys.argv) == 1:
 
 import argparse
 import asyncio
+import functools
 import logging
 import signal
 import threading
@@ -273,12 +274,335 @@ async def _generation_worker():
         try:
             await coro
         except Exception as e:
-            logger.error(f"Generation {gen_id} failed (unhandled): {e}")
+            logger.error(f"Generation {gen_id} failed (unhandled): {e}", exc_info=True)
             _generations[gen_id]["status"] = "error"
             _generations[gen_id]["error"] = str(e)
             _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
+
+
+# ---------------------------------------------------------------------------
+# Generation business logic
+# ---------------------------------------------------------------------------
+
+
+async def _do_generate(
+    *,
+    set_status,
+    data_dir: Path,
+    profile_id: str,
+    text: str,
+    language: str,
+    segments: list,
+    original_duration: float,
+):
+    """Generate speech audio from text using Qwen TTS.
+
+    Returns (audio_data, sample_rate, log_label) for _run_generation.
+    Calls set_status(str) to report progress.
+    """
+    from profiles import get_samples
+    from tts import (
+        combine_voice_prompts,
+        generate_speech,
+        load_qwen_model,
+    )
+    from chunked_tts import (
+        assemble_timed_segments,
+        concatenate_audio_chunks,
+        pad_audio_to_match_timing,
+        split_text_into_chunks,
+    )
+
+    models_dir = str(data_dir / "models")
+    cache_dir = str(data_dir / "cache")
+
+    # Load model if needed
+    set_status("loading_model")
+    await load_qwen_model(models_dir)
+
+    # Get voice samples for profile
+    samples = get_samples(data_dir, profile_id)
+    if not samples:
+        raise ValueError(f"No samples found for profile {profile_id}")
+
+    # Create voice prompt from samples
+    set_status("preparing_voice")
+    audio_paths = [s["audio_path"] for s in samples]
+    ref_texts = [s["reference_text"] for s in samples]
+    voice_prompt = await combine_voice_prompts(audio_paths, ref_texts, cache_dir)
+
+    set_status("generating")
+
+    if segments and original_duration > 0:
+        # --- Timestamp-synchronized generation ---
+        logger.info(
+            f"Segment-aware generation: {len(segments)} segments, "
+            f"original_duration={original_duration:.1f}s"
+        )
+        tts_segments = []
+        sample_rate = None
+
+        for i, seg in enumerate(segments):
+            seg_text = seg.get("text", "").strip()
+            seg_start = float(seg.get("start", 0))
+            seg_end = float(seg.get("end", 0))
+            if not seg_text or seg_end <= seg_start:
+                logger.info("Skipping segment %d: %s", i, "empty text" if not seg_text else f"end ({seg_end}) <= start ({seg_start})")
+                continue
+
+            logger.info(
+                f"Generating segment {i + 1}/{len(segments)}: "
+                f"[{seg_start:.1f}s-{seg_end:.1f}s] "
+                f"({len(seg_text)} chars)"
+            )
+
+            # Sub-chunk long segments (>800 chars) and crossfade
+            sub_chunks = split_text_into_chunks(seg_text)
+            if len(sub_chunks) <= 1:
+                seg_audio, seg_sr = await generate_speech(
+                    seg_text, voice_prompt, language, seed=i
+                )
+            else:
+                logger.info(
+                    f"  Sub-chunking segment {i + 1}: "
+                    f"{len(sub_chunks)} sub-chunks"
+                )
+                sub_audios = []
+                seg_sr = None
+                for j, sub_text in enumerate(sub_chunks):
+                    sub_audio, sub_sr = await generate_speech(
+                        sub_text, voice_prompt, language, seed=i * 100 + j
+                    )
+                    sub_audios.append(sub_audio)
+                    if seg_sr is None:
+                        seg_sr = sub_sr
+                seg_audio = concatenate_audio_chunks(sub_audios, seg_sr)
+
+            # Insert proportional silences between words to match
+            # original speaker's pacing (TTS always runs faster)
+            word_timing = seg.get("words", [])
+            if word_timing and seg_sr:
+                seg_audio = pad_audio_to_match_timing(
+                    seg_audio, seg_sr, word_timing
+                )
+
+            tts_segments.append((seg_audio, seg_start, seg_end))
+            if sample_rate is None:
+                sample_rate = seg_sr
+
+        if sample_rate is None:
+            raise ValueError("No segments produced audio")
+
+        audio = assemble_timed_segments(
+            tts_segments, original_duration, sample_rate
+        )
+    else:
+        # --- Original character-based chunked generation ---
+        chunks = split_text_into_chunks(text)
+
+        if len(chunks) <= 1:
+            audio, sample_rate = await generate_speech(
+                text, voice_prompt, language
+            )
+        else:
+            logger.info(f"Chunked generation: {len(chunks)} chunks")
+            audio_chunks = []
+            sample_rate = None
+            for i, chunk_text in enumerate(chunks):
+                chunk_seed = i  # Deterministic per chunk
+                chunk_audio, chunk_sr = await generate_speech(
+                    chunk_text, voice_prompt, language, seed=chunk_seed
+                )
+                audio_chunks.append(chunk_audio)
+                if sample_rate is None:
+                    sample_rate = chunk_sr
+            audio = concatenate_audio_chunks(audio_chunks, sample_rate)
+
+        # Pad or truncate to match original duration so ffmpeg
+        # (which no longer uses -shortest) doesn't produce mismatched output
+        if original_duration > 0 and sample_rate:
+            target_samples = int(original_duration * sample_rate)
+            if len(audio) < target_samples:
+                audio = np.pad(audio, (0, target_samples - len(audio)))
+            elif len(audio) > target_samples:
+                audio = audio[:target_samples]
+
+    return audio, sample_rate, "Generation"
+
+
+_vc_model = None
+_vc_model_name = None
+
+
+async def _do_voice_convert(
+    *,
+    set_status,
+    data_dir: Path,
+    profile_id: str,
+    source_audio_path: str,
+    original_duration: float,
+):
+    """Convert source audio to target voice using CosyVoice3.
+
+    Returns (audio_data, sample_rate, log_label) for _run_generation.
+    Calls set_status(str) to report progress.
+    Mutates module globals _vc_model and _vc_model_name for model caching.
+    """
+    import asyncio
+    import mlx.core as mx
+    from mlx_audio.tts.utils import load_model
+    from mlx_audio.tts.generate import load_audio
+    from profiles import get_samples
+
+    models_dir = str(data_dir / "models")
+
+    # Load CosyVoice3 model
+    set_status("loading_model")
+    global _vc_model, _vc_model_name
+
+    vc_model_id = "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"
+    if _vc_model is None or _vc_model_name != vc_model_id:
+        logger.info(f"Loading voice conversion model: {vc_model_id}")
+        os.environ["HF_HUB_CACHE"] = models_dir
+
+        def _load():
+            global _vc_model, _vc_model_name
+            try:
+                model = load_model(vc_model_id)
+                _vc_model = model
+                _vc_model_name = vc_model_id
+            except Exception:
+                _vc_model = None
+                _vc_model_name = None
+                raise
+
+        await asyncio.to_thread(_load)
+        logger.info("Voice conversion model loaded")
+
+    # Get reference audio from voice profile — use all samples up to 30s
+    set_status("preparing_voice")
+    samples = get_samples(data_dir, profile_id)
+    if not samples:
+        raise ValueError(f"No samples found for profile {profile_id}")
+
+    model_sr = _vc_model.sample_rate
+    max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
+
+    ref_parts = []
+    ref_texts = []
+    total_ref = 0
+    all_have_text = True
+    for sample in samples:
+        if total_ref >= max_ref_samples:
+            break
+        part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
+        remaining = max_ref_samples - total_ref
+        was_truncated = len(part) > remaining
+        if was_truncated:
+            part = part[:remaining]
+        ref_parts.append(part)
+        total_ref += len(part)
+
+        sample_text = sample.get("reference_text", "").strip()
+        if sample_text and not was_truncated:
+            ref_texts.append(sample_text)
+        elif was_truncated:
+            # Audio was truncated — omit transcript to avoid text/audio mismatch
+            all_have_text = False
+            logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
+        else:
+            all_have_text = False
+
+        logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
+
+    if not ref_parts:
+        raise ValueError("No reference audio samples loaded successfully")
+
+    ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
+    # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
+    # Partial text causes voice cloning degradation. When ref_text is None and
+    # stt_model is set, CosyVoice3 will auto-transcribe the reference audio.
+    ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
+    logger.info(
+        f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
+        f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
+    )
+
+    source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+
+    chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
+    chunk_samples = int(chunk_duration * model_sr)
+
+    set_status("generating")
+
+    def _convert_chunk(chunk_audio):
+        """Run voice conversion on a single chunk (blocking, for thread pool)."""
+        # When ref_text is available, skip auto-transcription (faster).
+        # When ref_text is None, let the model auto-transcribe for best quality.
+        results = _vc_model.generate(
+            text="",
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            source_audio=chunk_audio,
+            stt_model=None if ref_text else "mlx-community/whisper-large-v3-turbo-4bit",
+            verbose=False,
+        )
+        audio_parts = []
+        for result in results:
+            audio_parts.append(np.array(result.audio, dtype=np.float32).flatten())
+        if not audio_parts:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(audio_parts)
+
+    source_np = np.array(source_audio) if isinstance(source_audio, mx.array) else source_audio
+
+    if len(source_np) <= chunk_samples:
+        logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
+        audio = await asyncio.to_thread(_convert_chunk, source_audio)
+        if len(audio) == 0:
+            raise ValueError("Voice conversion produced empty audio for single chunk")
+        sample_rate = model_sr
+    else:
+        # Chunk and stitch for long recordings
+        total_samples = len(source_np)
+        overlap_samples = int(1.0 * model_sr)
+        step = chunk_samples - overlap_samples
+        n_chunks = max(1, (total_samples - overlap_samples + step - 1) // step)
+        logger.info(f"Voice conversion: {n_chunks} chunks ({total_samples/model_sr:.1f}s total)")
+
+        converted_pieces = []
+        pos = 0
+        for i in range(n_chunks):
+            end = min(pos + chunk_samples, total_samples)
+            chunk = mx.array(source_np[pos:end], dtype=mx.float32)
+            logger.info(f"  Converting chunk {i+1}/{n_chunks} ({(end-pos)/model_sr:.1f}s)")
+            piece = await asyncio.to_thread(_convert_chunk, chunk)
+            if len(piece) > 0:
+                converted_pieces.append(piece)
+            else:
+                logger.warning(f"  Chunk {i+1}/{n_chunks} produced empty audio")
+            pos += step
+            if pos >= total_samples:
+                break
+
+        if not converted_pieces:
+            raise ValueError("Voice conversion produced no audio")
+
+        from chunked_tts import concatenate_audio_chunks
+        audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
+        sample_rate = model_sr
+
+    # Pad or truncate to match original duration (same as TTS path)
+    if original_duration > 0 and sample_rate:
+        target_samples = int(original_duration * sample_rate)
+        if len(audio) < target_samples:
+            audio = np.pad(audio, (0, target_samples - len(audio)))
+        elif len(audio) > target_samples:
+            audio = audio[:target_samples]
+
+    return audio, sample_rate, "Voice conversion"
 
 
 # ---------------------------------------------------------------------------
@@ -411,137 +735,17 @@ async def generate(request: dict):
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
 
-    async def _do_generate():
-        from profiles import get_samples
-        from tts import (
-            combine_voice_prompts,
-            generate_speech,
-            load_qwen_model,
-        )
-        from chunked_tts import (
-            assemble_timed_segments,
-            concatenate_audio_chunks,
-            pad_audio_to_match_timing,
-            split_text_into_chunks,
-        )
-
-        models_dir = str(DATA_DIR / "models")
-        cache_dir = str(DATA_DIR / "cache")
-
-        # Load model if needed
-        _generations[gen_id]["status"] = "loading_model"
-        await load_qwen_model(models_dir)
-
-        # Get voice samples for profile
-        samples = get_samples(DATA_DIR, profile_id)
-        if not samples:
-            raise ValueError(f"No samples found for profile {profile_id}")
-
-        # Create voice prompt from samples
-        _generations[gen_id]["status"] = "preparing_voice"
-        audio_paths = [s["audio_path"] for s in samples]
-        ref_texts = [s["reference_text"] for s in samples]
-        voice_prompt = await combine_voice_prompts(audio_paths, ref_texts, cache_dir)
-
-        _generations[gen_id]["status"] = "generating"
-
-        if segments and original_duration > 0:
-            # --- Timestamp-synchronized generation ---
-            logger.info(
-                f"Segment-aware generation: {len(segments)} segments, "
-                f"original_duration={original_duration:.1f}s"
-            )
-            tts_segments = []
-            sample_rate = None
-
-            for i, seg in enumerate(segments):
-                seg_text = seg.get("text", "").strip()
-                seg_start = float(seg.get("start", 0))
-                seg_end = float(seg.get("end", 0))
-                if not seg_text or seg_end <= seg_start:
-                    logger.info("Skipping segment %d: %s", i, "empty text" if not seg_text else f"end ({seg_end}) <= start ({seg_start})")
-                    continue
-
-                logger.info(
-                    f"Generating segment {i + 1}/{len(segments)}: "
-                    f"[{seg_start:.1f}s-{seg_end:.1f}s] "
-                    f"({len(seg_text)} chars)"
-                )
-
-                # Sub-chunk long segments (>800 chars) and crossfade
-                sub_chunks = split_text_into_chunks(seg_text)
-                if len(sub_chunks) <= 1:
-                    seg_audio, seg_sr = await generate_speech(
-                        seg_text, voice_prompt, language, seed=i
-                    )
-                else:
-                    logger.info(
-                        f"  Sub-chunking segment {i + 1}: "
-                        f"{len(sub_chunks)} sub-chunks"
-                    )
-                    sub_audios = []
-                    seg_sr = None
-                    for j, sub_text in enumerate(sub_chunks):
-                        sub_audio, sub_sr = await generate_speech(
-                            sub_text, voice_prompt, language, seed=i * 100 + j
-                        )
-                        sub_audios.append(sub_audio)
-                        if seg_sr is None:
-                            seg_sr = sub_sr
-                    seg_audio = concatenate_audio_chunks(sub_audios, seg_sr)
-
-                # Insert proportional silences between words to match
-                # original speaker's pacing (TTS always runs faster)
-                word_timing = seg.get("words", [])
-                if word_timing and seg_sr:
-                    seg_audio = pad_audio_to_match_timing(
-                        seg_audio, seg_sr, word_timing
-                    )
-
-                tts_segments.append((seg_audio, seg_start, seg_end))
-                if sample_rate is None:
-                    sample_rate = seg_sr
-
-            if sample_rate is None:
-                raise ValueError("No segments produced audio")
-
-            audio = assemble_timed_segments(
-                tts_segments, original_duration, sample_rate
-            )
-        else:
-            # --- Original character-based chunked generation ---
-            chunks = split_text_into_chunks(text)
-
-            if len(chunks) <= 1:
-                audio, sample_rate = await generate_speech(
-                    text, voice_prompt, language
-                )
-            else:
-                logger.info(f"Chunked generation: {len(chunks)} chunks")
-                audio_chunks = []
-                sample_rate = None
-                for i, chunk_text in enumerate(chunks):
-                    chunk_seed = i  # Deterministic per chunk
-                    chunk_audio, chunk_sr = await generate_speech(
-                        chunk_text, voice_prompt, language, seed=chunk_seed
-                    )
-                    audio_chunks.append(chunk_audio)
-                    if sample_rate is None:
-                        sample_rate = chunk_sr
-                audio = concatenate_audio_chunks(audio_chunks, sample_rate)
-
-            # Pad or truncate to match original duration so ffmpeg
-            # (which no longer uses -shortest) doesn't produce mismatched output
-            if original_duration > 0 and sample_rate:
-                target_samples = int(original_duration * sample_rate)
-                if len(audio) < target_samples:
-                    audio = np.pad(audio, (0, target_samples - len(audio)))
-                elif len(audio) > target_samples:
-                    audio = audio[:target_samples]
-
-        return audio, sample_rate, "Generation"
-
-    await _generation_queue.put((gen_id, _run_generation(gen_id, _do_generate)))
+    generate_fn = functools.partial(
+        _do_generate,
+        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
+        data_dir=DATA_DIR,
+        profile_id=profile_id,
+        text=text,
+        language=language,
+        segments=segments,
+        original_duration=original_duration,
+    )
+    await _generation_queue.put((gen_id, _run_generation(gen_id, generate_fn)))
     return {"id": gen_id}
 
 
@@ -578,9 +782,6 @@ async def get_audio(gen_id: str):
 # Voice Conversion (Speech-to-Speech)
 # ---------------------------------------------------------------------------
 
-_vc_model = None
-_vc_model_name = None
-
 
 @app.post("/voice-convert")
 async def voice_convert(request: dict):
@@ -608,163 +809,15 @@ async def voice_convert(request: dict):
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
 
-    async def _do_voice_convert():
-        import asyncio
-        import soundfile as sf
-        import mlx.core as mx
-        from mlx_audio.tts.utils import load_model
-        from mlx_audio.tts.generate import load_audio
-        from profiles import get_samples
-
-        models_dir = str(DATA_DIR / "models")
-
-        # Load CosyVoice3 model
-        _generations[gen_id]["status"] = "loading_model"
-        global _vc_model, _vc_model_name
-
-        vc_model_id = "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"
-        if _vc_model is None or _vc_model_name != vc_model_id:
-            logger.info(f"Loading voice conversion model: {vc_model_id}")
-            os.environ["HF_HUB_CACHE"] = models_dir
-
-            def _load():
-                global _vc_model, _vc_model_name
-                try:
-                    model = load_model(vc_model_id)
-                    _vc_model = model
-                    _vc_model_name = vc_model_id
-                except Exception as e:
-                    _vc_model = None
-                    _vc_model_name = None
-                    raise
-
-            await asyncio.to_thread(_load)
-            logger.info("Voice conversion model loaded")
-
-        # Get reference audio from voice profile — use all samples up to 30s
-        _generations[gen_id]["status"] = "preparing_voice"
-        samples = get_samples(DATA_DIR, profile_id)
-        if not samples:
-            raise ValueError(f"No samples found for profile {profile_id}")
-
-        model_sr = _vc_model.sample_rate
-        max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
-
-        ref_parts = []
-        ref_texts = []
-        total_ref = 0
-        all_have_text = True
-        for sample in samples:
-            if total_ref >= max_ref_samples:
-                break
-            part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
-            remaining = max_ref_samples - total_ref
-            was_truncated = len(part) > remaining
-            if was_truncated:
-                part = part[:remaining]
-            ref_parts.append(part)
-            total_ref += len(part)
-
-            sample_text = sample.get("reference_text", "").strip()
-            if sample_text and not was_truncated:
-                ref_texts.append(sample_text)
-            elif was_truncated:
-                # Audio was truncated — omit transcript to avoid text/audio mismatch
-                all_have_text = False
-                logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
-            else:
-                all_have_text = False
-
-            logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
-
-        if not ref_parts:
-            raise ValueError("No reference audio samples loaded successfully")
-
-        ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
-        # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
-        # Partial text causes voice cloning degradation. When ref_text is None and
-        # stt_model is set, CosyVoice3 will auto-transcribe the reference audio.
-        ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
-        logger.info(
-            f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
-            f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
-        )
-
-        source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
-
-        chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
-        chunk_samples = int(chunk_duration * model_sr)
-
-        _generations[gen_id]["status"] = "generating"
-
-        def _convert_chunk(chunk_audio):
-            """Run voice conversion on a single chunk (blocking, for thread pool)."""
-            # When ref_text is available, skip auto-transcription (faster).
-            # When ref_text is None, let the model auto-transcribe for best quality.
-            results = _vc_model.generate(
-                text="",
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-                source_audio=chunk_audio,
-                stt_model=None if ref_text else "mlx-community/whisper-large-v3-turbo-4bit",
-                verbose=False,
-            )
-            audio_parts = []
-            for result in results:
-                audio_parts.append(np.array(result.audio, dtype=np.float32).flatten())
-            if not audio_parts:
-                return np.array([], dtype=np.float32)
-            return np.concatenate(audio_parts)
-
-        source_np = np.array(source_audio) if isinstance(source_audio, mx.array) else source_audio
-
-        if len(source_np) <= chunk_samples:
-            logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
-            audio = await asyncio.to_thread(_convert_chunk, source_audio)
-            if len(audio) == 0:
-                raise ValueError("Voice conversion produced empty audio for single chunk")
-            sample_rate = model_sr
-        else:
-            # Chunk and stitch for long recordings
-            total_samples = len(source_np)
-            overlap_samples = int(1.0 * model_sr)
-            step = chunk_samples - overlap_samples
-            n_chunks = max(1, (total_samples - overlap_samples + step - 1) // step)
-            logger.info(f"Voice conversion: {n_chunks} chunks ({total_samples/model_sr:.1f}s total)")
-
-            converted_pieces = []
-            pos = 0
-            for i in range(n_chunks):
-                end = min(pos + chunk_samples, total_samples)
-                chunk = mx.array(source_np[pos:end], dtype=mx.float32)
-                logger.info(f"  Converting chunk {i+1}/{n_chunks} ({(end-pos)/model_sr:.1f}s)")
-                piece = await asyncio.to_thread(_convert_chunk, chunk)
-                if len(piece) > 0:
-                    converted_pieces.append(piece)
-                else:
-                    logger.warning(f"  Chunk {i+1}/{n_chunks} produced empty audio")
-                pos += step
-                if pos >= total_samples:
-                    break
-
-            if not converted_pieces:
-                raise ValueError("Voice conversion produced no audio")
-
-            from chunked_tts import concatenate_audio_chunks
-            audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
-            sample_rate = model_sr
-
-        # Pad or truncate to match original duration (same as TTS path)
-        if original_duration > 0 and sample_rate:
-            target_samples = int(original_duration * sample_rate)
-            if len(audio) < target_samples:
-                audio = np.pad(audio, (0, target_samples - len(audio)))
-            elif len(audio) > target_samples:
-                audio = audio[:target_samples]
-
-        return audio, sample_rate, "Voice conversion"
-
-    await _generation_queue.put((gen_id, _run_generation(gen_id, _do_voice_convert)))
+    convert_fn = functools.partial(
+        _do_voice_convert,
+        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
+        data_dir=DATA_DIR,
+        profile_id=profile_id,
+        source_audio_path=source_audio_path,
+        original_duration=original_duration,
+    )
+    await _generation_queue.put((gen_id, _run_generation(gen_id, convert_fn)))
     return {"id": gen_id}
 
 

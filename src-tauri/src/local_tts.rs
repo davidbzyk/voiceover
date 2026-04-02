@@ -7,6 +7,25 @@ const POLL_INTERVAL_MS: u64 = 500;
 /// Maximum time to wait for a generation before giving up.
 const POLL_TIMEOUT_SECS: u64 = 300;
 
+/// Shared HTTP client for all sidecar communication.
+/// Registered as Tauri managed state — no default timeout so each call site
+/// can use `tokio::time::timeout()` with an appropriate per-request duration.
+pub struct HttpClient {
+    pub client: reqwest::Client,
+}
+
+/// Send an HTTP request with a per-call timeout.
+async fn send_with_timeout(
+    future: impl std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    timeout_secs: u64,
+    context: &str,
+) -> Result<reqwest::Response, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), future)
+        .await
+        .map_err(|_| format!("{context}: timed out after {timeout_secs}s"))?
+        .map_err(|e| format!("{context}: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // Public types (shared with the frontend via Tauri commands)
 // ---------------------------------------------------------------------------
@@ -78,6 +97,18 @@ pub(crate) struct ModelsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Validate that a generation ID contains only safe characters (alphanumeric + hyphens).
+fn validate_generation_id(id: &str) -> Result<(), String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(format!("Invalid generation ID format: {}", id));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared poll-and-download helper
 // ---------------------------------------------------------------------------
 
@@ -108,11 +139,12 @@ async fn poll_and_download(
 
         tokio::time::sleep(poll_interval).await;
 
-        let poll_resp = client
-            .get(&status_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to poll generation status: {e}"))?;
+        let poll_resp = send_with_timeout(
+            client.get(&status_url).send(),
+            120,
+            "Failed to poll generation status",
+        )
+        .await?;
 
         if !poll_resp.status().is_success() {
             let body = poll_resp.text().await.unwrap_or_default();
@@ -145,11 +177,12 @@ async fn poll_and_download(
 
     // Download the result
     let audio_url = format!("{}/audio/{}", base_url, generation_id);
-    let audio_resp = client
-        .get(&audio_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download generated audio: {e}"))?;
+    let audio_resp = send_with_timeout(
+        client.get(&audio_url).send(),
+        120,
+        "Failed to download generated audio",
+    )
+    .await?;
 
     if !audio_resp.status().is_success() {
         let body = audio_resp.text().await.unwrap_or_default();
@@ -181,6 +214,7 @@ async fn poll_and_download(
 /// 3. Poll `/generate/{id}/status` until completed or failed (plain JSON)
 /// 4. Download result from `/audio/{id}` and save to `output_wav`
 pub async fn speech_to_speech(
+    client: &reqwest::Client,
     port: u16,
     profile_id: &str,
     input_wav: &Path,
@@ -199,10 +233,6 @@ pub async fn speech_to_speech(
         port,
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| e.to_string())?;
     let start = std::time::Instant::now();
 
     // --- Step 1: Transcribe audio to text ---
@@ -215,12 +245,12 @@ pub async fn speech_to_speech(
                 .map_err(|e| e.to_string())?,
         );
 
-    let response = client
-        .post(format!("{}/transcribe", base))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("Transcription request failed: {e}"))?;
+    let response = send_with_timeout(
+        client.post(format!("{}/transcribe", base)).multipart(form).send(),
+        600,
+        "Transcription request failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -306,12 +336,12 @@ pub async fn speech_to_speech(
         "original_duration": duration_for_assembly,
     });
 
-    let response = client
-        .post(format!("{}/generate", base))
-        .json(&gen_body)
-        .send()
-        .await
-        .map_err(|e| format!("Generate request failed: {e}"))?;
+    let response = send_with_timeout(
+        client.post(format!("{}/generate", base)).json(&gen_body).send(),
+        600,
+        "Generate request failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -333,7 +363,7 @@ pub async fn speech_to_speech(
 
     // --- Step 3 & 4: Poll for completion and download result ---
     poll_and_download(
-        &client,
+        client,
         &base,
         &generation_id,
         output_wav,
@@ -355,16 +385,13 @@ pub async fn speech_to_speech(
 /// uses CosyVoice3 to convert the voice while keeping the exact pacing.
 /// Same poll/download pattern as speech_to_speech.
 pub async fn voice_convert(
+    client: &reqwest::Client,
     port: u16,
     profile_id: &str,
     input_wav: &Path,
     output_wav: &Path,
 ) -> Result<(), String> {
     let base = format!("http://127.0.0.1:{}", port);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| e.to_string())?;
     let start = std::time::Instant::now();
 
     log::info!(
@@ -380,12 +407,12 @@ pub async fn voice_convert(
         "source_audio_path": input_path_str,
     });
 
-    let response = client
-        .post(format!("{}/voice-convert", base))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Voice convert request failed: {e}"))?;
+    let response = send_with_timeout(
+        client.post(format!("{}/voice-convert", base)).json(&body).send(),
+        600,
+        "Voice convert request failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -405,7 +432,7 @@ pub async fn voice_convert(
 
     // Poll for completion and download result
     poll_and_download(
-        &client,
+        client,
         &base,
         &generation_id,
         output_wav,
@@ -442,16 +469,13 @@ pub async fn list_local_voices(app: tauri::AppHandle) -> Result<Vec<LocalVoice>,
     let url = format!("http://127.0.0.1:{}/profiles", port);
     log::info!("[local_tts] Fetching voice profiles from sidecar port {}", port);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch voice profiles: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client.get(&url).send(),
+        10,
+        "Failed to fetch voice profiles",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -474,16 +498,13 @@ pub async fn check_model_status(app: tauri::AppHandle) -> Result<Vec<ModelInfo>,
     let url = format!("http://127.0.0.1:{}/models/status", port);
     log::info!("[local_tts] Checking model status on sidecar port {}", port);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to check model status: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client.get(&url).send(),
+        10,
+        "Failed to check model status",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -511,21 +532,20 @@ pub async fn extract_youtube_audio(
     let api_url = format!("http://127.0.0.1:{}/extract-youtube", port);
     log::info!("[local_tts] YouTube extraction: {} (start={}, duration={}s)", url, start, duration);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180)) // 3 min for large downloads
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .post(&api_url)
-        .json(&serde_json::json!({
-            "url": url,
-            "start": start,
-            "duration": duration,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("YouTube extraction failed: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client
+            .post(&api_url)
+            .json(&serde_json::json!({
+                "url": url,
+                "start": start,
+                "duration": duration,
+            }))
+            .send(),
+        180,
+        "YouTube extraction failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -554,10 +574,7 @@ pub async fn poll_generation(
     let port = crate::sidecar::get_port(&state)
         .ok_or_else(|| "TTS sidecar is not running".to_string())?;
 
-    // Validate generation_id contains only safe characters (alphanumeric + hyphens)
-    if !generation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(format!("Invalid generation ID format: {}", generation_id));
-    }
+    validate_generation_id(&generation_id)?;
 
     let url = format!(
         "http://127.0.0.1:{}/generate/{}/status",
@@ -565,19 +582,17 @@ pub async fn poll_generation(
     );
     log::info!("[local_tts] poll_generation: {} (port={})", generation_id, port);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| {
-            log::warn!("[local_tts] poll_generation request failed: {}", e);
-            format!("Failed to poll generation: {e}")
-        })?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client.get(&url).send(),
+        120,
+        "Failed to poll generation",
+    )
+    .await
+    .map_err(|e| {
+        log::warn!("[local_tts] poll_generation request failed: {}", e);
+        e
+    })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -593,6 +608,51 @@ pub async fn poll_generation(
 
     log::info!("[local_tts] poll_generation result: {}", result);
     Ok(result)
+}
+
+/// Fetch generated audio bytes from the sidecar.
+///
+/// Routes audio through Tauri IPC so the webview doesn't need direct HTTP
+/// access to the sidecar (eliminates `media-src http://127.0.0.1:*` from CSP).
+#[tauri::command]
+pub async fn get_generation_audio(
+    app: tauri::AppHandle,
+    generation_id: String,
+) -> Result<Vec<u8>, String> {
+    validate_generation_id(&generation_id).map_err(|e| {
+        log::warn!("[local_tts] get_generation_audio: {}", e);
+        e
+    })?;
+
+    let state = app.state::<crate::sidecar::SidecarState>();
+    let port = crate::sidecar::get_port(&state).ok_or_else(|| {
+        log::warn!("[local_tts] get_generation_audio: sidecar not running");
+        "TTS sidecar is not running".to_string()
+    })?;
+
+    let url = format!("http://127.0.0.1:{}/audio/{}", port, generation_id);
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(http.client.get(&url).send(), 30, "Failed to fetch audio")
+        .await
+        .map_err(|e| {
+            log::warn!("[local_tts] get_generation_audio: {}", e);
+            e
+        })?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        log::warn!("[local_tts] get_generation_audio: HTTP error: {body}");
+        return Err(format!("Audio fetch failed: {body}"));
+    }
+
+    response
+        .bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| {
+            log::warn!("[local_tts] get_generation_audio: failed to read bytes: {e}");
+            format!("Failed to read audio bytes: {e}")
+        })
 }
 
 /// Permitted sidecar path prefixes — only these endpoints are reachable from the frontend.
@@ -626,16 +686,12 @@ pub async fn sidecar_fetch(
 
     // Longer timeout: PyInstaller sidecar can hold the GIL during ML inference,
     // making even simple GET requests wait until the inference step releases it.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-
+    let http = app.state::<HttpClient>();
     let mut req = match method.to_uppercase().as_str() {
-        "POST" => client.post(&url),
-        "PUT" => client.put(&url),
-        "DELETE" => client.delete(&url),
-        "GET" => client.get(&url),
+        "POST" => http.client.post(&url),
+        "PUT" => http.client.put(&url),
+        "DELETE" => http.client.delete(&url),
+        "GET" => http.client.get(&url),
         _ => return Err(format!("Unsupported HTTP method: {}", method)),
     };
 
@@ -643,7 +699,7 @@ pub async fn sidecar_fetch(
         req = req.header("Content-Type", "application/json").body(b);
     }
 
-    let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
+    let resp = send_with_timeout(req.send(), 120, "Request failed").await?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
 
@@ -681,17 +737,13 @@ pub async fn sidecar_upload(
         form = form.text(key, value);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
-        .post(&url)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("Upload failed: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let resp = send_with_timeout(
+        http.client.post(&url).multipart(form).send(),
+        60,
+        "Upload failed",
+    )
+    .await?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
@@ -813,5 +865,25 @@ mod tests {
         // Port 1 should not have our sidecar — use health_check directly
         let result = crate::sidecar::health_check(1).await;
         assert!(!result);
+    }
+
+    #[test]
+    fn validate_generation_id_accepts_uuid() {
+        assert!(validate_generation_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890").is_ok());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_path_traversal() {
+        assert!(validate_generation_id("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_spaces() {
+        assert!(validate_generation_id("id with spaces").is_err());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_semicolons() {
+        assert!(validate_generation_id("id;rm -rf /").is_err());
     }
 }

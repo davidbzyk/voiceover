@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://api.elevenlabs.io https://oauth2.googleapis.com https://www.googleapis.com https://accounts.google.com blob: mediastream:; media-src 'self' blob: mediastream: https://asset.localhost http://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; connect-src 'self' https://api.elevenlabs.io https://oauth2.googleapis.com https://www.googleapis.com https://accounts.google.com blob: mediastream:; media-src 'self' blob: mediastream: https://asset.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

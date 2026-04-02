@@ -72,16 +72,19 @@ describe('VoiceboxClient', () => {
 	});
 
 	describe('getAudioUrl', () => {
-		it('constructs correct URL from port and generation ID', async () => {
-			mockedInvoke.mockResolvedValueOnce({ port: 8123 });
+		it('fetches audio bytes and returns a blob URL', async () => {
+			const fakeBytes = [0x52, 0x49, 0x46, 0x46]; // RIFF header
+			mockedInvoke.mockResolvedValueOnce(fakeBytes);
 
 			const url = await client.getAudioUrl('gen-99');
-			expect(url).toBe('http://127.0.0.1:8123/audio/gen-99');
-			expect(mockedInvoke).toHaveBeenCalledWith('get_sidecar_status');
+			expect(url).toMatch(/^blob:/);
+			expect(mockedInvoke).toHaveBeenCalledWith('get_generation_audio', {
+				generationId: 'gen-99'
+			});
 		});
 
-		it('throws when sidecar not running (port not available)', async () => {
-			mockedInvoke.mockResolvedValueOnce({ port: null });
+		it('throws when command fails', async () => {
+			mockedInvoke.mockRejectedValueOnce(new Error('TTS sidecar is not running'));
 
 			await expect(client.getAudioUrl('gen-99')).rejects.toThrow(
 				'TTS sidecar is not running'

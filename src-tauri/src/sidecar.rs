@@ -1,8 +1,10 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::Mutex as StdMutex;
 use tauri::Manager;
 use tokio::process::Command;
+use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::Notify;
 
 /// How long to wait for the sidecar to become healthy after launch.
 const HEALTH_CHECK_TIMEOUT_SECS: u64 = 60;
@@ -16,22 +18,26 @@ const HEALTH_CHECK_INTERVAL_MS: u64 = 500;
 /// Managed state for the TTS sidecar process.
 pub struct SidecarState {
     /// Handle to the running sidecar child process.
-    child: Mutex<Option<tokio::process::Child>>,
+    child: TokioMutex<Option<tokio::process::Child>>,
     /// The port the sidecar is listening on.
-    port: Mutex<Option<u16>>,
+    /// Uses std::sync::Mutex for cheap synchronous reads from `get_port()`.
+    port: StdMutex<Option<u16>>,
     /// Path to the app data directory passed to the sidecar.
-    data_dir: Mutex<Option<PathBuf>>,
+    data_dir: TokioMutex<Option<PathBuf>>,
     /// True while a startup is in progress (prevents concurrent restarts).
-    starting: Mutex<bool>,
+    starting: TokioMutex<bool>,
+    /// Signalled when startup completes, replacing the old polling loop.
+    startup_done: Notify,
 }
 
 impl Default for SidecarState {
     fn default() -> Self {
         Self {
-            child: Mutex::new(None),
-            port: Mutex::new(None),
-            data_dir: Mutex::new(None),
-            starting: Mutex::new(false),
+            child: TokioMutex::new(None),
+            port: StdMutex::new(None),
+            data_dir: TokioMutex::new(None),
+            starting: TokioMutex::new(false),
+            startup_done: Notify::new(),
         }
     }
 }
@@ -106,12 +112,13 @@ fn find_available_port() -> Result<u16, String> {
 /// and polls `/health` until the server is ready.
 pub async fn start_sidecar(app: &tauri::AppHandle) -> Result<u16, String> {
     let state = app.state::<SidecarState>();
-    *state.starting.lock().unwrap() = true;
+    *state.starting.lock().await = true;
 
     let result = start_sidecar_inner(app).await;
 
     let state = app.state::<SidecarState>();
-    *state.starting.lock().unwrap() = false;
+    *state.starting.lock().await = false;
+    state.startup_done.notify_waiters();
     result
 }
 
@@ -196,9 +203,9 @@ async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
 
     // Store state
     let state = app.state::<SidecarState>();
-    *state.child.lock().unwrap() = Some(child);
+    *state.child.lock().await = Some(child);
     *state.port.lock().unwrap() = Some(port);
-    *state.data_dir.lock().unwrap() = Some(data_dir);
+    *state.data_dir.lock().await = Some(data_dir);
 
     // Poll /health until ready
     let deadline =
@@ -207,7 +214,7 @@ async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
     loop {
         if std::time::Instant::now() > deadline {
             // Timeout — kill the child and report failure
-            stop_sidecar_inner(&state);
+            stop_sidecar_inner(&state).await;
             return Err(format!(
                 "TTS sidecar failed to start within {}s",
                 HEALTH_CHECK_TIMEOUT_SECS
@@ -222,7 +229,7 @@ async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
         }
 
         // Check if child has exited unexpectedly
-        let mut guard = state.child.lock().unwrap();
+        let mut guard = state.child.lock().await;
         if let Some(ref mut child) = *guard {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -244,10 +251,19 @@ pub async fn health_check(port: u16) -> bool {
     // Generous timeout: during ML inference (especially in PyInstaller builds),
     // the sidecar's event loop may be blocked by GIL-holding computation.
     // A short timeout here causes false "dead" detections and restarts.
-    let client = reqwest::Client::builder()
+    //
+    // Uses its own client rather than the shared HttpClient because health_check
+    // is called during startup before state may be accessible.
+    let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[sidecar] Failed to build health check client: {e}");
+            return false;
+        }
+    };
 
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -263,8 +279,8 @@ pub async fn health_check(port: u16) -> bool {
 }
 
 /// Stop the sidecar child process (inner, takes state ref).
-fn stop_sidecar_inner(state: &SidecarState) {
-    let mut guard = state.child.lock().unwrap();
+async fn stop_sidecar_inner(state: &SidecarState) {
+    let mut guard = state.child.lock().await;
     if let Some(ref mut child) = *guard {
         log::info!("[sidecar] Stopping child process");
         // Send kill signal — the watchdog will also self-terminate
@@ -278,8 +294,8 @@ fn stop_sidecar_inner(state: &SidecarState) {
 }
 
 /// Stop the sidecar process.
-pub fn stop_sidecar(state: &SidecarState) {
-    stop_sidecar_inner(state);
+pub async fn stop_sidecar(state: &SidecarState) {
+    stop_sidecar_inner(state).await;
 }
 
 /// Ensure the sidecar is running. If it has died, restart it.
@@ -288,18 +304,24 @@ pub fn stop_sidecar(state: &SidecarState) {
 pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
     let state = app.state::<SidecarState>();
 
+    // Register the notified future BEFORE checking `starting` to avoid
+    // missing a notification between the check and the wait.
+    let notified = state.startup_done.notified();
+
     // If a startup is already in progress, wait for it instead of restarting
-    let is_starting = { *state.starting.lock().unwrap() };
+    let is_starting = { *state.starting.lock().await };
     if is_starting {
         log::info!("[sidecar] Startup in progress — waiting...");
-        for _ in 0..120 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let done = !*state.starting.lock().unwrap();
-            if done {
-                break;
-            }
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS),
+            notified,
+        )
+        .await
+        .is_err()
+        {
+            return Err("TTS sidecar startup timed out".to_string());
         }
-        // After waiting, check if we have a port
+        // After notification, check if we have a port
         let port = { *state.port.lock().unwrap() };
         if let Some(p) = port {
             if health_check(p).await {
@@ -320,7 +342,7 @@ pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
     }
 
     // Sidecar is dead or never started — (re)start it
-    stop_sidecar_inner(&state);
+    stop_sidecar_inner(&state).await;
     start_sidecar(app).await
 }
 
@@ -378,12 +400,12 @@ mod tests {
         assert!(p2 > 0);
     }
 
-    #[test]
-    fn sidecar_state_default_has_no_child() {
+    #[tokio::test]
+    async fn sidecar_state_default_has_no_child() {
         let state = SidecarState::default();
-        assert!(state.child.lock().unwrap().is_none());
+        assert!(state.child.lock().await.is_none());
         assert!(state.port.lock().unwrap().is_none());
-        assert!(state.data_dir.lock().unwrap().is_none());
+        assert!(state.data_dir.lock().await.is_none());
     }
 
     #[tokio::test]
