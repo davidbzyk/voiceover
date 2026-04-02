@@ -48,24 +48,14 @@ class LibraryState {
 
 	async load() {
 		if (!isTauri()) {
-			this.error = 'Library requires the desktop app (pnpm tauri dev)';
+			this.error = 'Library requires the desktop app';
 			return;
 		}
 		this.loading = true;
 		this.error = '';
 		try {
-			const results = await tauriInvoke<RecordingInfo[]>('list_recordings');
-			console.log('[library] Loaded recordings:', results.length);
-			this.recordings = results;
-			if (results.length === 0) {
-				// Check if the output dir might be wrong by importing appState
-				const { appState } = await import('./state.svelte');
-				if (appState.config.output_dir) {
-					console.log('[library] Output dir:', appState.config.output_dir);
-				}
-			}
+			this.recordings = await tauriInvoke<RecordingInfo[]>('list_recordings');
 		} catch (err) {
-			console.error('[library] Failed to load recordings:', err);
 			this.error = String(err);
 			this.recordings = [];
 		} finally {
@@ -84,6 +74,14 @@ class LibraryState {
 
 	async revealInFinder(path: string) {
 		await tauriInvoke('reveal_in_finder', { path });
+	}
+
+	updateRecordingMeta(path: string, updates: Partial<RecordingMeta>) {
+		this.recordings = this.recordings.map((r) =>
+			r.path === path
+				? { ...r, meta: { ...r.meta, voiceProfile: null, provider: null, driveUrl: null, uploadedAt: null, voiceReplacement: false, ...r.meta, ...updates } }
+				: r
+		);
 	}
 
 	setSortBy(sort: 'date' | 'size' | 'name') {

@@ -4,6 +4,7 @@
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { refreshDriveToken } from '$lib/drive';
 	import { libraryState, type RecordingInfo } from '$lib/library.svelte';
+	import { logger } from '$lib/logger';
 
 	let { recording }: { recording: RecordingInfo } = $props();
 
@@ -11,12 +12,13 @@
 	let thumbnailLoading = $state(false);
 	let confirmingDelete = $state(false);
 	let uploading = $state(false);
+	let errorMessage = $state('');
 	let cardEl = $state<HTMLDivElement | null>(null);
 
 	const alreadyUploaded = $derived(!!recording.meta?.driveUrl);
 	const driveConnected = $derived(appState.config.google_drive.connected);
 
-	const formattedDate = $derived(() => {
+	const formattedDate = $derived.by(() => {
 		if (!recording.createdAt) return 'Unknown date';
 		const date = new Date(recording.createdAt * 1000);
 		return date.toLocaleDateString('en-US', {
@@ -25,7 +27,7 @@
 		});
 	});
 
-	const formattedSize = $derived(() => {
+	const formattedSize = $derived.by(() => {
 		const bytes = recording.sizeBytes;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -42,7 +44,7 @@
 			const blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' });
 			thumbnailUrl = URL.createObjectURL(blob);
 		} catch (err) {
-			console.error('[library] Failed to load thumbnail:', err);
+			logger.error('library', 'Failed to load thumbnail', err);
 		} finally {
 			thumbnailLoading = false;
 		}
@@ -60,7 +62,10 @@
 			{ threshold: 0.1 }
 		);
 		observer.observe(cardEl);
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			if (thumbnailUrl) URL.revokeObjectURL(thumbnailUrl);
+		};
 	});
 
 	async function handleDelete() {
@@ -68,10 +73,12 @@
 			confirmingDelete = true;
 			return;
 		}
+		errorMessage = '';
 		try {
 			await libraryState.deleteRecording(recording.path);
 		} catch (err) {
-			console.error('[library] Failed to delete:', err);
+			errorMessage = `Delete failed: ${err}`;
+			logger.error('library', 'Failed to delete recording', err);
 		}
 		confirmingDelete = false;
 	}
@@ -79,6 +86,7 @@
 	async function handleUploadToDrive() {
 		if (uploading || alreadyUploaded || !driveConnected) return;
 		uploading = true;
+		errorMessage = '';
 		try {
 			let token = appState.config.google_drive.access_token;
 			const now = Math.floor(Date.now() / 1000);
@@ -104,16 +112,30 @@
 				onEvent
 			});
 
-			// Update the recording's meta in the local list
-			if (driveUrl && recording.meta) {
-				recording.meta.driveUrl = driveUrl;
-			} else if (driveUrl) {
-				recording.meta = { voiceProfile: null, provider: null, driveUrl, uploadedAt: null, voiceReplacement: false };
+			if (driveUrl) {
+				libraryState.updateRecordingMeta(recording.path, { driveUrl });
 			}
 		} catch (err) {
-			console.error('[library] Drive upload failed:', err);
+			errorMessage = `Upload failed: ${err}`;
+			logger.error('library', 'Drive upload failed', err);
 		} finally {
 			uploading = false;
+		}
+	}
+
+	async function handleOpen() {
+		try {
+			await libraryState.openInSystem(recording.path);
+		} catch (err) {
+			logger.error('library', 'Failed to open recording', err);
+		}
+	}
+
+	async function handleReveal() {
+		try {
+			await libraryState.revealInFinder(recording.path);
+		} catch (err) {
+			logger.error('library', 'Failed to reveal in Finder', err);
 		}
 	}
 </script>
@@ -132,9 +154,9 @@
 	<div class="info">
 		<div class="filename" title={recording.filename}>{recording.filename}</div>
 		<div class="meta-row">
-			<span>{formattedDate()}</span>
+			<span>{formattedDate}</span>
 			<span>·</span>
-			<span>{formattedSize()}</span>
+			<span>{formattedSize}</span>
 		</div>
 		{#if recording.meta}
 			<div class="meta-row">
@@ -148,10 +170,13 @@
 				{/if}
 			</div>
 		{/if}
+		{#if errorMessage}
+			<div class="card-error">{errorMessage}</div>
+		{/if}
 	</div>
 
 	<div class="actions">
-		<button class="action-btn" onclick={() => libraryState.openInSystem(recording.path)} title="Play">
+		<button class="action-btn" onclick={handleOpen} title="Play">
 			▶
 		</button>
 		{#if driveConnected}
@@ -170,7 +195,7 @@
 				</button>
 			{/if}
 		{/if}
-		<button class="action-btn" onclick={() => libraryState.revealInFinder(recording.path)} title="Show in Finder">
+		<button class="action-btn" onclick={handleReveal} title="Show in Finder">
 			📂
 		</button>
 		<button
@@ -273,6 +298,10 @@
 	}
 	.action-btn:hover {
 		background: #475569;
+	}
+	.card-error {
+		font-size: 10px;
+		color: #ef4444;
 	}
 	.action-btn.uploaded {
 		color: #22c55e;

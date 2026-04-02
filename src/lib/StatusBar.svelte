@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { tauriInvoke } from '$lib/tauri';
+	import { logger } from '$lib/logger';
 
 	let sidecarHealthy = $state(false);
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -11,8 +12,9 @@
 		try {
 			const status = await tauriInvoke<{ running: boolean; healthy: boolean }>('get_sidecar_status');
 			sidecarHealthy = status.healthy;
-		} catch {
+		} catch (err) {
 			sidecarHealthy = false;
+			logger.debug('statusbar', 'Sidecar health check failed', err);
 		}
 	}
 
@@ -29,7 +31,7 @@
 		appState.config.provider === 'local' ? 'Local TTS' : 'ElevenLabs'
 	);
 
-	const voiceLabel = $derived(() => {
+	const voiceLabel = $derived.by(() => {
 		if (appState.config.provider === 'local') {
 			return appState.config.local_voice_profile_id || 'No profile';
 		}
@@ -45,7 +47,7 @@
 		<span class="status-text">TTS {sidecarHealthy ? 'Ready' : 'Offline'}</span>
 	</div>
 	<div class="status-center">
-		<span class="status-text">{providerLabel} · {voiceLabel()}</span>
+		<span class="status-text">{providerLabel} · {voiceLabel}</span>
 	</div>
 	<div class="status-right">
 		<span class="status-text output-dir" title={appState.config.output_dir}>

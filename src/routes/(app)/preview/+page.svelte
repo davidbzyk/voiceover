@@ -20,7 +20,9 @@
 			try {
 				const voices = await tauriInvoke<{ id: string; name: string }[]>('list_local_voices');
 				localVoiceName = voices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? '';
-			} catch {}
+			} catch (err) {
+				logger.error('preview', 'Failed to load local voice names', err);
+			}
 		}
 
 		if (!appState.recordingPath) return;

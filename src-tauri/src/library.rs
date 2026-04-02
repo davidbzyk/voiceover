@@ -120,23 +120,19 @@ fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
 /// if the configured path doesn't exist. Mirrors the pipeline's fallback logic.
 fn resolve_output_dir(configured: &str) -> PathBuf {
     let configured_path = PathBuf::from(configured);
-    if configured_path.exists() {
+    if !configured.is_empty() && configured_path.exists() {
         return configured_path;
     }
 
-    log::warn!("[library] Configured output dir {:?} does not exist, trying default", configured_path);
+    // Configured path missing or empty — use macOS default ~/Movies/VoiceOver
     let fallback = dirs::video_dir()
-        .or_else(dirs::home_dir)
         .map(|p| p.join("VoiceOver"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/VoiceOver"));
+        .expect("dirs::video_dir() should always return a path on macOS");
 
-    if fallback.exists() {
-        log::info!("[library] Using fallback output dir: {:?}", fallback);
-        return fallback;
+    if configured_path != fallback {
+        log::warn!("[library] Configured output dir {:?} unavailable, using {:?}", configured_path, fallback);
     }
-
-    // Neither exists — return configured so the UI shows the right path
-    configured_path
+    fallback
 }
 
 /// Scan the output directory for recordings and return metadata for each.
@@ -216,32 +212,26 @@ pub async fn delete_recording(
 
 /// Open a file with the system default application.
 #[tauri::command]
-pub async fn open_in_system(path: String) -> Result<(), String> {
+pub async fn open_in_system(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let config = config::get_config(app).await?;
+    let output_dir = resolve_output_dir(&config.output_dir);
+    validate_in_output_dir(&PathBuf::from(&path), &output_dir)?;
     open::that(&path).map_err(|e| format!("Failed to open file: {e}"))
 }
 
-/// Reveal a file in the system file manager (Finder on macOS).
+/// Reveal a file in Finder.
 #[tauri::command]
-pub async fn reveal_in_finder(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        tokio::process::Command::new("open")
-            .arg("-R")
-            .arg(&path)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // On Linux, open the parent directory
-        let parent = std::path::Path::new(&path)
-            .parent()
-            .unwrap_or(std::path::Path::new("/"));
-        open::that(parent.to_string_lossy().as_ref())
-            .map_err(|e| format!("Failed to open file manager: {e}"))
-    }
+pub async fn reveal_in_finder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let config = config::get_config(app).await?;
+    let output_dir = resolve_output_dir(&config.output_dir);
+    validate_in_output_dir(&PathBuf::from(&path), &output_dir)?;
+    tokio::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -349,7 +339,7 @@ mod tests {
         // Should fall back to dirs::video_dir()/VoiceOver or similar
         // The configured path is returned only if neither exists
         let result_str = result.to_string_lossy();
-        // On macOS, fallback is ~/Movies/VoiceOver; on Linux, ~/Videos/VoiceOver
+        // Fallback is ~/Movies/VoiceOver on macOS
         assert!(
             result_str.contains("VoiceOver") || result_str == "/nonexistent/path/VoiceOver",
             "expected VoiceOver in fallback path, got: {result_str}"

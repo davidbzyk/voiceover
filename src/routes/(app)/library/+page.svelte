@@ -11,16 +11,16 @@
 		{ value: 'name', label: 'Name' }
 	];
 
-	const formattedTotalSize = $derived(() => {
+	const formattedTotalSize = $derived.by(() => {
 		const bytes = libraryState.totalSize;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
 		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 		return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 	});
 
-	onMount(() => {
+	onMount(async () => {
 		if (appState.libraryStale || libraryState.recordings.length === 0) {
-			libraryState.load();
+			await libraryState.load();
 			appState.libraryStale = false;
 		}
 	});
@@ -77,7 +77,7 @@
 		</div>
 
 		<div class="footer">
-			{libraryState.recordings.length} recording{libraryState.recordings.length === 1 ? '' : 's'} · {formattedTotalSize()} total
+			{libraryState.recordings.length} recording{libraryState.recordings.length === 1 ? '' : 's'} · {formattedTotalSize} total
 		</div>
 	{/if}
 </div>
