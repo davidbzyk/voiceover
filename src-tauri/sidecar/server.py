@@ -102,6 +102,28 @@ logger = logging.getLogger("voiceover-tts")
 
 DATA_DIR: Path = Path("/tmp/voiceover-tts")
 
+
+def error_response(status_code: int, message: str) -> JSONResponse:
+    """Standardized JSON error response."""
+    return JSONResponse(status_code=status_code, content={"error": message})
+
+
+import tempfile
+
+def _validate_path(path_str: str, allowed_parents: list) -> Path:
+    """Validate a file path is within allowed directories.
+
+    Rejects null bytes, path traversal, and symlink escape.
+    Raises ValueError if the path is not within any allowed parent.
+    """
+    if not path_str or '\x00' in path_str:
+        raise ValueError("Invalid path")
+    resolved = Path(path_str).resolve()
+    for parent in allowed_parents:
+        if str(resolved).startswith(str(Path(parent).resolve())):
+            return resolved
+    raise ValueError("Path not within allowed directories")
+
 # Generation queue: serial processing to prevent GPU contention
 _generation_queue: asyncio.Queue = asyncio.Queue()
 _generations: dict = {}  # id -> {status, error, audio_path, completed_at}
@@ -122,10 +144,20 @@ def _cleanup_generations():
         logger.info(f"Cleaned up {len(expired)} old generation(s)")
 
 
+async def _periodic_cleanup():
+    """Run generation cleanup every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)
+        _cleanup_generations()
+
+
 @asynccontextmanager
 async def lifespan(app):
+    _cleanup_generations()  # Sweep stale generations from prior session
     asyncio.create_task(_generation_worker())
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
     yield
+    cleanup_task.cancel()
 
 
 app = FastAPI(title="VoiceOver TTS Sidecar", lifespan=lifespan)
@@ -228,7 +260,7 @@ async def _run_generation(gen_id: str, generate_fn):
         _generations[gen_id]["completed_at"] = time.time()
         logger.info(f"{log_label} {gen_id}: saved {audio_path} ({len(audio)} samples, {len(audio)/sample_rate:.1f}s)")
     except Exception as e:
-        logger.error(f"Generation {gen_id} failed: {e}")
+        logger.error(f"Generation {gen_id} failed: {e}", exc_info=True)
         _generations[gen_id]["status"] = "error"
         _generations[gen_id]["error"] = str(e)
         _generations[gen_id]["completed_at"] = time.time()
@@ -277,8 +309,8 @@ def _is_model_downloaded(models_dir: Path, keyword: str) -> bool:
                 if keyword in repo.repo_id.lower():
                     result = True
                     break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error scanning model cache for {keyword}: {e}")
     _model_cache[cache_key] = (result, now)
     return result
 
@@ -325,7 +357,7 @@ async def transcribe(file: UploadFile = File(...)):
         return result
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return error_response(500, str(e))
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -334,8 +366,12 @@ async def transcribe(file: UploadFile = File(...)):
 async def transcribe_path(request: dict):
     """Transcribe audio from a file already on disk (used after YouTube extraction)."""
     audio_path = request.get("audio_path", "")
-    if not audio_path or not Path(audio_path).exists():
-        return JSONResponse(status_code=400, content={"error": "audio_path not found"})
+    try:
+        _validate_path(audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
+    except ValueError as e:
+        return error_response(400, str(e))
+    if not Path(audio_path).exists():
+        return error_response(400, "audio_path not found")
 
     try:
         logger.info(f"Transcribing from path: {audio_path}")
@@ -346,7 +382,7 @@ async def transcribe_path(request: dict):
         return result
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return error_response(500, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -370,10 +406,7 @@ async def generate(request: dict):
     original_duration = request.get("original_duration", 0.0)
 
     if not profile_id or not text:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "profile_id and text are required"},
-        )
+        return error_response(400, "profile_id and text are required")
 
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
@@ -517,7 +550,7 @@ async def generation_status(gen_id: str):
     """Poll generation status (plain JSON)."""
     gen = _generations.get(gen_id)
     if gen is None:
-        return JSONResponse(status_code=404, content={"error": "Generation not found"})
+        return error_response(404, "Generation not found")
     return {"status": gen["status"], "error": gen["error"]}
 
 
@@ -526,13 +559,13 @@ async def get_audio(gen_id: str):
     """Download generated audio."""
     gen = _generations.get(gen_id)
     if gen is None:
-        return JSONResponse(status_code=404, content={"error": "Generation not found"})
+        return error_response(404, "Generation not found")
     if gen["status"] != "completed" or not gen["audio_path"]:
-        return JSONResponse(status_code=400, content={"error": f"Generation not ready: {gen['status']}"})
+        return error_response(400, f"Generation not ready: {gen['status']}")
 
     audio_path = Path(gen["audio_path"])
     if not audio_path.exists():
-        return JSONResponse(status_code=404, content={"error": "Audio file not found"})
+        return error_response(404, "Audio file not found")
 
     return Response(
         content=audio_path.read_bytes(),
@@ -560,15 +593,17 @@ async def voice_convert(request: dict):
     _cleanup_generations()
     profile_id = request.get("profile_id", "")
     source_audio_path = request.get("source_audio_path", "")
+    original_duration = float(request.get("original_duration", 0))
 
     if not profile_id or not source_audio_path:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "profile_id and source_audio_path are required"},
-        )
+        return error_response(400, "profile_id and source_audio_path are required")
 
+    try:
+        _validate_path(source_audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
+    except ValueError as e:
+        return error_response(400, str(e))
     if not Path(source_audio_path).exists():
-        return JSONResponse(status_code=400, content={"error": f"Source audio file not found: {source_audio_path}"})
+        return error_response(400, f"Source audio file not found: {source_audio_path}")
 
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
@@ -719,6 +754,14 @@ async def voice_convert(request: dict):
             audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
             sample_rate = model_sr
 
+        # Pad or truncate to match original duration (same as TTS path)
+        if original_duration > 0 and sample_rate:
+            target_samples = int(original_duration * sample_rate)
+            if len(audio) < target_samples:
+                audio = np.pad(audio, (0, target_samples - len(audio)))
+            elif len(audio) > target_samples:
+                audio = audio[:target_samples]
+
         return audio, sample_rate, "Voice conversion"
 
     await _generation_queue.put((gen_id, _run_generation(gen_id, _do_voice_convert)))
@@ -741,12 +784,12 @@ async def extract_youtube(request: dict):
     duration = request.get("duration", 30)
 
     if not url:
-        return JSONResponse(status_code=400, content={"error": "url is required"})
+        return error_response(400, "url is required")
 
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"):
-        return JSONResponse(status_code=400, content={"error": "Invalid YouTube URL"})
+        return error_response(400, "Invalid YouTube URL")
 
     temp_dir = DATA_DIR / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -774,10 +817,7 @@ async def extract_youtube(request: dict):
         try:
             await asyncio.to_thread(_download)
         except Exception as e:
-            return JSONResponse(
-                status_code=400,
-                content={"error": f"Download failed: {e}"},
-            )
+            return error_response(400, f"Download failed: {e}")
 
         # Find the actual downloaded file (yt-dlp may add extension)
         actual_video = None
@@ -786,10 +826,7 @@ async def extract_youtube(request: dict):
                 actual_video = f
                 break
         if not actual_video or not actual_video.exists():
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Downloaded video file not found"},
-            )
+            return error_response(500, "Downloaded video file not found")
 
         # Step 2: Extract audio with ffmpeg (16kHz mono WAV, clipped)
         logger.info(f"Extracting {duration}s audio starting at {start}")
@@ -811,15 +848,10 @@ async def extract_youtube(request: dict):
         actual_video.unlink(missing_ok=True)
 
         if ff_result.returncode != 0:
-            return JSONResponse(
-                status_code=500,
-                content={"error": f"Audio extraction failed: {ff_result.stderr.strip()[:200]}"},
-            )
+            return error_response(500, f"Audio extraction failed: {ff_result.stderr.strip()[:200]}")
 
         if not output_wav.exists():
-            return JSONResponse(
-                status_code=500, content={"error": "Output WAV not created"}
-            )
+            return error_response(500, "Output WAV not created")
 
         # Get duration of the output
         import wave
@@ -836,7 +868,7 @@ async def extract_youtube(request: dict):
     except Exception as e:
         logger.error(f"YouTube extraction failed: {e}")
         output_wav.unlink(missing_ok=True)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return error_response(500, str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +892,7 @@ async def create_profile(request: dict):
     name = request.get("name", "")
     language = request.get("language", "en")
     if not name:
-        return JSONResponse(status_code=400, content={"error": "name is required"})
+        return error_response(400, "name is required")
     return _create(DATA_DIR, name, language)
 
 
@@ -877,7 +909,7 @@ async def upload_sample(
     try:
         return add_sample(DATA_DIR, profile_id, content, reference_text)
     except ValueError as e:
-        return JSONResponse(status_code=404, content={"error": str(e)})
+        return error_response(404, str(e))
 
 
 @app.post("/profiles/{profile_id}/samples/from-path")
@@ -888,14 +920,18 @@ async def add_sample_from_path(profile_id: str, request: dict):
     audio_path = request.get("audio_path", "")
     reference_text = request.get("reference_text", "")
 
+    try:
+        _validate_path(audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
+    except ValueError as e:
+        return error_response(400, str(e))
     if not audio_path or not Path(audio_path).exists():
-        return JSONResponse(status_code=400, content={"error": "audio_path not found"})
+        return error_response(400, "audio_path not found")
 
     try:
         audio_bytes = Path(audio_path).read_bytes()
         return add_sample(DATA_DIR, profile_id, audio_bytes, reference_text)
     except ValueError as e:
-        return JSONResponse(status_code=404, content={"error": str(e)})
+        return error_response(404, str(e))
 
 
 @app.delete("/profiles/{profile_id}")
@@ -905,7 +941,7 @@ async def delete_profile(profile_id: str):
 
     if _delete(DATA_DIR, profile_id):
         return {"ok": True}
-    return JSONResponse(status_code=404, content={"error": "Profile not found"})
+    return error_response(404, "Profile not found")
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,8 @@ export class VoiceboxClient {
 	async checkHealth(): Promise<boolean> {
 		try {
 			return await tauriInvoke<boolean>('test_local_connection');
-		} catch {
+		} catch (e) {
+			console.warn('[voicebox] Health check failed:', e);
 			return false;
 		}
 	}
@@ -107,7 +108,7 @@ export class VoiceboxClient {
 				{ generationId }
 			);
 			if (data.status === 'completed') return 'completed';
-			if (data.status === 'failed') {
+			if (data.status === 'error') {
 				throw new Error(data.error ?? 'Generation failed');
 			}
 			await new Promise((resolve) => setTimeout(resolve, interval));

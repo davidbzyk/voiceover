@@ -239,3 +239,108 @@ class TestTranscriptionEndpoints:
             "audio_path": "",
         })
         assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Path traversal security (S2)
+# ---------------------------------------------------------------------------
+
+
+class TestPathTraversalSecurity:
+    """Ensure path-accepting endpoints reject traversal attacks."""
+
+    def test_transcribe_path_traversal_rejected(self, client):
+        response = client.post("/transcribe-path", json={
+            "audio_path": "../../etc/passwd",
+        })
+        assert response.status_code == 400
+        assert "error" in response.json()
+
+    def test_transcribe_path_absolute_outside_data_dir(self, client):
+        response = client.post("/transcribe-path", json={
+            "audio_path": "/etc/passwd",
+        })
+        assert response.status_code == 400
+
+    def test_voice_convert_traversal_rejected(self, client):
+        response = client.post("/voice-convert", json={
+            "profile_id": "test-profile",
+            "source_audio_path": "../../../etc/passwd",
+        })
+        assert response.status_code == 400
+
+    def test_sample_from_path_traversal_rejected(self, client):
+        response = client.post("/profiles/test/samples/from-path", json={
+            "audio_path": "/etc/passwd",
+        })
+        assert response.status_code == 400
+
+    def test_null_byte_injection_rejected(self, client):
+        response = client.post("/transcribe-path", json={
+            "audio_path": "/tmp/safe\x00../../etc/passwd",
+        })
+        assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Happy-path tests (T5)
+# ---------------------------------------------------------------------------
+
+
+class TestHappyPaths:
+    """Positive-flow tests for endpoints that don't need ML models."""
+
+    def test_health_response_shape(self, client):
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert isinstance(data["models"], dict)
+        assert "whisper" in data["models"]
+        assert "qwen" in data["models"]
+
+    def test_profile_crud_lifecycle(self, client):
+        """Full create → list → delete → list cycle."""
+        # Create
+        create_resp = client.post("/profiles", json={"name": "Lifecycle Voice", "language": "en"})
+        assert create_resp.status_code == 200
+        profile = create_resp.json()
+        assert profile["name"] == "Lifecycle Voice"
+        profile_id = profile["id"]
+
+        # List shows the new profile
+        list_resp = client.get("/profiles")
+        assert list_resp.status_code == 200
+        assert any(p["id"] == profile_id for p in list_resp.json())
+
+        # Delete
+        del_resp = client.delete(f"/profiles/{profile_id}")
+        assert del_resp.status_code == 200
+
+        # List no longer shows it
+        list_resp2 = client.get("/profiles")
+        assert not any(p["id"] == profile_id for p in list_resp2.json())
+
+    def test_generation_status_404_shape(self, client):
+        response = client.get("/generate/nonexistent-uuid/status")
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+        assert isinstance(data["error"], str)
+
+    def test_audio_download_404_shape(self, client):
+        response = client.get("/audio/nonexistent-uuid")
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+
+    def test_model_status_shape(self, client):
+        response = client.get("/models/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert "models" in data
+        models = data["models"]
+        assert isinstance(models, list)
+        for m in models:
+            assert "model_name" in m
+            assert "downloaded" in m

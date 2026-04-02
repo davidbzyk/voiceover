@@ -71,7 +71,7 @@ src-tauri/                    # Rust backend (Tauri v2)
     config.rs                 # App config persistence
     pipeline.rs               # Recording processing pipeline
     elevenlabs.rs             # ElevenLabs cloud API
-    local_tts.rs              # Local TTS sidecar communication
+    local_tts.rs              # Local TTS sidecar communication + poll_generation status polling
     sidecar.rs                # Sidecar process lifecycle management
     tts_provider.rs           # Provider abstraction (cloud vs local)
     models.rs                 # Model download management
@@ -85,7 +85,7 @@ src-tauri/                    # Rust backend (Tauri v2)
 
 src-tauri/sidecar/            # Python TTS sidecar (FastAPI)
   server.py                   # Main FastAPI server (transcription, TTS, profiles, models)
-  tts.py                      # Qwen TTS synthesis
+  tts.py                      # Whisper transcription + Qwen TTS synthesis + voice prompt caching
   profiles.py                 # Voice profile management
   chunked_tts.py              # Chunked generation for long text
   requirements.txt            # Python dependencies (mlx, qwen-tts, torch, etc.)
@@ -118,8 +118,8 @@ pip install -r src-tauri/sidecar/requirements.txt
 # Run sidecar standalone for testing
 python src-tauri/sidecar/server.py --port 8123 --data-dir /tmp/voiceover-tts
 
-# Build sidecar binary (PyInstaller, arm64 macOS)
-cd src-tauri/sidecar && pyinstaller voiceover-tts.spec
+# Build sidecar binary (required before `pnpm tauri build`)
+./scripts/build-sidecar.sh
 ```
 
 ## CI

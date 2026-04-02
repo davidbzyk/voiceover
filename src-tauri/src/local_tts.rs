@@ -132,7 +132,7 @@ async fn poll_and_download(
                 );
                 break;
             }
-            "failed" => {
+            "error" => {
                 let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
                 log::error!("[local_tts] Generation failed: id={}, error={}", generation_id, err_msg);
                 return Err(format!("Local TTS generation failed: {err_msg}"));
@@ -352,7 +352,7 @@ pub async fn speech_to_speech(
 /// Voice conversion (speech-to-speech): preserves original timing.
 ///
 /// Sends the source audio to the sidecar's `/voice-convert` endpoint which
-/// uses CosyVoice2 to convert the voice while keeping the exact pacing.
+/// uses CosyVoice3 to convert the voice while keeping the exact pacing.
 /// Same poll/download pattern as speech_to_speech.
 pub async fn voice_convert(
     port: u16,
@@ -554,6 +554,11 @@ pub async fn poll_generation(
     let port = crate::sidecar::get_port(&state)
         .ok_or_else(|| "TTS sidecar is not running".to_string())?;
 
+    // Validate generation_id contains only safe characters (alphanumeric + hyphens)
+    if !generation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(format!("Invalid generation ID format: {}", generation_id));
+    }
+
     let url = format!(
         "http://127.0.0.1:{}/generate/{}/status",
         port, generation_id
@@ -590,10 +595,19 @@ pub async fn poll_generation(
     Ok(result)
 }
 
+/// Permitted sidecar path prefixes — only these endpoints are reachable from the frontend.
+const ALLOWED_SIDECAR_PATHS: &[&str] = &[
+    "/health",
+    "/profiles",
+    "/generate",
+    "/audio/",
+    "/models",
+    "/transcribe",
+    "/voice-convert",
+    "/extract-youtube",
+];
+
 /// Proxy a JSON request to the TTS sidecar (for frontend use).
-// TODO: Replace generic sidecar tunnel with typed Tauri commands for defense-in-depth.
-// Currently, the frontend controls the path parameter, which could theoretically target
-// any sidecar endpoint. Typed commands would restrict to known operations.
 #[tauri::command]
 pub async fn sidecar_fetch(
     app: tauri::AppHandle,
@@ -601,6 +615,11 @@ pub async fn sidecar_fetch(
     method: String,
     body: Option<String>,
 ) -> Result<String, String> {
+    // Validate path against allowlist to prevent arbitrary endpoint access
+    if !ALLOWED_SIDECAR_PATHS.iter().any(|prefix| path.starts_with(prefix)) {
+        return Err(format!("Sidecar path not allowed: {}", path));
+    }
+
     let port = crate::sidecar::ensure_running(&app).await?;
     let url = format!("http://127.0.0.1:{}{}", port, path);
     log::info!("[local_tts] Sidecar {} {}", method, url);
@@ -616,7 +635,8 @@ pub async fn sidecar_fetch(
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
-        _ => client.get(&url),
+        "GET" => client.get(&url),
+        _ => return Err(format!("Unsupported HTTP method: {}", method)),
     };
 
     if let Some(b) = body {

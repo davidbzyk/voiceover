@@ -40,8 +40,8 @@ pub(crate) fn normalize_args(input: &str, output: &str) -> Vec<String> {
 /// Extract audio from a video file as 16kHz mono WAV (optimal for ElevenLabs S2S).
 pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
     let args = extract_audio_args(
-        input_video.to_str().unwrap(),
-        output_wav.to_str().unwrap(),
+        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_wav.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -64,9 +64,9 @@ pub async fn replace_audio(
     output_mp4: &Path,
 ) -> Result<(), String> {
     let args = replace_audio_args(
-        input_video.to_str().unwrap(),
-        new_audio.to_str().unwrap(),
-        output_mp4.to_str().unwrap(),
+        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        new_audio.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -116,6 +116,9 @@ pub async fn probe_duration(input: &Path) -> Result<f64, String> {
                 return Ok(dur);
             }
         }
+        log::debug!("[ffmpeg] ffprobe returned non-positive or unparseable duration, falling back to ffmpeg decode");
+    } else {
+        log::debug!("[ffmpeg] ffprobe failed, falling back to ffmpeg decode");
     }
 
     // Fallback: use ffmpeg to decode and count frames (slower but works for WebM without duration)
@@ -162,8 +165,8 @@ fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
 /// Normalize a recording to MP4 format (handles platform codec differences).
 pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let args = normalize_args(
-        input.to_str().unwrap(),
-        output_mp4.to_str().unwrap(),
+        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
     let status = Command::new(resolve_ffmpeg_path())
         .args(&args)
@@ -250,5 +253,45 @@ mod tests {
         assert_eq!(extract[0], "-y", "extract_audio_args should start with -y");
         assert_eq!(replace[0], "-y", "replace_audio_args should start with -y");
         assert_eq!(normalize[0], "-y", "normalize_args should start with -y");
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_valid_time() {
+        let result = parse_ffmpeg_time("01:23:45.678").unwrap();
+        let expected = 1.0 * 3600.0 + 23.0 * 60.0 + 45.678;
+        assert!(
+            (result - expected).abs() < 1e-6,
+            "expected {expected}, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_zero() {
+        let result = parse_ffmpeg_time("00:00:00.00").unwrap();
+        assert!(
+            result.abs() < 1e-9,
+            "expected 0.0, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_small_value() {
+        let result = parse_ffmpeg_time("00:00:00.001").unwrap();
+        assert!(
+            (result - 0.001).abs() < 1e-9,
+            "expected 0.001, got {result}"
+        );
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_invalid_input() {
+        let result = parse_ffmpeg_time("not-a-time");
+        assert!(result.is_err(), "expected Err for invalid input, got {result:?}");
+    }
+
+    #[test]
+    fn parse_ffmpeg_time_wrong_format_too_few_parts() {
+        let result = parse_ffmpeg_time("1:2");
+        assert!(result.is_err(), "expected Err for wrong format, got {result:?}");
     }
 }

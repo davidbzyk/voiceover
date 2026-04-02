@@ -268,7 +268,10 @@ fn stop_sidecar_inner(state: &SidecarState) {
     if let Some(ref mut child) = *guard {
         log::info!("[sidecar] Stopping child process");
         // Send kill signal — the watchdog will also self-terminate
-        let _ = child.start_kill();
+        match child.start_kill() {
+            Ok(()) => log::info!("[sidecar] Kill signal sent to child process"),
+            Err(e) => log::warn!("[sidecar] Failed to send kill signal: {}", e),
+        }
     }
     *guard = None;
     *state.port.lock().unwrap() = None;

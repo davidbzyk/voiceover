@@ -135,9 +135,21 @@ pub fn cleanup_stale_recordings(max_age: Duration) {
         };
 
         let ok = if path.is_dir() {
-            fs::remove_dir_all(&path).is_ok()
+            match fs::remove_dir_all(&path) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("[recording] Failed to remove directory {:?}: {}", path, e);
+                    false
+                }
+            }
         } else if path.is_file() {
-            fs::remove_file(&path).is_ok()
+            match fs::remove_file(&path) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!("[recording] Failed to remove file {:?}: {}", path, e);
+                    false
+                }
+            }
         } else {
             false
         };
@@ -282,5 +294,96 @@ mod tests {
         assert_eq!(result, expected, "finalize must byte-concat chunks in order");
 
         fs::remove_file(&output_path).ok();
+    }
+
+    // --- cleanup_stale_recordings tests ---
+
+    #[test]
+    fn cleanup_stale_recordings_removes_old_entries_preserves_recent() {
+        use filetime::FileTime;
+
+        let dir = temp_recording_dir();
+        let pid = std::process::id();
+
+        // Create an "old" directory and backdate it to 2 hours ago
+        let old_dir = dir.join(format!("test-cleanup-old-{pid}"));
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("chunk.webm"), b"old data").unwrap();
+        let two_hours_ago = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(7200));
+        filetime::set_file_mtime(&old_dir, two_hours_ago).unwrap();
+
+        // Create a "recent" file (mtime = now, untouched)
+        let recent_file = dir.join(format!("test-cleanup-recent-{pid}.webm"));
+        fs::write(&recent_file, b"recent data").unwrap();
+
+        // Cleanup with 1-hour threshold: old dir should be removed, recent file preserved
+        cleanup_stale_recordings(Duration::from_secs(3600));
+
+        assert!(!old_dir.exists(), "old dir should be removed (older than 1h)");
+        assert!(recent_file.exists(), "recent file should be preserved (newer than 1h)");
+
+        // Clean up test artifact
+        fs::remove_file(&recent_file).ok();
+    }
+
+    #[test]
+    fn cleanup_stale_recordings_large_max_age_removes_nothing() {
+        let dir = temp_recording_dir();
+        let pid = std::process::id();
+        let test_file = dir.join(format!("test-cleanup-keep-{pid}.webm"));
+        fs::write(&test_file, b"keep me").unwrap();
+
+        cleanup_stale_recordings(Duration::from_secs(999_999));
+
+        assert!(test_file.exists(), "file should still exist with very large max_age");
+
+        // Clean up
+        fs::remove_file(&test_file).ok();
+    }
+
+    #[test]
+    fn cleanup_stale_recordings_does_not_panic_on_empty_dir() {
+        // Just verify the function doesn't panic when nothing stale exists
+        cleanup_stale_recordings(Duration::from_secs(3600));
+    }
+
+    // --- read_file_bytes path containment tests ---
+
+    #[test]
+    fn read_file_bytes_allows_path_in_temp_dir() {
+        // Create a file in the temp directory
+        let file_path = std::env::temp_dir().join(format!("voiceover-test-read-{}.bin", std::process::id()));
+        fs::write(&file_path, b"test data").unwrap();
+
+        let result = read_file_bytes(file_path.to_string_lossy().to_string());
+        assert!(result.is_ok(), "reading from temp dir should succeed: {result:?}");
+        assert_eq!(result.unwrap(), b"test data");
+
+        fs::remove_file(&file_path).ok();
+    }
+
+    #[test]
+    fn read_file_bytes_rejects_path_outside_allowed_dirs() {
+        // /etc/hosts exists on macOS/Linux and is outside all allowed dirs
+        let result = read_file_bytes("/etc/hosts".to_string());
+        assert!(result.is_err(), "reading /etc/hosts should be denied");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Access denied"),
+            "error should mention access denied: {err}"
+        );
+    }
+
+    #[test]
+    fn read_file_bytes_rejects_path_traversal() {
+        // Create a file in temp dir, then try to access it via a path with .. traversal
+        // that resolves outside allowed dirs
+        let result = read_file_bytes("/tmp/../etc/hosts".to_string());
+        assert!(result.is_err(), "path traversal to /etc/hosts should be denied");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Access denied"),
+            "error should mention access denied: {err}"
+        );
     }
 }

@@ -195,7 +195,7 @@ pub async fn process_recording(
 
         elevenlabs::speech_to_speech(
             &config.elevenlabs_api_key,
-            voice_id.as_deref().unwrap(),
+            voice_id.as_deref().ok_or_else(|| "ElevenLabs voice ID is required but not configured".to_string())?,
             &extracted_wav,
             &transformed_audio,
         ).await?;

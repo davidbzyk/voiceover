@@ -382,7 +382,7 @@ async def generate_speech(
 
 
 def _cache_key(audio_path: str, reference_text: str) -> str:
-    h = hashlib.md5()
+    h = hashlib.sha256()
     try:
         h.update(Path(audio_path).read_bytes())
     except OSError:
@@ -397,7 +397,7 @@ def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
         return None
     try:
         import torch
-        return torch.load(cache_path, map_location="cpu", weights_only=False)
+        return torch.load(cache_path, map_location="cpu", weights_only=True)
     except Exception as e:
         logger.warning(f"Failed to load cached prompt: {e}")
         return None
