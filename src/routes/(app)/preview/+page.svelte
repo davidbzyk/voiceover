@@ -70,6 +70,7 @@
 			} else if (msg.event === 'complete') {
 				appState.outputPath = msg.data.outputPath;
 				appState.recordingState = 'saved';
+				appState.libraryStale = true;
 				logger.pipelineComplete(msg.data.outputPath);
 				isProcessing = false;
 			} else if (msg.event === 'error') {
@@ -87,6 +88,7 @@
 		});
 		appState.outputPath = result;
 		appState.recordingState = 'saved';
+		appState.libraryStale = true;
 	}
 
 	async function processViaBrowser() {
@@ -374,15 +376,13 @@
 </script>
 
 <div class="preview">
-	<div class="header">
-		<h2>
-			{#if appState.recordingState === 'saved'}
-				✅ Saved
-			{:else}
-				Preview
-			{/if}
-		</h2>
-	</div>
+	<h2 class="page-title">
+		{#if appState.recordingState === 'saved'}
+			✅ Saved
+		{:else}
+			Preview
+		{/if}
+	</h2>
 
 	<!-- Video preview -->
 	{#if videoSrc}
@@ -482,8 +482,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+		max-width: 600px;
+		margin: 0 auto;
+		width: 100%;
 	}
-	.header h2 {
+	.page-title {
 		margin: 0;
 		font-size: 18px;
 	}

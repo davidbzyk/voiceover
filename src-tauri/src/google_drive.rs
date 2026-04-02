@@ -281,6 +281,32 @@ pub async fn upload_to_drive(
         })
         .ok();
 
+    // Update .meta.json with drive URL
+    let meta_path = Path::new(&file_path).with_extension("meta.json");
+    let timestamp = crate::pipeline::chrono_timestamp();
+    if meta_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&meta_path) {
+            if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                meta["driveUrl"] = serde_json::Value::String(share_link.clone());
+                meta["uploadedAt"] = serde_json::json!(timestamp.parse::<u64>().unwrap_or(0));
+                if let Ok(json) = serde_json::to_string_pretty(&meta) {
+                    std::fs::write(&meta_path, json).ok();
+                    log::info!("[drive] Updated meta.json with drive URL");
+                }
+            }
+        }
+    } else {
+        // No existing meta — create one with just drive info
+        let meta = serde_json::json!({
+            "driveUrl": share_link,
+            "uploadedAt": timestamp.parse::<u64>().unwrap_or(0),
+        });
+        if let Ok(json) = serde_json::to_string_pretty(&meta) {
+            std::fs::write(&meta_path, json).ok();
+            log::info!("[drive] Created meta.json with drive URL");
+        }
+    }
+
     Ok(share_link)
 }
 

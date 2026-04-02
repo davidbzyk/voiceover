@@ -3,6 +3,7 @@ mod config;
 mod elevenlabs;
 mod ffmpeg;
 mod google_drive;
+mod library;
 mod local_tts;
 mod models;
 mod pipeline;
@@ -87,6 +88,11 @@ pub fn run() {
             google_drive::google_drive_connect,
             google_drive::google_drive_disconnect,
             google_drive::upload_to_drive,
+            library::list_recordings,
+            library::generate_thumbnail,
+            library::delete_recording,
+            library::open_in_system,
+            library::reveal_in_finder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -110,6 +110,7 @@ class AppState {
 	recordingDuration = $state(0);
 
 	ffmpegAvailable = $state(true);
+	libraryStale = $state(false);
 
 	selectedVoice = $derived(
 		this.config.voices.find((v) => v.is_default) ?? this.config.voices[0] ?? null

@@ -148,14 +148,6 @@
 </script>
 
 <div class="home">
-	<!-- Top bar -->
-	<div class="topbar">
-		<div class="logo">🎙️ VoiceOver</div>
-		<div class="topbar-actions">
-			<button class="topbar-btn" onclick={() => goto('/settings')}>⚙️ Settings</button>
-		</div>
-	</div>
-
 	<!-- Capture mode -->
 	<div class="section">
 		<div class="section-label">Capture Mode</div>
@@ -380,34 +372,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
-	}
-
-	.topbar {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.logo {
-		font-size: 18px;
-		font-weight: 700;
-		color: #f97316;
-	}
-	.topbar-actions {
-		display: flex;
-		gap: 8px;
-	}
-	.topbar-btn {
-		background: #334155;
-		border: none;
-		color: #94a3b8;
-		padding: 6px 14px;
-		border-radius: 6px;
-		font-size: 12px;
-		cursor: pointer;
-	}
-	.topbar-btn:hover {
-		background: #475569;
-		color: #f1f5f9;
+		max-width: 500px;
+		margin: 0 auto;
+		width: 100%;
 	}
 
 	.section {
