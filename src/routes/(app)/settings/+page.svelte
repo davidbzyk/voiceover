@@ -22,9 +22,7 @@
 	let localError = $state('');
 
 	onMount(() => {
-		if (appState.config.provider === 'local') {
-			loadLocalVoices();
-		}
+		loadLocalVoices();
 	});
 
 	async function loadLocalVoices() {
@@ -232,104 +230,102 @@
 			</div>
 		</div>
 
-		{#if appState.config.provider === 'local'}
-			<!-- Local Voice Collection -->
-			<div class="section">
-				<div class="section-header">
-					<div class="section-title">Voice Collection</div>
-				</div>
-				<div class="card">
-					{#if localLoading}
-						<div class="hint-text">Loading voices...</div>
-					{:else if localError}
-						<div class="status invalid">{localError}</div>
-					{:else if localVoices.length > 0}
-						{#each localVoices as voice}
-							<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
-								<div class="voice-info">
-									<div class="voice-name">{voice.name}</div>
-									<div class="voice-id">{voice.id.slice(0, 20)}</div>
-								</div>
-								<div class="voice-actions">
-									{#if voice.id === appState.config.local_voice_profile_id}
-										<span class="default-badge">Default</span>
-									{:else}
-										<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
-									{/if}
-									<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
-								</div>
-							</div>
-						{/each}
-					{:else}
-						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
-					{/if}
-
-					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
-						+ Create Voice
-					</button>
-				</div>
-
-				<div class="section-header">
-					<div class="section-title">Voice Mode</div>
-				</div>
-				<div class="card">
-					<div class="hint-text" style="margin-bottom: 8px">
-						<strong>Text-to-Speech:</strong> Transcribes then generates new speech (faster, less sync)<br>
-						<strong>Voice Conversion:</strong> Converts your voice directly (slower, preserves timing)
-					</div>
-					<div class="toggle-row">
-						<button
-							class="toggle-btn"
-							class:active={appState.config.local_tts_mode !== 'vc'}
-							onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
-						>Text-to-Speech</button>
-						<button
-							class="toggle-btn"
-							class:active={appState.config.local_tts_mode === 'vc'}
-							onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
-						>Voice Conversion</button>
-					</div>
-				</div>
+		<!-- Local Voice Collection -->
+		<div class="section">
+			<div class="section-header">
+				<div class="section-title">Local Voices</div>
 			</div>
-		{:else}
-			<!-- ElevenLabs Voice Collection -->
-			<div class="section">
-				<div class="section-header">
-					<div class="section-title">Voice Collection</div>
-				</div>
-
-				<div class="card">
-					{#each appState.config.voices as voice}
-						<div class="voice-item" class:default={voice.is_default}>
+			<div class="card">
+				{#if localLoading}
+					<div class="hint-text">Loading voices...</div>
+				{:else if localError}
+					<div class="status invalid">{localError}</div>
+				{:else if localVoices.length > 0}
+					{#each localVoices as voice}
+						<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
 							<div class="voice-info">
 								<div class="voice-name">{voice.name}</div>
-								<div class="voice-id">{voice.id}</div>
+								<div class="voice-id">{voice.id.slice(0, 20)}</div>
 							</div>
 							<div class="voice-actions">
-								{#if voice.is_default}
-									<span class="default-badge">★ Default</span>
+								{#if voice.id === appState.config.local_voice_profile_id}
+									<span class="default-badge">Default</span>
 								{:else}
-									<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
+									<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
 								{/if}
-								<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
+								<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
 							</div>
 						</div>
 					{/each}
+				{:else}
+					<div class="hint-text">No voice profiles yet. Create one to get started.</div>
+				{/if}
 
-					<div class="add-voice">
-						<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
-						<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
-						<button
-							class="small-btn accent"
-							onclick={addVoice}
-							disabled={!newVoiceName.trim() || !newVoiceId.trim()}
-						>
-							+ Add
-						</button>
-					</div>
+				<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+					+ Create Voice
+				</button>
+			</div>
+
+			<div class="section-header">
+				<div class="section-title">Voice Mode</div>
+			</div>
+			<div class="card">
+				<div class="hint-text" style="margin-bottom: 8px">
+					<strong>Text-to-Speech:</strong> Transcribes then generates new speech (faster, less sync)<br>
+					<strong>Voice Conversion:</strong> Converts your voice directly (slower, preserves timing)
+				</div>
+				<div class="toggle-row">
+					<button
+						class="toggle-btn"
+						class:active={appState.config.local_tts_mode !== 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
+					>Text-to-Speech</button>
+					<button
+						class="toggle-btn"
+						class:active={appState.config.local_tts_mode === 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
+					>Voice Conversion</button>
 				</div>
 			</div>
-		{/if}
+		</div>
+
+		<!-- ElevenLabs Voice Collection -->
+		<div class="section">
+			<div class="section-header">
+				<div class="section-title">ElevenLabs Voices</div>
+			</div>
+
+			<div class="card">
+				{#each appState.config.voices as voice}
+					<div class="voice-item" class:default={voice.is_default}>
+						<div class="voice-info">
+							<div class="voice-name">{voice.name}</div>
+							<div class="voice-id">{voice.id}</div>
+						</div>
+						<div class="voice-actions">
+							{#if voice.is_default}
+								<span class="default-badge">★ Default</span>
+							{:else}
+								<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
+							{/if}
+							<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
+						</div>
+					</div>
+				{/each}
+
+				<div class="add-voice">
+					<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
+					<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
+					<button
+						class="small-btn accent"
+						onclick={addVoice}
+						disabled={!newVoiceName.trim() || !newVoiceId.trim()}
+					>
+						+ Add
+					</button>
+				</div>
+			</div>
+		</div>
 
 	{:else if activeTab === 'recording'}
 		<!-- Output -->
