@@ -241,8 +241,11 @@ async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
 /// Check if the sidecar is healthy by hitting GET /health.
 pub async fn health_check(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
+    // Generous timeout: during ML inference (especially in PyInstaller builds),
+    // the sidecar's event loop may be blocked by GIL-holding computation.
+    // A short timeout here causes false "dead" detections and restarts.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_default();
 

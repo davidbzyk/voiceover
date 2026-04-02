@@ -540,6 +540,56 @@ pub async fn extract_youtube_audio(
     Ok(result)
 }
 
+/// Poll TTS generation status directly (bypasses sidecar_fetch timeout issues).
+/// Uses the stored sidecar port WITHOUT a health check — during ML inference the
+/// sidecar may be unresponsive to /health but the generation is still running.
+/// A health-check here would cause ensure_running to kill and restart the sidecar,
+/// destroying the in-progress generation.
+#[tauri::command]
+pub async fn poll_generation(
+    app: tauri::AppHandle,
+    generation_id: String,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<crate::sidecar::SidecarState>();
+    let port = crate::sidecar::get_port(&state)
+        .ok_or_else(|| "TTS sidecar is not running".to_string())?;
+
+    let url = format!(
+        "http://127.0.0.1:{}/generate/{}/status",
+        port, generation_id
+    );
+    log::info!("[local_tts] poll_generation: {} (port={})", generation_id, port);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            log::warn!("[local_tts] poll_generation request failed: {}", e);
+            format!("Failed to poll generation: {e}")
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        log::warn!("[local_tts] poll_generation HTTP {}: {}", status, body);
+        return Err(format!("Generation status error: {body}"));
+    }
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse generation status: {e}"))?;
+
+    log::info!("[local_tts] poll_generation result: {}", result);
+    Ok(result)
+}
+
 /// Proxy a JSON request to the TTS sidecar (for frontend use).
 // TODO: Replace generic sidecar tunnel with typed Tauri commands for defense-in-depth.
 // Currently, the frontend controls the path parameter, which could theoretically target
@@ -555,8 +605,10 @@ pub async fn sidecar_fetch(
     let url = format!("http://127.0.0.1:{}{}", port, path);
     log::info!("[local_tts] Sidecar {} {}", method, url);
 
+    // Longer timeout: PyInstaller sidecar can hold the GIL during ML inference,
+    // making even simple GET requests wait until the inference step releases it.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| e.to_string())?;
 

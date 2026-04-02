@@ -92,15 +92,19 @@ export class VoiceboxClient {
 		});
 	}
 
-	/** Poll generation status until completed or failed */
+	/** Poll generation status until completed or failed.
+	 *  Uses a dedicated Tauri command with a long timeout to handle
+	 *  slow sidecar responses during ML inference.
+	 */
 	async pollGenerationStatus(generationId: string): Promise<string> {
 		const timeout = 300_000; // 5 minutes
-		const interval = 1000;
+		const interval = 2000;
 		const start = Date.now();
 
 		while (Date.now() - start < timeout) {
-			const data = await this.jsonRequest<{ status: string; error?: string }>(
-				`/generate/${generationId}/status`
+			const data = await tauriInvoke<{ status: string; error?: string }>(
+				'poll_generation',
+				{ generationId }
 			);
 			if (data.status === 'completed') return 'completed';
 			if (data.status === 'failed') {
