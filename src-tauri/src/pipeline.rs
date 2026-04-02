@@ -6,6 +6,7 @@ use crate::sidecar;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
+use tauri::Manager;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
@@ -167,9 +168,11 @@ pub async fn process_recording(
             .ok();
 
         let port = sidecar::ensure_running(&app).await?;
+        let http = app.state::<local_tts::HttpClient>();
         if config.local_tts_mode == config::LocalTtsMode::Vc {
             log::info!("[pipeline] Using voice conversion (CosyVoice S2S)");
             local_tts::voice_convert(
+                &http.client,
                 port,
                 &config.local_voice_profile_id,
                 &extracted_wav,
@@ -178,6 +181,7 @@ pub async fn process_recording(
         } else {
             log::info!("[pipeline] Using text-to-speech (Qwen TTS)");
             local_tts::speech_to_speech(
+                &http.client,
                 port,
                 &config.local_voice_profile_id,
                 &extracted_wav,

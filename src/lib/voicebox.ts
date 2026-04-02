@@ -118,11 +118,11 @@ export class VoiceboxClient {
 	}
 
 	/** Get the audio URL for a completed generation.
-	 *  Fetches the sidecar port and constructs a direct localhost URL.
+	 *  Fetches audio bytes via Tauri command and returns a blob: URL.
 	 */
 	async getAudioUrl(generationId: string): Promise<string> {
-		const status = await tauriInvoke<{ port: number | null }>('get_sidecar_status');
-		if (!status.port) throw new Error('TTS sidecar is not running');
-		return `http://127.0.0.1:${status.port}/audio/${generationId}`;
+		const bytes = await tauriInvoke<number[]>('get_generation_audio', { generationId });
+		const blob = new Blob([new Uint8Array(bytes)], { type: 'audio/wav' });
+		return URL.createObjectURL(blob);
 	}
 }

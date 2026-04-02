@@ -35,8 +35,14 @@ pub fn run() {
                 log::error!("ffmpeg not found on system PATH");
             }
 
-            // Initialize sidecar state
+            // Initialize sidecar state and shared HTTP client
             app.manage(sidecar::SidecarState::default());
+            app.manage(local_tts::HttpClient {
+                client: reqwest::Client::builder()
+                    .pool_max_idle_per_host(5)
+                    .build()
+                    .expect("Failed to build HTTP client"),
+            });
 
             // Clean up stale recording artifacts from previous sessions (>1 hour old)
             commands::recording::cleanup_stale_recordings(
@@ -71,6 +77,7 @@ pub fn run() {
             local_tts::check_model_status,
             local_tts::extract_youtube_audio,
             local_tts::poll_generation,
+            local_tts::get_generation_audio,
             local_tts::sidecar_fetch,
             local_tts::sidecar_upload,
             sidecar::get_sidecar_status,
