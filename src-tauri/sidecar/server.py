@@ -274,7 +274,7 @@ async def _generation_worker():
         try:
             await coro
         except Exception as e:
-            logger.error(f"Generation {gen_id} failed (unhandled): {e}")
+            logger.error(f"Generation {gen_id} failed (unhandled): {e}", exc_info=True)
             _generations[gen_id]["status"] = "error"
             _generations[gen_id]["error"] = str(e)
             _generations[gen_id]["completed_at"] = time.time()
@@ -289,8 +289,7 @@ async def _generation_worker():
 
 async def _do_generate(
     *,
-    gen_id: str,
-    generations: dict,
+    set_status,
     data_dir: Path,
     profile_id: str,
     text: str,
@@ -301,7 +300,7 @@ async def _do_generate(
     """Generate speech audio from text using Qwen TTS.
 
     Returns (audio_data, sample_rate, log_label) for _run_generation.
-    Updates generations[gen_id]["status"] during processing.
+    Calls set_status(str) to report progress.
     """
     from profiles import get_samples
     from tts import (
@@ -320,7 +319,7 @@ async def _do_generate(
     cache_dir = str(data_dir / "cache")
 
     # Load model if needed
-    generations[gen_id]["status"] = "loading_model"
+    set_status("loading_model")
     await load_qwen_model(models_dir)
 
     # Get voice samples for profile
@@ -329,12 +328,12 @@ async def _do_generate(
         raise ValueError(f"No samples found for profile {profile_id}")
 
     # Create voice prompt from samples
-    generations[gen_id]["status"] = "preparing_voice"
+    set_status("preparing_voice")
     audio_paths = [s["audio_path"] for s in samples]
     ref_texts = [s["reference_text"] for s in samples]
     voice_prompt = await combine_voice_prompts(audio_paths, ref_texts, cache_dir)
 
-    generations[gen_id]["status"] = "generating"
+    set_status("generating")
 
     if segments and original_duration > 0:
         # --- Timestamp-synchronized generation ---
@@ -439,8 +438,7 @@ _vc_model_name = None
 
 async def _do_voice_convert(
     *,
-    gen_id: str,
-    generations: dict,
+    set_status,
     data_dir: Path,
     profile_id: str,
     source_audio_path: str,
@@ -449,11 +447,10 @@ async def _do_voice_convert(
     """Convert source audio to target voice using CosyVoice3.
 
     Returns (audio_data, sample_rate, log_label) for _run_generation.
-    Updates generations[gen_id]["status"] during processing.
+    Calls set_status(str) to report progress.
     Mutates module globals _vc_model and _vc_model_name for model caching.
     """
-    import asyncio as _asyncio
-    import soundfile as sf
+    import asyncio
     import mlx.core as mx
     from mlx_audio.tts.utils import load_model
     from mlx_audio.tts.generate import load_audio
@@ -462,7 +459,7 @@ async def _do_voice_convert(
     models_dir = str(data_dir / "models")
 
     # Load CosyVoice3 model
-    generations[gen_id]["status"] = "loading_model"
+    set_status("loading_model")
     global _vc_model, _vc_model_name
 
     vc_model_id = "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"
@@ -476,16 +473,16 @@ async def _do_voice_convert(
                 model = load_model(vc_model_id)
                 _vc_model = model
                 _vc_model_name = vc_model_id
-            except Exception as e:
+            except Exception:
                 _vc_model = None
                 _vc_model_name = None
                 raise
 
-        await _asyncio.to_thread(_load)
+        await asyncio.to_thread(_load)
         logger.info("Voice conversion model loaded")
 
     # Get reference audio from voice profile — use all samples up to 30s
-    generations[gen_id]["status"] = "preparing_voice"
+    set_status("preparing_voice")
     samples = get_samples(data_dir, profile_id)
     if not samples:
         raise ValueError(f"No samples found for profile {profile_id}")
@@ -538,7 +535,7 @@ async def _do_voice_convert(
     chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
     chunk_samples = int(chunk_duration * model_sr)
 
-    generations[gen_id]["status"] = "generating"
+    set_status("generating")
 
     def _convert_chunk(chunk_audio):
         """Run voice conversion on a single chunk (blocking, for thread pool)."""
@@ -563,7 +560,7 @@ async def _do_voice_convert(
 
     if len(source_np) <= chunk_samples:
         logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
-        audio = await _asyncio.to_thread(_convert_chunk, source_audio)
+        audio = await asyncio.to_thread(_convert_chunk, source_audio)
         if len(audio) == 0:
             raise ValueError("Voice conversion produced empty audio for single chunk")
         sample_rate = model_sr
@@ -581,7 +578,7 @@ async def _do_voice_convert(
             end = min(pos + chunk_samples, total_samples)
             chunk = mx.array(source_np[pos:end], dtype=mx.float32)
             logger.info(f"  Converting chunk {i+1}/{n_chunks} ({(end-pos)/model_sr:.1f}s)")
-            piece = await _asyncio.to_thread(_convert_chunk, chunk)
+            piece = await asyncio.to_thread(_convert_chunk, chunk)
             if len(piece) > 0:
                 converted_pieces.append(piece)
             else:
@@ -740,8 +737,7 @@ async def generate(request: dict):
 
     generate_fn = functools.partial(
         _do_generate,
-        gen_id=gen_id,
-        generations=_generations,
+        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
         data_dir=DATA_DIR,
         profile_id=profile_id,
         text=text,
@@ -815,8 +811,7 @@ async def voice_convert(request: dict):
 
     convert_fn = functools.partial(
         _do_voice_convert,
-        gen_id=gen_id,
-        generations=_generations,
+        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
         data_dir=DATA_DIR,
         profile_id=profile_id,
         source_audio_path=source_audio_path,

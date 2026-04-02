@@ -254,10 +254,16 @@ pub async fn health_check(port: u16) -> bool {
     //
     // Uses its own client rather than the shared HttpClient because health_check
     // is called during startup before state may be accessible.
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[sidecar] Failed to build health check client: {e}");
+            return false;
+        }
+    };
 
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {

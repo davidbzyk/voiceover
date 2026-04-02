@@ -249,6 +249,7 @@
 	async function testGenerate() {
 		generating = true;
 		generateError = '';
+		if (generatedAudioUrl) URL.revokeObjectURL(generatedAudioUrl);
 		generatedAudioUrl = '';
 		const client = getClient();
 

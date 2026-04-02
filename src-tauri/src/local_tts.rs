@@ -97,6 +97,18 @@ pub(crate) struct ModelsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Validate that a generation ID contains only safe characters (alphanumeric + hyphens).
+fn validate_generation_id(id: &str) -> Result<(), String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(format!("Invalid generation ID format: {}", id));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared poll-and-download helper
 // ---------------------------------------------------------------------------
 
@@ -127,11 +139,12 @@ async fn poll_and_download(
 
         tokio::time::sleep(poll_interval).await;
 
-        let poll_resp = client
-            .get(&status_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to poll generation status: {e}"))?;
+        let poll_resp = send_with_timeout(
+            client.get(&status_url).send(),
+            120,
+            "Failed to poll generation status",
+        )
+        .await?;
 
         if !poll_resp.status().is_success() {
             let body = poll_resp.text().await.unwrap_or_default();
@@ -164,11 +177,12 @@ async fn poll_and_download(
 
     // Download the result
     let audio_url = format!("{}/audio/{}", base_url, generation_id);
-    let audio_resp = client
-        .get(&audio_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download generated audio: {e}"))?;
+    let audio_resp = send_with_timeout(
+        client.get(&audio_url).send(),
+        120,
+        "Failed to download generated audio",
+    )
+    .await?;
 
     if !audio_resp.status().is_success() {
         let body = audio_resp.text().await.unwrap_or_default();
@@ -560,10 +574,7 @@ pub async fn poll_generation(
     let port = crate::sidecar::get_port(&state)
         .ok_or_else(|| "TTS sidecar is not running".to_string())?;
 
-    // Validate generation_id contains only safe characters (alphanumeric + hyphens)
-    if !generation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(format!("Invalid generation ID format: {}", generation_id));
-    }
+    validate_generation_id(&generation_id)?;
 
     let url = format!(
         "http://127.0.0.1:{}/generate/{}/status",
@@ -608,25 +619,29 @@ pub async fn get_generation_audio(
     app: tauri::AppHandle,
     generation_id: String,
 ) -> Result<Vec<u8>, String> {
-    // Validate generation_id: alphanumeric + hyphens only
-    if !generation_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err(format!("Invalid generation ID format: {}", generation_id));
-    }
+    validate_generation_id(&generation_id).map_err(|e| {
+        log::warn!("[local_tts] get_generation_audio: {}", e);
+        e
+    })?;
 
     let state = app.state::<crate::sidecar::SidecarState>();
-    let port = crate::sidecar::get_port(&state)
-        .ok_or_else(|| "TTS sidecar is not running".to_string())?;
+    let port = crate::sidecar::get_port(&state).ok_or_else(|| {
+        log::warn!("[local_tts] get_generation_audio: sidecar not running");
+        "TTS sidecar is not running".to_string()
+    })?;
 
     let url = format!("http://127.0.0.1:{}/audio/{}", port, generation_id);
     let http = app.state::<HttpClient>();
     let response = send_with_timeout(http.client.get(&url).send(), 30, "Failed to fetch audio")
-        .await?;
+        .await
+        .map_err(|e| {
+            log::warn!("[local_tts] get_generation_audio: {}", e);
+            e
+        })?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
+        log::warn!("[local_tts] get_generation_audio: HTTP error: {body}");
         return Err(format!("Audio fetch failed: {body}"));
     }
 
@@ -634,7 +649,10 @@ pub async fn get_generation_audio(
         .bytes()
         .await
         .map(|b| b.to_vec())
-        .map_err(|e| format!("Failed to read audio bytes: {e}"))
+        .map_err(|e| {
+            log::warn!("[local_tts] get_generation_audio: failed to read bytes: {e}");
+            format!("Failed to read audio bytes: {e}")
+        })
 }
 
 /// Permitted sidecar path prefixes — only these endpoints are reachable from the frontend.
@@ -847,5 +865,25 @@ mod tests {
         // Port 1 should not have our sidecar — use health_check directly
         let result = crate::sidecar::health_check(1).await;
         assert!(!result);
+    }
+
+    #[test]
+    fn validate_generation_id_accepts_uuid() {
+        assert!(validate_generation_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890").is_ok());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_path_traversal() {
+        assert!(validate_generation_id("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_spaces() {
+        assert!(validate_generation_id("id with spaces").is_err());
+    }
+
+    #[test]
+    fn validate_generation_id_rejects_semicolons() {
+        assert!(validate_generation_id("id;rm -rf /").is_err());
     }
 }
