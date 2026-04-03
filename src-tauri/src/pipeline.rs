@@ -169,6 +169,7 @@ pub async fn process_recording(
                 &config.local_voice_profile_id,
                 &extracted_wav,
                 &transformed_audio,
+                video_duration,
             ).await?;
         } else {
             log::info!("[pipeline] Using text-to-speech (Qwen TTS)");

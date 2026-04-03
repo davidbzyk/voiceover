@@ -23,9 +23,12 @@ pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
 }
 
 /// Build ffmpeg arguments for audio replacement.
+/// Uses `-af apad -shortest` so that if the new audio is shorter than the video,
+/// it is silence-padded to match the video duration (preventing early cutoff).
 pub(crate) fn replace_audio_args(input_video: &str, new_audio: &str, output: &str) -> Vec<String> {
     ["-y", "-i", input_video, "-i", new_audio, "-map", "0:v", "-map", "1:a",
-     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
+     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-af", "apad", "-shortest",
+     "-c:v", "libx264", "-preset", "fast",
      "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
@@ -262,11 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn replace_audio_args_no_shortest_flag() {
+    fn replace_audio_args_uses_apad_shortest() {
         let args = replace_audio_args("video.webm", "audio.mp3", "output.mp4");
         assert!(
-            !args.contains(&"-shortest".to_string()),
-            "replace_audio_args must not use -shortest (audio should match video duration)"
+            args.contains(&"apad".to_string()),
+            "replace_audio_args should use apad filter to silence-pad short audio"
+        );
+        assert!(
+            args.contains(&"-shortest".to_string()),
+            "replace_audio_args should use -shortest so output ends at video duration"
         );
     }
 
