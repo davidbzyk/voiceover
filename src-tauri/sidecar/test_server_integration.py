@@ -52,6 +52,7 @@ class TestHealthEndpoint:
         assert "models" in data
         assert "whisper" in data["models"]
         assert "qwen" in data["models"]
+        assert "cosyvoice" in data["models"]
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ class TestModelEndpoints:
         data = response.json()
         assert "models" in data
         assert isinstance(data["models"], list)
-        assert len(data["models"]) == 2
+        assert len(data["models"]) == 3
 
     def test_download_unknown_model(self, client):
         response = client.post("/models/download", json={
@@ -298,6 +299,7 @@ class TestHappyPaths:
         assert isinstance(data["models"], dict)
         assert "whisper" in data["models"]
         assert "qwen" in data["models"]
+        assert "cosyvoice" in data["models"]
 
     def test_profile_crud_lifecycle(self, client):
         """Full create → list → delete → list cycle."""
