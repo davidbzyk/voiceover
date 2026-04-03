@@ -309,6 +309,14 @@
 						<span>TTS engine ready</span>
 					</div>
 
+					<!-- Show status of each model -->
+					{#each models as model}
+						<div class="status-row">
+							<span class="status-dot" class:connected={model.downloaded}></span>
+							<span>{model.display_name}</span>
+						</div>
+					{/each}
+
 					{@const missing = models.filter((m) => !m.downloaded)}
 					{#if missing.length > 0}
 						<div class="hint-text">
