@@ -118,23 +118,7 @@ xcode-select --install
 brew install ffmpeg
 ```
 
-### Linux (Ubuntu/Debian)
-
-```bash
-# Tauri v2 build dependencies (GTK/WebKit)
-sudo apt-get install -y \
-  libgtk-3-dev \
-  libgdk-pixbuf2.0-dev \
-  libatk1.0-dev \
-  libsoup-3.0-dev \
-  libjavascriptcoregtk-4.1-dev \
-  libwebkit2gtk-4.1-dev
-
-# ffmpeg (runtime dependency)
-sudo apt-get install -y ffmpeg
-```
-
-### Build Tools (Both Platforms)
+### Build Tools
 
 **Rust:**
 ```bash
@@ -217,11 +201,7 @@ Pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) run 
 pnpm tauri build
 ```
 
-This produces:
-- **macOS:** `.dmg` installer in `src-tauri/target/release/bundle/dmg/`
-- **Linux:** `.AppImage` and `.deb` in `src-tauri/target/release/bundle/`
-
-The macOS build is code-signed with a Developer ID and hardened runtime.
+This produces a `.dmg` installer in `src-tauri/target/release/bundle/dmg/`, code-signed with a Developer ID and hardened runtime.
 
 ## Configuration
 
@@ -275,7 +255,7 @@ After connecting, the app provides a shareable Google Drive link when you save a
 
 ### Settings Storage
 
-- **Desktop app:** `~/.local/share/com.voiceover.app/config.json` (Linux) or `~/Library/Application Support/com.voiceover.app/config.json` (macOS)
+- **Desktop app:** `~/Library/Application Support/com.voiceover.app/config.json`
 - **Browser mode:** `localStorage` (with `static/_config.json` as dev-only fallback, stripped from production builds)
 
 ## Project Structure
@@ -450,7 +430,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 ```
 [elevenlabs] S2S request: voice=Cb8NLd0s, input_size=156KB
 [elevenlabs] S2S response: status=200, elapsed=3.2s
-[pipeline] Complete: /home/user/Videos/VoiceOver/voiceover-123.mp4 (total 4.1s)
+[pipeline] Complete: /Users/you/Movies/VoiceOver/voiceover-123.mp4 (total 4.1s)
 ```
 
 ## Known Issues
