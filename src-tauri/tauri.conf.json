@@ -39,6 +39,12 @@
     "externalBin": [
       "binaries/ffmpeg",
       "binaries/voiceover-tts"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "hardenedRuntime": true,
+      "signingIdentity": "Developer ID Application",
+      "minimumSystemVersion": "11.0"
+    }
   }
 }
