@@ -78,6 +78,12 @@ class LibraryState {
 		await tauriInvoke('reveal_in_finder', { path });
 	}
 
+	async renameRecording(path: string, newName: string): Promise<RecordingInfo> {
+		const updated = await tauriInvoke<RecordingInfo>('rename_recording', { filePath: path, newName });
+		this.recordings = this.recordings.map((r) => (r.path === path ? updated : r));
+		return updated;
+	}
+
 	updateRecordingMeta(path: string, updates: Partial<RecordingMeta>) {
 		this.recordings = this.recordings.map((r) =>
 			r.path === path

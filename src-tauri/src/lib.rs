@@ -91,6 +91,7 @@ pub fn run() {
             library::list_recordings,
             library::generate_thumbnail,
             library::delete_recording,
+            library::rename_recording,
             library::open_in_system,
             library::reveal_in_finder,
         ])

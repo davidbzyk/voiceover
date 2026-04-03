@@ -14,6 +14,9 @@
 	let uploading = $state(false);
 	let errorMessage = $state('');
 	let cardEl = $state<HTMLDivElement | null>(null);
+	let editing = $state(false);
+	let editName = $state('');
+	let editInput = $state<HTMLInputElement | null>(null);
 
 	const alreadyUploaded = $derived(!!recording.meta?.driveUrl);
 	const driveConnected = $derived(appState.config.google_drive.connected);
@@ -140,6 +143,47 @@
 			logger.error('library', 'Failed to reveal in Finder', err);
 		}
 	}
+
+	function startRename() {
+		const stem = recording.filename.replace(/\.mp4$/i, '');
+		editName = stem;
+		editing = true;
+		// Focus the input after Svelte renders it
+		requestAnimationFrame(() => {
+			editInput?.focus();
+			editInput?.select();
+		});
+	}
+
+	async function commitRename() {
+		const trimmed = editName.trim();
+		if (!trimmed) {
+			editing = false;
+			return;
+		}
+		errorMessage = '';
+		try {
+			await libraryState.renameRecording(recording.path, trimmed);
+		} catch (err) {
+			errorMessage = `Rename failed: ${err}`;
+			logger.error('library', 'Failed to rename recording', err);
+		}
+		editing = false;
+	}
+
+	function cancelRename() {
+		editing = false;
+	}
+
+	function handleRenameKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			commitRename();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelRename();
+		}
+	}
 </script>
 
 <div class="recording-card" bind:this={cardEl}>
@@ -154,7 +198,18 @@
 	</div>
 
 	<div class="info">
-		<div class="filename" title={recording.filename}>{recording.filename}</div>
+		{#if editing}
+			<input
+				class="rename-input"
+				type="text"
+				bind:value={editName}
+				bind:this={editInput}
+				onkeydown={handleRenameKeydown}
+				onblur={cancelRename}
+			/>
+		{:else}
+			<div class="filename" title={recording.filename}>{recording.filename}</div>
+		{/if}
 		<div class="meta-row">
 			<span>{formattedDate}</span>
 			<span>·</span>
@@ -199,6 +254,9 @@
 		{/if}
 		<button class="action-btn" onclick={handleReveal} title="Show in Finder">
 			📂
+		</button>
+		<button class="action-btn" onclick={startRename} disabled={editing} title="Rename">
+			✏️
 		</button>
 		<button
 			class="action-btn"
@@ -312,6 +370,18 @@
 	.action-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.rename-input {
+		font-size: 13px;
+		font-weight: 500;
+		color: #f1f5f9;
+		background: #0f172a;
+		border: 1px solid #f97316;
+		border-radius: 4px;
+		padding: 2px 6px;
+		outline: none;
+		width: 100%;
+		min-width: 0;
 	}
 	.action-btn.danger {
 		background: #7f1d1d;
