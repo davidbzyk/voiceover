@@ -68,28 +68,7 @@ Both modes use voice profiles you create from audio samples — upload a clip of
 
 ## Architecture
 
-```
-SvelteKit Frontend (TypeScript)
-    ↓ Tauri IPC (invoke)
-Rust Backend (Tauri v2)
-    ↓ HTTP (localhost)
-Python Sidecar (FastAPI + Qwen TTS / CosyVoice3)
-```
-
-```
-Frontend (Svelte 5 + TypeScript)          Backend (Rust)                Python Sidecar (FastAPI)
-┌──────────────────────────┐    Tauri     ┌──────────────────────────┐    HTTP     ┌──────────────────────┐
-│ Home Screen              │   Commands   │ config.rs + secrets.rs   │  localhost  │ server.py            │
-│ Recording Widget         │ ◄──────────► │ pipeline.rs + ffmpeg.rs  │ ◄─────────► │ tts.py               │
-│ Preview & Process        │   + Channel  │ elevenlabs.rs            │             │ profiles.py          │
-│ Settings                 │    Events    │ local_tts.rs + models.rs │             │ chunked_tts.py       │
-│ Library                  │              │ sidecar.rs               │             │                      │
-│                          │              │ library.rs               │             │ Whisper (transcribe)  │
-│ recorder.svelte.ts       │              │ google_drive.rs          │             │ Qwen TTS (generate)   │
-│ state.svelte.ts          │              │ commands/recording.rs    │             │ CosyVoice3 (convert)  │
-│ voicebox.ts              │              │ commands/window.rs       │             │                      │
-└──────────────────────────┘              └──────────────────────────┘             └──────────────────────┘
-```
+![Architecture](images/architecture.png)
 
 The **Python sidecar** is a FastAPI server that runs as a managed subprocess, started automatically on app launch. It handles:
 - **Transcription** — Whisper Large v3 Turbo (MLX) for speech-to-text
