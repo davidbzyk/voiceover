@@ -1,46 +1,60 @@
 # VoiceOver
 
-A lightweight desktop screen recorder that replaces your voice with a character voice — record, transform, and export in a single workflow. Supports **ElevenLabs** (cloud) and **Voicebox** (local, runs on your machine).
+A desktop screen recorder that replaces your voice with a cloned character voice — record, transform, and export in a single workflow. Supports **ElevenLabs** (cloud) and a **built-in local TTS engine** powered by Qwen TTS and CosyVoice3 on Apple Silicon.
 
-Built with Tauri v2 (Rust backend) and SvelteKit 5 (TypeScript frontend). Runs on macOS and Linux.
+Built with Tauri v2 (Rust backend), SvelteKit 5 (TypeScript frontend), and a Python FastAPI sidecar for on-device ML inference.
 
-![VoiceOver Home Screen](images/Desktop.png)
+![VoiceOver](images/Desktop.png)
 
 ## What It Does
 
 VoiceOver eliminates the multi-step process of recording a screen capture, uploading audio to a voice service, and manually splicing the result. Instead:
 
 1. **Record** your screen (full screen, window, or region) with microphone audio
-2. **Transform** your voice using ElevenLabs (cloud) or Voicebox (local)
-3. **Export** a final video with the transformed voice perfectly synced
+2. **Transform** your voice using ElevenLabs (cloud) or the built-in local engine
+3. **Preview** the result and save as MP4
 4. **Upload** (optional) to Google Drive for a shareable link
 
-The entire pipeline happens in one app. Your pacing, pauses, and emphasis are preserved — both providers transform the voice while keeping your natural cadence.
+The entire pipeline happens in one app — no external tools, no file juggling.
+
+### Local Voice Engine
+
+The bundled TTS sidecar runs entirely on your machine. No API keys, no cloud — your audio never leaves your computer. Two modes:
+
+| Mode | Engine | How It Works | Best For |
+|------|--------|-------------|----------|
+| **Text-to-Speech** | Qwen TTS | Transcribes your speech (Whisper), then regenerates it with your cloned voice at the original word timestamps | Clean re-generation; fixes stumbles while keeping pacing |
+| **Voice Conversion** | CosyVoice3 | Directly converts your voice to the target voice in a single pass | Preserving your exact timing, prosody, and emphasis |
+
+Both modes use voice profiles you create from audio samples — upload a clip of someone's voice (or extract one from YouTube), and VoiceOver clones it for all future recordings.
 
 ## Screenshots
 
-| Record | Preview | Save to Drive |
-|--------|---------|---------------|
-| ![Home](images/Desktop.png) | ![Preview](images/preview.png) | ![Drive](images/savetodrive.png) |
+| Record | Recording |
+|--------|-----------|
+| ![Record](images/Desktop.png) | ![Recording](images/Dashboard.png) |
 
-| Settings |
-|----------|
-| ![Settings](images/settings.png) |
+| Preview | Library |
+|---------|---------|
+| ![Preview](images/Preview.png) | ![Library](images/Library.png) |
 
 ## Features
 
 - **Screen capture** — full screen, window, or region selection via native OS picker
-- **Optional webcam overlay** — picture-in-picture bubble during recording. Toggle webcam via the camera button on the home screen. Click the arrow on the bubble to move it between bottom-left and bottom-right. The bubble is composited into the recorded video output (not just a preview overlay)
+- **Optional webcam overlay** — picture-in-picture bubble composited into the video output, toggleable position
 - **Microphone selection** — pick any connected audio input device
 - **ElevenLabs Speech-to-Speech** — cloud voice transformation that preserves timing and emotion
-- **Voicebox local TTS** — runs entirely on your machine via [Voicebox](https://github.com/jamiepine/voicebox), no API keys needed. Uses Qwen TTS with voice cloning from audio samples
-- **Voice collection** — save multiple voice IDs (ElevenLabs) or voice profiles (Voicebox) with friendly names
+- **Built-in local TTS engine** — runs entirely on your machine, no API keys or external servers needed
+  - **Text-to-Speech mode** — Whisper transcription → Qwen TTS regeneration with timestamp-synced pacing
+  - **Voice Conversion mode** — CosyVoice3 speech-to-speech cloning that preserves your exact prosody
+- **Voice creation wizard** — create voice profiles from audio samples or YouTube URLs with auto-transcription
+- **Video library** — browse past recordings with thumbnails, sort by date/size/name, play, delete, or upload
+- **Voice collection** — save multiple voices (ElevenLabs IDs or local profiles) with friendly names
 - **Voice replacement toggle** — on by default, turn off to save raw recordings
 - **Background noise removal** — ElevenLabs strips noise before transformation
 - **Google Drive upload** — OAuth2 flow, uploads and returns a shareable link
 - **Floating recording widget** — Loom-style always-on-top pill with timer and controls
-- **Browser mode** — full pipeline works in Chrome at localhost (ffmpeg.wasm for splicing)
-- **Structured logging** — `[VO:*]` prefixed logs in browser console and Rust terminal
+- **Transcript export** — `.txt` file alongside output video with word-level timing from Whisper
 
 ## Architecture
 
@@ -84,6 +98,24 @@ Local VC:    Record → Extract Audio → CosyVoice3 Voice Conversion → Splice
 
 - Desktop mode: ffmpeg CLI handles extraction and splicing
 - Browser mode: ffmpeg.wasm handles splicing in-browser
+
+## System Requirements
+
+### Apple Silicon (Local TTS)
+
+The local TTS engine uses [MLX](https://github.com/ml-explore/mlx) for on-device inference and requires **Apple Silicon**. Tested on an **M5 Max Pro** — the minimum M-series chip hasn't been verified, but any M1 or later should work (inference speed will vary with unified memory and GPU cores).
+
+The following models need to be downloaded before using local TTS:
+
+| Model | Purpose | Download |
+|-------|---------|----------|
+| **Whisper Large v3 Turbo** | Speech-to-text transcription | Settings → Local |
+| **Qwen TTS 1.7B** | Text-to-speech generation | Settings → Local |
+| **CosyVoice3 0.5B** | Voice conversion | Automatic on first use |
+
+Whisper and Qwen TTS are managed from the Settings screen. CosyVoice3 downloads automatically the first time you use Voice Conversion mode. Models are stored in `~/Library/Application Support/com.voiceover.app/models/`.
+
+> **Note:** If you only use ElevenLabs (cloud), Apple Silicon and model downloads are not required.
 
 ## Prerequisites
 
@@ -200,15 +232,7 @@ This produces:
 - **macOS:** `.dmg` installer in `src-tauri/target/release/bundle/dmg/`
 - **Linux:** `.AppImage` and `.deb` in `src-tauri/target/release/bundle/`
 
-### Installing the .app (macOS)
-
-The app is unsigned. After dragging VoiceOver.app to Applications, open Terminal and run:
-
-```bash
-xattr -cr /Applications/VoiceOver.app
-```
-
-This removes the macOS quarantine flag. You only need to do this once.
+The macOS build is code-signed with a Developer ID and hardened runtime.
 
 ## Configuration
 
@@ -222,46 +246,29 @@ All settings are managed in-app via the Settings screen. No config files to edit
 4. Add voices: enter a **name** and **voice ID** (find IDs in your ElevenLabs voice library)
 5. Set a default voice
 
-![Settings — API key, voices, and Google Drive](images/settings.png)
+### Local TTS Setup (Optional)
 
-### Voicebox Setup (Local Voice — Optional)
+The local TTS engine is built into VoiceOver — no external servers to install. It runs as a managed sidecar process that starts automatically with the app.
 
-Voicebox is a local TTS server that runs on your machine. No API keys, no cloud — your audio never leaves your computer.
+**1. Download models:**
 
-**1. Install and run Voicebox:**
-
-```bash
-git clone https://github.com/jamiepine/voicebox
-cd voicebox
-# Follow Voicebox README for setup (Docker or native)
-```
-
-Voicebox runs at `http://localhost:17493` by default.
+On first launch, open **Settings → Local** and download the required models (Whisper, Qwen TTS, and/or CosyVoice3 depending on your preferred mode). This is a one-time download.
 
 **2. Create a voice profile:**
 
-You can create a voice profile directly from VoiceOver:
+1. On the **Record** screen, click **+ Create Voice** (or go to Settings)
+2. Name your voice and upload audio samples — you can record directly, upload files, or paste a YouTube URL to extract a voice
+3. Each sample is auto-transcribed for reference text
+4. The more varied samples you provide (5–30 seconds each), the better the clone
 
-1. Open **Settings** in VoiceOver
-2. Under **Local Voice Server**, verify the connection shows green
-3. Click **+ Create Voice**
-4. Follow the wizard: name your voice, upload audio samples (MP3, WAV, etc.), and add reference text for each sample
-5. Test the voice with a preview generation
+**3. Select provider and mode:**
 
-Or create profiles in the Voicebox web UI at `http://localhost:17493`.
-
-**3. Select the provider and mode:**
-
-1. In **Settings**, switch the provider toggle to **Local**
-2. Select your voice profile from the dropdown
-3. Choose a **local TTS mode** (controlled by the `local_tts_mode` setting):
-
-| Mode | How it works | Best for |
-|------|-------------|----------|
-| **Text-to-Speech (TTS)** | Transcribes your audio to text (Whisper), then regenerates speech with Qwen TTS using your voice profile | Clean re-generation with a cloned voice; output follows the *words* of your recording |
-| **Voice Conversion (VC)** | Uses CosyVoice3 to convert your voice directly to the target voice | Preserving your exact timing, pacing, and prosody; speech-to-speech with natural cadence |
-
-4. Record as normal — VoiceOver processes the audio through the selected pipeline and splices the result into the final video
+1. On the **Record** screen, toggle the provider to **Local**
+2. Choose your mode:
+   - **Text-to-Speech** — transcribes then regenerates (cleaner output, fixes stumbles)
+   - **Voice Conversion** — direct voice swap (preserves exact timing and emotion)
+3. Select your voice profile from the dropdown
+4. Record as normal
 
 **Supported audio formats for samples:** `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.aac`, `.webm`, `.opus` (max 50MB per sample)
 
@@ -273,9 +280,7 @@ Or create profiles in the Voicebox web UI at `http://localhost:17493`.
 4. In the app Settings, enter the **Client ID** and **Client Secret**
 5. Click **Connect Google Drive** and authorize
 
-After saving, the app provides a shareable Google Drive link:
-
-![Saved with Google Drive link](images/savetodrive.png)
+After connecting, the app provides a shareable Google Drive link when you save a recording.
 
 ### Settings Storage
 
@@ -292,14 +297,14 @@ voiceover/
 │   │   ├── logger.ts             # Structured logging ([VO:*] prefix)
 │   │   ├── recorder.svelte.ts    # WebRTC capture + MediaRecorder
 │   │   ├── state.svelte.ts       # App state (Svelte 5 runes)
-│   │   ├── voicebox.ts           # Voicebox API client (routes through Tauri IPC)
+│   │   ├── voicebox.ts           # Local TTS client (routes through Tauri IPC)
 │   │   └── WebcamBubble.svelte   # Webcam bubble overlay (live preview)
 │   └── routes/
 │       ├── +layout.svelte        # Root layout, config loading
 │       ├── +page.svelte          # Home screen (record controls)
 │       ├── preview/+page.svelte  # Preview, process, save/upload
 │       ├── settings/+page.svelte # API key, voices, Drive, output
-│       ├── create-voice/+page.svelte # Voicebox voice creation wizard
+│       ├── create-voice/+page.svelte # Voice creation wizard
 │       └── widget/+page.svelte   # Floating recording widget
 ├── src-tauri/                    # Rust backend
 │   ├── Cargo.toml
@@ -313,7 +318,7 @@ voiceover/
 │       ├── prerequisites.rs      # ffmpeg detection
 │       ├── ffmpeg.rs             # Audio extraction + video muxing
 │       ├── elevenlabs.rs         # S2S API client (reqwest)
-│       ├── local_tts.rs          # Voicebox client (transcribe → generate)
+│       ├── local_tts.rs          # Local TTS client (transcribe → generate)
 │       ├── pipeline.rs           # Processing orchestrator
 │       ├── google_drive.rs       # OAuth2 + upload
 │       └── commands/
@@ -431,18 +436,14 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 [pipeline] Complete: /home/user/Videos/VoiceOver/voiceover-123.mp4 (total 4.1s)
 ```
 
-## Known Limitations
+## Known Issues
 
-- **Browser mode output is WebM** (not MP4) — Chrome's MediaRecorder uses VP8 which can't be muxed into MP4 without re-encoding. Desktop mode outputs MP4 via system ffmpeg.
-- **getDisplayMedia in Tauri webview** — WebKitGTK on Linux may not grant screen capture permission. Use browser mode (Chrome) for recording on Linux.
+- **Local TTS sidecar startup lag** — the bundled TTS engine takes 10–30 seconds to load on first launch (loading ML models into memory). During this time, local voice profiles won't appear in the dropdown. The status bar at the bottom of the app shows "TTS Ready" once the sidecar is loaded.
+- **Apple Silicon only for local TTS** — the local engine uses MLX for inference and requires Apple Silicon. Tested on M5 Max Pro; minimum M-series chip is unknown. ElevenLabs (cloud) works on any hardware.
+- **Voice quality depends on your samples** — provide 3–5 varied samples of 5–30 seconds each for best results. Poor quality or noisy reference audio will produce poor clones.
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
-- **Local TTS sidecar** — Apple Silicon recommended (Qwen TTS and CosyVoice3 run via MLX). Voice quality depends on your audio samples.
-- **ffmpeg.wasm first load** — ~32MB download on first use in browser mode (cached after).
-- **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect). Once connected, uploads work from both desktop and browser.
-- **Webcam requires camera permission** — prompted on first use.
-- **Webcam bubble limited to bottom-left/bottom-right positions.**
-- **Webcam captured at 640x480** — compositor runs at 30fps.
-- **`captureStream` API is non-standard** — webcam overlay may not work in all WebKit versions.
+- **Webcam bubble** — limited to bottom-left/bottom-right positions, captured at 640x480 @ 30fps.
+- **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect).
 
 ## License
 
