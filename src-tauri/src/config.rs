@@ -185,6 +185,16 @@ pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
         // Always overlay secrets from keychain (authoritative source)
         crate::secrets::load_secrets(&mut config);
 
+        // Fall back to ELEVENLABS_API_KEY env var if no key is configured
+        if config.elevenlabs_api_key.is_empty() {
+            if let Ok(key) = std::env::var("ELEVENLABS_API_KEY") {
+                if !key.is_empty() {
+                    log::info!("[config] Using ELEVENLABS_API_KEY from environment");
+                    config.elevenlabs_api_key = key;
+                }
+            }
+        }
+
         // Ensure output_dir is never empty (serde default only applies to missing fields)
         if config.output_dir.is_empty() {
             config.output_dir = default_output_dir();
