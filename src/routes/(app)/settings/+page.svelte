@@ -22,16 +22,9 @@
 	let localLoading = $state(false);
 	let localError = $state('');
 
-	// Model management state
+	// Model status for smart button
 	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
-	let modelsLoading = $state(false);
-	let modelsError = $state('');
-	let downloadingModel = $state<string | null>(null);
-	let downloadProgress = $state('');
-	let confirmingDelete = $state<string | null>(null);
-	let deletingModel = $state<string | null>(null);
 
-	// Derived: are required models ready for current mode?
 	let requiredModelsReady = $derived(() => {
 		const required = [appState.config.whisper_model];
 		if (appState.config.local_tts_mode === 'vc') {
@@ -44,61 +37,12 @@
 		);
 	});
 
-	function getClient(): VoiceboxClient {
-		return new VoiceboxClient();
-	}
-
 	async function loadModelStatuses() {
-		modelsLoading = true;
-		modelsError = '';
 		try {
-			modelStatuses = await getClient().getModelStatus();
-		} catch (err) {
-			modelsError = 'Failed to check model status. Is the TTS engine running?';
-			logger.error('settings', 'Failed to load model statuses', err);
+			modelStatuses = await new VoiceboxClient().getModelStatus();
+		} catch {
+			// Silent — smart button defaults to "Setup Models" if check fails
 		}
-		modelsLoading = false;
-	}
-
-	async function handleDownloadModel(modelName: string) {
-		downloadingModel = modelName;
-		downloadProgress = 'Starting download...';
-		try {
-			await getClient().downloadModel(modelName, (_progress, status) => {
-				downloadProgress = status;
-			});
-			downloadProgress = '';
-			await loadModelStatuses();
-		} catch (err) {
-			downloadProgress = '';
-			modelsError = `Download failed: ${err}`;
-		}
-		downloadingModel = null;
-	}
-
-	async function handleDeleteModel(modelName: string) {
-		deletingModel = modelName;
-		try {
-			await getClient().deleteModel(modelName);
-			// If we deleted the active whisper model, select another downloaded one
-			if (modelName === appState.config.whisper_model) {
-				const otherWhisper = modelStatuses.find(
-					(m) => m.category === 'transcription' && m.downloaded && m.model_name !== modelName
-				);
-				appState.config.whisper_model = otherWhisper?.model_name ?? 'whisper-large-v3-turbo';
-				await appState.saveConfig();
-			}
-			await loadModelStatuses();
-		} catch (err) {
-			modelsError = `Delete failed: ${err}`;
-		}
-		deletingModel = null;
-		confirmingDelete = null;
-	}
-
-	async function selectWhisperModel(modelName: string) {
-		appState.config.whisper_model = modelName;
-		await appState.saveConfig();
 	}
 
 	onMount(() => {
@@ -266,21 +210,13 @@
 		};
 		await appState.saveConfig();
 	}
-	let activeTab = $state<'voice' | 'recording' | 'cloud' | 'models'>('voice');
+	let activeTab = $state<'voice' | 'recording' | 'cloud'>('voice');
 
-	const tabs: { value: 'voice' | 'recording' | 'cloud' | 'models'; label: string }[] = [
+	const tabs: { value: 'voice' | 'recording' | 'cloud'; label: string }[] = [
 		{ value: 'voice', label: 'Voice' },
 		{ value: 'recording', label: 'Recording' },
 		{ value: 'cloud', label: 'Cloud' },
-		{ value: 'models', label: 'Models' },
 	];
-
-	// Load model statuses when switching to models tab
-	$effect(() => {
-		if (activeTab === 'models') {
-			loadModelStatuses();
-		}
-	});
 </script>
 
 <div class="settings">
@@ -361,7 +297,7 @@
 							+ Create Voice
 						</button>
 					{:else}
-						<button class="small-btn accent" onclick={() => (activeTab = 'models')}>
+						<button class="small-btn accent" onclick={() => goto('/models')}>
 							Setup Models
 						</button>
 					{/if}
@@ -517,174 +453,6 @@
 				{/if}
 			</div>
 		</div>
-	{:else if activeTab === 'models'}
-		{#if modelsLoading}
-			<div class="section">
-				<div class="hint-text">Loading model status...</div>
-			</div>
-		{:else if modelsError}
-			<div class="section">
-				<div class="status invalid">{modelsError}</div>
-				<button class="small-btn" onclick={loadModelStatuses}>Retry</button>
-			</div>
-		{:else}
-			<!-- Transcription (Whisper) -->
-			<div class="section">
-				<div class="section-title">Transcription</div>
-				<div class="card">
-					<div class="hint-text" style="margin-bottom: 8px">
-						Whisper converts speech to text. Larger models are more accurate but use more memory.
-					</div>
-					{#each modelStatuses.filter((m) => m.category === 'transcription') as model}
-						<div class="model-row">
-							<div class="model-info">
-								<div class="model-name">
-									{model.display_name}
-									{#if model.recommended}
-										<span class="recommended-badge">Recommended</span>
-									{/if}
-								</div>
-								<div class="model-status-text">
-									{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-								</div>
-							</div>
-							<div class="model-actions">
-								{#if model.downloaded}
-									<button
-										class="radio-btn"
-										class:active={appState.config.whisper_model === model.model_name}
-										onclick={() => selectWhisperModel(model.model_name)}
-										title="Use this model"
-									>
-										{appState.config.whisper_model === model.model_name ? '● Active' : '○ Select'}
-									</button>
-									{#if confirmingDelete === model.model_name}
-										<button
-											class="small-btn danger"
-											onclick={() => handleDeleteModel(model.model_name)}
-											disabled={deletingModel === model.model_name}
-										>
-											{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-										</button>
-										<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-									{:else}
-										<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-											Delete
-										</button>
-									{/if}
-								{:else if downloadingModel === model.model_name}
-									<span class="download-status">{downloadProgress}</span>
-								{:else}
-									<button
-										class="small-btn accent"
-										onclick={() => handleDownloadModel(model.model_name)}
-										disabled={downloadingModel !== null}
-									>
-										Download
-									</button>
-								{/if}
-							</div>
-						</div>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Text-to-Speech (Qwen) -->
-			<div class="section">
-				<div class="section-title">Text-to-Speech</div>
-				<div class="card">
-					<div class="hint-text" style="margin-bottom: 8px">
-						Qwen generates speech from text using your cloned voice.
-					</div>
-					{#each modelStatuses.filter((m) => m.category === 'tts') as model}
-						<div class="model-row">
-							<div class="model-info">
-								<div class="model-name">{model.display_name}</div>
-								<div class="model-status-text">
-									{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-								</div>
-							</div>
-							<div class="model-actions">
-								{#if model.downloaded}
-									{#if confirmingDelete === model.model_name}
-										<button
-											class="small-btn danger"
-											onclick={() => handleDeleteModel(model.model_name)}
-											disabled={deletingModel === model.model_name}
-										>
-											{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-										</button>
-										<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-									{:else}
-										<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-											Delete
-										</button>
-									{/if}
-								{:else if downloadingModel === model.model_name}
-									<span class="download-status">{downloadProgress}</span>
-								{:else}
-									<button
-										class="small-btn accent"
-										onclick={() => handleDownloadModel(model.model_name)}
-										disabled={downloadingModel !== null}
-									>
-										Download
-									</button>
-								{/if}
-							</div>
-						</div>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Voice Conversion (CosyVoice) -->
-			<div class="section">
-				<div class="section-title">Voice Conversion</div>
-				<div class="card">
-					<div class="hint-text" style="margin-bottom: 8px">
-						CosyVoice converts your voice directly, preserving natural timing and inflection.
-					</div>
-					{#each modelStatuses.filter((m) => m.category === 'voice-conversion') as model}
-						<div class="model-row">
-							<div class="model-info">
-								<div class="model-name">{model.display_name}</div>
-								<div class="model-status-text">
-									{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-								</div>
-							</div>
-							<div class="model-actions">
-								{#if model.downloaded}
-									{#if confirmingDelete === model.model_name}
-										<button
-											class="small-btn danger"
-											onclick={() => handleDeleteModel(model.model_name)}
-											disabled={deletingModel === model.model_name}
-										>
-											{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-										</button>
-										<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-									{:else}
-										<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-											Delete
-										</button>
-									{/if}
-								{:else if downloadingModel === model.model_name}
-									<span class="download-status">{downloadProgress}</span>
-								{:else}
-									<button
-										class="small-btn accent"
-										onclick={() => handleDownloadModel(model.model_name)}
-										disabled={downloadingModel !== null}
-									>
-										Download
-									</button>
-								{/if}
-							</div>
-						</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
 	{/if}
 </div>
 
@@ -830,80 +598,5 @@
 		background: #1e293b;
 		border-color: #6366f1;
 		color: #e2e8f0;
-	}
-	/* Model management styles */
-	.model-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 10px 0;
-		border-bottom: 1px solid #334155;
-	}
-	.model-row:last-child {
-		border-bottom: none;
-	}
-	.model-info {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.model-name {
-		font-size: 13px;
-		color: #e2e8f0;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.model-status-text {
-		font-size: 10px;
-		color: #64748b;
-	}
-	.model-actions {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-	}
-	.recommended-badge {
-		font-size: 9px;
-		background: rgba(99, 102, 241, 0.15);
-		color: #818cf8;
-		padding: 1px 6px;
-		border-radius: 3px;
-		font-weight: 500;
-	}
-	.radio-btn {
-		background: none;
-		border: 1px solid #475569;
-		color: #94a3b8;
-		font-size: 10px;
-		padding: 3px 8px;
-		border-radius: 4px;
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-	.radio-btn.active {
-		border-color: #6366f1;
-		color: #a5b4fc;
-		background: rgba(99, 102, 241, 0.1);
-	}
-	.small-btn.danger {
-		color: #ef4444;
-		border-color: #ef4444;
-	}
-	.small-btn.danger-outline {
-		color: #94a3b8;
-		border-color: #475569;
-	}
-	.small-btn.danger-outline:hover {
-		color: #ef4444;
-		border-color: #ef4444;
-	}
-	.download-status {
-		font-size: 10px;
-		color: #94a3b8;
-		max-width: 150px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 </style>
