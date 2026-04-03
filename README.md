@@ -36,7 +36,17 @@ Both modes use voice profiles you create from audio samples — upload a clip of
 
 | Preview | Library |
 |---------|---------|
-| ![Preview](images/Preview.png) | ![Library](images/Library.png) |
+| ![Preview](images/preview.png) | ![Library](images/Library.png) |
+
+### Voice Creation Wizard
+
+| Settings | Create Profile | Voice Sample |
+|----------|---------------|-------------|
+| ![Settings](images/Create_1.png) | ![Create](images/Create_2.png) | ![Sample](images/Create_3.png) |
+
+| Transcription | Test Voice |
+|--------------|------------|
+| ![Transcript](images/Create_4.png) | ![Test](images/Create_5.png) |
 
 ## Features
 
@@ -48,7 +58,7 @@ Both modes use voice profiles you create from audio samples — upload a clip of
   - **Text-to-Speech mode** — Whisper transcription → Qwen TTS regeneration with timestamp-synced pacing
   - **Voice Conversion mode** — CosyVoice3 speech-to-speech cloning that preserves your exact prosody
 - **Voice creation wizard** — create voice profiles from audio samples or YouTube URLs with auto-transcription
-- **Video library** — browse past recordings with thumbnails, sort by date/size/name, play, delete, or upload
+- **Video library** — browse past recordings with thumbnails, sort by date/size/name, rename, play, delete, or upload
 - **Voice collection** — save multiple voices (ElevenLabs IDs or local profiles) with friendly names
 - **Voice replacement toggle** — on by default, turn off to save raw recordings
 - **Background noise removal** — ElevenLabs strips noise before transformation
@@ -58,28 +68,7 @@ Both modes use voice profiles you create from audio samples — upload a clip of
 
 ## Architecture
 
-```
-SvelteKit Frontend (TypeScript)
-    ↓ Tauri IPC (invoke)
-Rust Backend (Tauri v2)
-    ↓ HTTP (localhost)
-Python Sidecar (FastAPI + Qwen TTS / CosyVoice3)
-```
-
-```
-Frontend (Svelte 5 + TypeScript)          Backend (Rust)                Python Sidecar (FastAPI)
-┌──────────────────────────┐    Tauri     ┌──────────────────────────┐    HTTP     ┌──────────────────────┐
-│ Home Screen              │   Commands   │ prerequisites.rs         │  localhost  │ server.py            │
-│ Recording Widget         │ ◄──────────► │ config.rs                │ ◄─────────► │ tts.py               │
-│ Preview & Process        │   + Channel  │ ffmpeg.rs                │             │ profiles.py          │
-│ Settings                 │    Events    │ elevenlabs.rs            │             │ chunked_tts.py       │
-│                          │              │ pipeline.rs              │             │                      │
-│ recorder.svelte.ts       │              │ local_tts.rs             │             │ Whisper (transcribe)  │
-│ state.svelte.ts          │              │ sidecar.rs               │             │ Qwen TTS (generate)   │
-│ logger.ts                │              │ google_drive.rs          │             │ CosyVoice3 (convert)  │
-│ WebcamBubble.svelte      │              │ commands/recording.rs    │             │                      │
-└──────────────────────────┘              └──────────────────────────┘             └──────────────────────┘
-```
+![Architecture](images/architecture.png)
 
 The **Python sidecar** is a FastAPI server that runs as a managed subprocess, started automatically on app launch. It handles:
 - **Transcription** — Whisper Large v3 Turbo (MLX) for speech-to-text
@@ -109,11 +98,11 @@ The following models need to be downloaded before using local TTS:
 
 | Model | Purpose | Download |
 |-------|---------|----------|
-| **Whisper Large v3 Turbo** | Speech-to-text transcription | Settings → Local |
-| **Qwen TTS 1.7B** | Text-to-speech generation | Settings → Local |
-| **CosyVoice3 0.5B** | Voice conversion | Automatic on first use |
+| **Whisper Large v3 Turbo** | Speech-to-text transcription | Create Voice wizard |
+| **Qwen TTS 1.7B** | Text-to-speech generation | Create Voice wizard |
+| **CosyVoice3 0.5B** | Voice conversion | Create Voice wizard |
 
-Whisper and Qwen TTS are managed from the Settings screen. CosyVoice3 downloads automatically the first time you use Voice Conversion mode. Models are stored in `~/Library/Application Support/com.voiceover.app/models/`.
+All three models are downloaded from the **Create Voice** wizard (Settings → + Create Voice). This is a one-time download (~5GB total). Models are stored in `~/Library/Application Support/com.voiceover.app/models/`.
 
 > **Note:** If you only use ElevenLabs (cloud), Apple Silicon and model downloads are not required.
 
@@ -129,23 +118,7 @@ xcode-select --install
 brew install ffmpeg
 ```
 
-### Linux (Ubuntu/Debian)
-
-```bash
-# Tauri v2 build dependencies (GTK/WebKit)
-sudo apt-get install -y \
-  libgtk-3-dev \
-  libgdk-pixbuf2.0-dev \
-  libatk1.0-dev \
-  libsoup-3.0-dev \
-  libjavascriptcoregtk-4.1-dev \
-  libwebkit2gtk-4.1-dev
-
-# ffmpeg (runtime dependency)
-sudo apt-get install -y ffmpeg
-```
-
-### Build Tools (Both Platforms)
+### Build Tools
 
 **Rust:**
 ```bash
@@ -228,11 +201,7 @@ Pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) run 
 pnpm tauri build
 ```
 
-This produces:
-- **macOS:** `.dmg` installer in `src-tauri/target/release/bundle/dmg/`
-- **Linux:** `.AppImage` and `.deb` in `src-tauri/target/release/bundle/`
-
-The macOS build is code-signed with a Developer ID and hardened runtime.
+This produces a `.dmg` installer in `src-tauri/target/release/bundle/dmg/`, code-signed with a Developer ID and hardened runtime.
 
 ## Configuration
 
@@ -245,6 +214,8 @@ All settings are managed in-app via the Settings screen. No config files to edit
 3. Enter your API key and click **Test** to verify
 4. Add voices: enter a **name** and **voice ID** (find IDs in your ElevenLabs voice library)
 5. Set a default voice
+
+> **Tip:** Set `export ELEVENLABS_API_KEY=sk_...` in your shell profile (`.zshrc` / `.bashrc`) and the app will auto-detect it — no need to enter the key manually in Settings.
 
 ### Local TTS Setup (Optional)
 
@@ -284,7 +255,7 @@ After connecting, the app provides a shareable Google Drive link when you save a
 
 ### Settings Storage
 
-- **Desktop app:** `~/.local/share/com.voiceover.app/config.json` (Linux) or `~/Library/Application Support/com.voiceover.app/config.json` (macOS)
+- **Desktop app:** `~/Library/Application Support/com.voiceover.app/config.json`
 - **Browser mode:** `localStorage` (with `static/_config.json` as dev-only fallback, stripped from production builds)
 
 ## Project Structure
@@ -294,33 +265,47 @@ voiceover/
 ├── src/                          # Svelte frontend
 │   ├── app.css                   # Global styles (dark theme)
 │   ├── lib/
-│   │   ├── logger.ts             # Structured logging ([VO:*] prefix)
 │   │   ├── recorder.svelte.ts    # WebRTC capture + MediaRecorder
 │   │   ├── state.svelte.ts       # App state (Svelte 5 runes)
 │   │   ├── voicebox.ts           # Local TTS client (routes through Tauri IPC)
-│   │   └── WebcamBubble.svelte   # Webcam bubble overlay (live preview)
-│   └── routes/
+│   │   ├── logger.ts             # Structured logging ([VO:*] prefix)
+│   │   ├── library.svelte.ts     # Video library state & sorting
+│   │   ├── drive.ts              # Google Drive upload utilities
+│   │   ├── tauri.ts              # IPC wrapper (tauriInvoke)
+│   │   ├── Sidebar.svelte        # Navigation sidebar
+│   │   ├── StatusBar.svelte      # Bottom status bar (TTS status, profile, output dir)
+│   │   ├── RecordingCard.svelte  # Video thumbnail card (library)
+│   │   ├── WebcamBubble.svelte   # Webcam bubble overlay (live preview)
+│   │   └── RegionSelector.svelte # Screen region selection overlay
+│   └── routes/(app)/
 │       ├── +layout.svelte        # Root layout, config loading
 │       ├── +page.svelte          # Home screen (record controls)
 │       ├── preview/+page.svelte  # Preview, process, save/upload
 │       ├── settings/+page.svelte # API key, voices, Drive, output
 │       ├── create-voice/+page.svelte # Voice creation wizard
+│       ├── library/+page.svelte  # Video library browser
 │       └── widget/+page.svelte   # Floating recording widget
 ├── src-tauri/                    # Rust backend
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
+│   ├── entitlements.plist        # macOS security entitlements
 │   ├── capabilities/
 │   │   └── default.json          # Tauri permissions
 │   └── src/
 │       ├── main.rs               # Entry point
 │       ├── lib.rs                # Tauri builder, plugin registration
-│       ├── config.rs             # JSON config read/write
+│       ├── config.rs             # JSON config read/write + env var fallback
 │       ├── prerequisites.rs      # ffmpeg detection
-│       ├── ffmpeg.rs             # Audio extraction + video muxing
+│       ├── ffmpeg.rs             # Audio extraction, video muxing, duration probing
 │       ├── elevenlabs.rs         # S2S API client (reqwest)
-│       ├── local_tts.rs          # Local TTS client (transcribe → generate)
+│       ├── local_tts.rs          # Local TTS client (transcribe → generate → voice convert)
+│       ├── models.rs             # Model download + status (HuggingFace)
 │       ├── pipeline.rs           # Processing orchestrator
+│       ├── sidecar.rs            # Sidecar process management (start/stop/health)
+│       ├── library.rs            # Video library (list, rename, delete, thumbnails)
 │       ├── google_drive.rs       # OAuth2 + upload
+│       ├── secrets.rs            # OS keychain storage for API keys
+│       ├── tts_provider.rs       # Provider enum (ElevenLabs / Local)
 │       └── commands/
 │           ├── recording.rs      # Chunk saving, finalization
 │           └── window.rs         # Widget window management
@@ -328,10 +313,14 @@ voiceover/
 │   ├── server.py                 # Main FastAPI server
 │   ├── tts.py                    # Qwen TTS synthesis + Whisper transcription
 │   ├── profiles.py               # Voice profile management
-│   ├── chunked_tts.py            # Chunked generation for long text
-│   └── requirements.txt          # Python dependencies (mlx, qwen-tts, torch)
+│   ├── chunked_tts.py            # Chunked generation + timestamp-aware assembly
+│   ├── requirements.txt          # Python dependencies (mlx, qwen-tts, torch)
+│   ├── entitlements.plist        # Sidecar code signing entitlements
+│   └── voiceover-tts.spec        # PyInstaller build spec
 ├── static/
 │   └── ffmpeg/                   # ffmpeg.wasm core (browser mode)
+├── scripts/
+│   └── build-sidecar.sh          # Build + sign + test sidecar binary
 ├── package.json
 ├── svelte.config.js
 └── vite.config.ts
@@ -384,7 +373,15 @@ These are the IPC commands exposed by the Rust backend, invoked from the fronten
 | `get_models_disk_usage` | Get disk usage of downloaded models |
 | `google_drive_connect` | Start Google Drive OAuth2 flow |
 | `google_drive_disconnect` | Disconnect Google Drive |
+| `poll_generation` | Poll TTS generation status |
+| `get_generation_audio` | Download generated audio as bytes |
 | `upload_to_drive` | Upload a file to Google Drive |
+| `list_recordings` | List saved recordings with metadata |
+| `generate_thumbnail` | Extract a thumbnail JPEG from a video |
+| `delete_recording` | Delete a recording and its companions |
+| `rename_recording` | Rename a recording file |
+| `open_in_system` | Open a file with the default system app |
+| `reveal_in_finder` | Reveal a file in Finder |
 
 ### Sidecar Routes
 
@@ -433,7 +430,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 ```
 [elevenlabs] S2S request: voice=Cb8NLd0s, input_size=156KB
 [elevenlabs] S2S response: status=200, elapsed=3.2s
-[pipeline] Complete: /home/user/Videos/VoiceOver/voiceover-123.mp4 (total 4.1s)
+[pipeline] Complete: /Users/you/Movies/VoiceOver/voiceover-123.mp4 (total 4.1s)
 ```
 
 ## Known Issues
@@ -444,6 +441,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
 - **Webcam bubble** — limited to bottom-left/bottom-right positions, captured at 640x480 @ 30fps.
 - **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect).
+- **TTS audio cutoff** — local TTS output may cut off the last 1–2 seconds of audio abruptly. Under investigation.
 
 ## License
 

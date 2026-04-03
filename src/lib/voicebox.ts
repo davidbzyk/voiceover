@@ -55,9 +55,26 @@ export class VoiceboxClient {
 		return JSON.parse(result);
 	}
 
-	/** Trigger model download */
-	async downloadModel(modelName: string): Promise<void> {
-		await this.jsonRequest('/models/download', 'POST', { model_name: modelName });
+	/** Trigger model download via the dedicated Rust command (handles SSE parsing). */
+	async downloadModel(
+		modelName: string,
+		onProgress?: (progress: number, status: string) => void
+	): Promise<void> {
+		const { invoke, Channel } = await import('@tauri-apps/api/core');
+
+		type ModelDownloadEvent =
+			| { event: 'progress'; data: { progress: number; status: string } }
+			| { event: 'complete'; data: { model: string } }
+			| { event: 'error'; data: { message: string } };
+
+		const onEvent = new Channel<ModelDownloadEvent>();
+		onEvent.onmessage = (msg) => {
+			if (msg.event === 'progress' && onProgress) {
+				onProgress(msg.data.progress, msg.data.status);
+			}
+		};
+
+		await invoke('download_model', { model: modelName, onEvent });
 	}
 
 	/** Create a new voice profile */

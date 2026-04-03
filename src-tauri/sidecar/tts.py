@@ -106,26 +106,14 @@ def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
     return phrases
 
 
-def _is_hallucinated(seg: dict) -> bool:
-    """Check if a Whisper segment is likely hallucinated."""
-    return (
-        seg.get("no_speech_prob", 0) > 0.6
-        or seg.get("compression_ratio", 0) > 2.4
-    )
-
-
 def _filter_segments(raw_segments: list) -> list:
-    """Filter hallucinated Whisper segments and fix overlapping timestamps.
+    """Filter empty Whisper segments and fix overlapping timestamps.
 
-    Removes segments with high no_speech_prob (>0.6), high compression_ratio
-    (>2.4, indicates repetitive/hallucinated text), or empty text.
     Clamps overlapping timestamps so segment[n+1].start >= segment[n].end.
     """
     filtered = []
     for seg in raw_segments:
         if not isinstance(seg, dict):
-            continue
-        if _is_hallucinated(seg):
             continue
         text = seg.get("text", "").strip()
         if not text:
@@ -167,8 +155,16 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
         _whisper_model = load_stt_model("mlx-community/whisper-large-v3-turbo")
         logger.info("Whisper model loaded")
 
-    # Use word_timestamps=True for precise per-word timing
-    result = _whisper_model.generate(str(audio_path), word_timestamps=True)
+    # Use word_timestamps=True for precise per-word timing.
+    # Disable compression_ratio and no_speech thresholds so Whisper doesn't
+    # suppress repetitive content (it would collapse repeated phrases).
+    result = _whisper_model.generate(
+        str(audio_path),
+        word_timestamps=True,
+        compression_ratio_threshold=None,
+        no_speech_threshold=None,
+        condition_on_previous_text=False,
+    )
 
     # Extract text and raw segments from result
     raw_segments = []
@@ -203,10 +199,12 @@ def transcribe(audio_path: str, models_dir: str) -> dict:
     except Exception as e:
         logging.getLogger(__name__).warning("Could not read audio duration from %s: %s", audio_path, e)
 
-    # Collect all words across segments and group into phrases by pauses
+    # Collect all words across segments — word timestamps are ground truth,
+    # so skip the hallucination filter here (it's too aggressive for
+    # repetitive content like repeated phrases).
     all_words = []
     for seg in raw_segments:
-        if not isinstance(seg, dict) or _is_hallucinated(seg):
+        if not isinstance(seg, dict):
             continue
         words = seg.get("words", []) or []
         all_words.extend(words)

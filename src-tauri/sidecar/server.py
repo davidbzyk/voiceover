@@ -420,11 +420,15 @@ async def _do_generate(
                     sample_rate = chunk_sr
             audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
-        # Pad or truncate to match original duration so ffmpeg
-        # (which no longer uses -shortest) doesn't produce mismatched output
+        # Pad or truncate to match original duration with smooth fade-out
         if original_duration > 0 and sample_rate:
             target_samples = int(original_duration * sample_rate)
             if len(audio) < target_samples:
+                # Fade out last 300ms before silence padding
+                fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
+                if fade_samples > 0:
+                    fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                    audio[-fade_samples:] *= fade
                 audio = np.pad(audio, (0, target_samples - len(audio)))
             elif len(audio) > target_samples:
                 audio = audio[:target_samples]
@@ -594,10 +598,15 @@ async def _do_voice_convert(
         audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
         sample_rate = model_sr
 
-    # Pad or truncate to match original duration (same as TTS path)
+    # Pad or truncate to match original duration with a smooth fade-out
     if original_duration > 0 and sample_rate:
         target_samples = int(original_duration * sample_rate)
         if len(audio) < target_samples:
+            # Fade out last 300ms before silence padding
+            fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
+            if fade_samples > 0:
+                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                audio[-fade_samples:] *= fade
             audio = np.pad(audio, (0, target_samples - len(audio)))
         elif len(audio) > target_samples:
             audio = audio[:target_samples]
@@ -650,6 +659,7 @@ async def health():
         "models": {
             "whisper": _is_model_downloaded(models_dir, "whisper"),
             "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "qwen"),
+            "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "cosyvoice"),
         },
     }
 
@@ -1010,6 +1020,7 @@ async def models_status():
     models_dir = DATA_DIR / "models"
     whisper_downloaded = _is_model_downloaded(models_dir, "whisper")
     qwen_downloaded = _is_model_downloaded(models_dir, "qwen")
+    cosyvoice_downloaded = _is_model_downloaded(models_dir, "cosyvoice")
 
     return {
         "models": [
@@ -1024,6 +1035,12 @@ async def models_status():
                 "display_name": "Qwen TTS 1.7B",
                 "downloaded": qwen_downloaded,
                 "loaded": is_qwen_loaded(),
+            },
+            {
+                "model_name": "cosyvoice3-0.5B",
+                "display_name": "CosyVoice3 0.5B",
+                "downloaded": cosyvoice_downloaded,
+                "loaded": _vc_model is not None,
             },
         ]
     }
@@ -1042,6 +1059,9 @@ async def download_model(request: dict):
         "qwen": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         "qwen-tts-1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         "qwen-tts-1.7b": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "cosyvoice3": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "cosyvoice3-0.5B": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "cosyvoice3-0.5b": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
     }
 
     if model not in model_map:

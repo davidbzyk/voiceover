@@ -1,42 +1,8 @@
-"""Tests for tts.py — word grouping, segment filtering, hallucination detection."""
+"""Tests for tts.py — word grouping and segment filtering."""
 
 import pytest
 
-from tts import _filter_segments, _group_words_into_phrases, _is_hallucinated
-
-
-# ---------------------------------------------------------------------------
-# _is_hallucinated
-# ---------------------------------------------------------------------------
-
-
-class TestIsHallucinated:
-    def test_normal_segment_not_hallucinated(self):
-        seg = {"no_speech_prob": 0.1, "compression_ratio": 1.5}
-        assert _is_hallucinated(seg) is False
-
-    def test_high_no_speech_prob(self):
-        seg = {"no_speech_prob": 0.8, "compression_ratio": 1.5}
-        assert _is_hallucinated(seg) is True
-
-    def test_boundary_no_speech_prob(self):
-        assert _is_hallucinated({"no_speech_prob": 0.6}) is False
-        assert _is_hallucinated({"no_speech_prob": 0.61}) is True
-
-    def test_high_compression_ratio(self):
-        seg = {"no_speech_prob": 0.1, "compression_ratio": 3.0}
-        assert _is_hallucinated(seg) is True
-
-    def test_boundary_compression_ratio(self):
-        assert _is_hallucinated({"compression_ratio": 2.4}) is False
-        assert _is_hallucinated({"compression_ratio": 2.41}) is True
-
-    def test_missing_keys_default_to_zero(self):
-        assert _is_hallucinated({}) is False
-
-    def test_both_bad(self):
-        seg = {"no_speech_prob": 0.9, "compression_ratio": 5.0}
-        assert _is_hallucinated(seg) is True
+from tts import _filter_segments, _group_words_into_phrases
 
 
 # ---------------------------------------------------------------------------
@@ -51,16 +17,14 @@ class TestFilterSegments:
     def test_filters_non_dict(self):
         assert _filter_segments(["not a dict", 42, None]) == []
 
-    def test_filters_hallucinated_segments(self):
+    def test_keeps_all_segments_with_text(self):
         segments = [
             {"start": 0, "end": 1, "text": "real", "no_speech_prob": 0.1, "compression_ratio": 1.2},
-            {"start": 1, "end": 2, "text": "hallucinated", "no_speech_prob": 0.9, "compression_ratio": 1.0},
+            {"start": 1, "end": 2, "text": "repetitive", "no_speech_prob": 0.9, "compression_ratio": 3.0},
             {"start": 2, "end": 3, "text": "also real", "no_speech_prob": 0.2, "compression_ratio": 1.5},
         ]
         result = _filter_segments(segments)
-        assert len(result) == 2
-        assert result[0]["text"] == "real"
-        assert result[1]["text"] == "also real"
+        assert len(result) == 3
 
     def test_filters_empty_text(self):
         segments = [

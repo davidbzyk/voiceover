@@ -110,27 +110,18 @@
 		}
 
 		try {
-			// Download each missing model
 			for (const model of missing) {
-				downloadError = `Downloading ${model.display_name}...`;
-				await client.downloadModel(model.model_name);
+				await client.downloadModel(model.model_name, (_progress, status) => {
+					downloadError = status;
+				});
 			}
 			downloadError = '';
 
-			// Poll until all models show as downloaded
-			let attempts = 0;
-			while (attempts < 600) {
-				await new Promise((r) => setTimeout(r, 3000));
-				const updated = await client.getModelStatus();
-				if (updated.every((m) => m.downloaded)) {
-					models = updated;
-					step = 2;
-					downloading = false;
-					return;
-				}
-				attempts++;
+			// Refresh model status after all downloads complete
+			models = await client.getModelStatus();
+			if (models.every((m) => m.downloaded)) {
+				step = 2;
 			}
-			downloadError = 'Download timed out. Try restarting the app.';
 		} catch (err) {
 			downloadError = String(err);
 		}
@@ -318,12 +309,23 @@
 						<span>TTS engine ready</span>
 					</div>
 
+					<!-- Show status of each model -->
+					{#each models as model}
+						<div class="status-row">
+							<span class="status-dot" class:connected={model.downloaded}></span>
+							<span>{model.display_name}</span>
+						</div>
+					{/each}
+
 					{@const missing = models.filter((m) => !m.downloaded)}
 					{#if missing.length > 0}
 						<div class="hint-text">
-							{missing.length === 1
-								? `${missing[0].display_name} needs to be downloaded.`
-								: `${missing.map((m) => m.display_name).join(' and ')} need to be downloaded (~4GB total).`}
+							{#if missing.length === 1}
+								{missing[0].display_name} needs to be downloaded.
+							{:else}
+								{@const names = missing.map((m) => m.display_name)}
+								{names.slice(0, -1).join(', ')} and {names[names.length - 1]} need to be downloaded (~5GB total).
+							{/if}
 						</div>
 						<button
 							class="small-btn accent"

@@ -390,6 +390,7 @@ pub async fn voice_convert(
     profile_id: &str,
     input_wav: &Path,
     output_wav: &Path,
+    video_duration: Option<f64>,
 ) -> Result<(), String> {
     let base = format!("http://127.0.0.1:{}", port);
     let start = std::time::Instant::now();
@@ -405,6 +406,7 @@ pub async fn voice_convert(
     let body = serde_json::json!({
         "profile_id": profile_id,
         "source_audio_path": input_path_str,
+        "original_duration": video_duration.unwrap_or(0.0),
     });
 
     let response = send_with_timeout(
