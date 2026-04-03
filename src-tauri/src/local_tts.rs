@@ -45,6 +45,10 @@ pub struct ModelInfo {
     pub model_name: String,
     pub display_name: String,
     #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub recommended: bool,
+    #[serde(default)]
     pub downloaded: bool,
     #[serde(default)]
     pub loaded: bool,
@@ -787,14 +791,18 @@ mod tests {
         let json = r#"{"model_name": "tts-v1", "display_name": "TTS Model v1"}"#;
         let info: ModelInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.model_name, "tts-v1");
+        assert_eq!(info.category, "");
+        assert!(!info.recommended);
         assert!(!info.downloaded);
         assert!(!info.loaded);
     }
 
     #[test]
     fn model_info_deserializes_full() {
-        let json = r#"{"model_name": "tts-v1", "display_name": "TTS Model v1", "downloaded": true, "loaded": true}"#;
+        let json = r#"{"model_name": "tts-v1", "display_name": "TTS Model v1", "category": "transcription", "recommended": true, "downloaded": true, "loaded": true}"#;
         let info: ModelInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.category, "transcription");
+        assert!(info.recommended);
         assert!(info.downloaded);
         assert!(info.loaded);
     }
