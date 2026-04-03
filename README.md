@@ -461,6 +461,7 @@ When running `pnpm tauri dev`, Rust logs appear in the terminal:
 - **ElevenLabs S2S limit** — maximum 5 minutes of audio per API call.
 - **Webcam bubble** — limited to bottom-left/bottom-right positions, captured at 640x480 @ 30fps.
 - **Google Drive OAuth** — connection must be established from the desktop app (uses loopback redirect).
+- **TTS audio cutoff** — local TTS output may cut off the last 1–2 seconds of audio abruptly. Under investigation.
 
 ## License
 
