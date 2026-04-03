@@ -304,17 +304,31 @@ mod tests {
 
         let dir = temp_recording_dir();
         let pid = std::process::id();
+        let tid = std::thread::current().id();
 
-        // Create an "old" directory and backdate it to 2 hours ago
-        let old_dir = dir.join(format!("test-cleanup-old-{pid}"));
+        // Use thread ID + PID for unique names (cargo runs tests in parallel threads)
+        let old_dir = dir.join(format!("test-cleanup-old-{pid}-{tid:?}"));
+        let recent_file = dir.join(format!("test-cleanup-recent-{pid}-{tid:?}.webm"));
+
+        // Clean up any leftover artifacts from a previous failed run
+        fs::remove_dir_all(&old_dir).ok();
+        fs::remove_file(&recent_file).ok();
+
+        // Create both entries FIRST, then backdate — avoids parent dir mtime
+        // updates from file creation interfering with the backdated entry
         fs::create_dir_all(&old_dir).unwrap();
         fs::write(old_dir.join("chunk.webm"), b"old data").unwrap();
-        let two_hours_ago = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(7200));
-        filetime::set_file_mtime(&old_dir, two_hours_ago).unwrap();
-
-        // Create a "recent" file (mtime = now, untouched)
-        let recent_file = dir.join(format!("test-cleanup-recent-{pid}.webm"));
         fs::write(&recent_file, b"recent data").unwrap();
+
+        // Now backdate the old directory to 2 hours ago
+        let two_hours_ago = FileTime::from_system_time(SystemTime::now() - Duration::from_secs(7200));
+        filetime::set_file_times(&old_dir, two_hours_ago, two_hours_ago).unwrap();
+
+        // Verify the mtime was actually applied (APFS sanity check)
+        let actual_mtime = fs::metadata(&old_dir).unwrap().modified().unwrap();
+        let cutoff = SystemTime::now() - Duration::from_secs(3600);
+        assert!(actual_mtime < cutoff,
+            "filesystem did not honor mtime backdate — test environment issue");
 
         // Cleanup with 1-hour threshold: old dir should be removed, recent file preserved
         cleanup_stale_recordings(Duration::from_secs(3600));
