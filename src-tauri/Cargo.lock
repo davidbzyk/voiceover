@@ -4938,6 +4938,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "filetime",
+ "futures-util",
  "keyring",
  "log",
  "open",

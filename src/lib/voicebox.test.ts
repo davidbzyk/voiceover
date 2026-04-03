@@ -103,6 +103,70 @@ describe('VoiceboxClient', () => {
 			expect(result).toEqual(mockStatus);
 			expect(mockedInvoke).toHaveBeenCalledWith('check_model_status');
 		});
+
+		it('returns expanded model status with category and recommended fields', async () => {
+			const mockStatus = [
+				{
+					model_name: 'whisper-large-v3-turbo',
+					display_name: 'Whisper Large v3 Turbo',
+					category: 'transcription',
+					recommended: true,
+					downloaded: true,
+					loaded: true
+				},
+				{
+					model_name: 'qwen-tts-1.7B',
+					display_name: 'Qwen TTS 1.7B',
+					category: 'tts',
+					recommended: false,
+					downloaded: false,
+					loaded: false
+				},
+				{
+					model_name: 'cosyvoice3-0.5B',
+					display_name: 'CosyVoice3 0.5B',
+					category: 'voice-conversion',
+					recommended: false,
+					downloaded: true,
+					loaded: false
+				}
+			];
+			mockedInvoke.mockResolvedValueOnce(mockStatus);
+
+			const result = await client.getModelStatus();
+			expect(result).toHaveLength(3);
+
+			// Verify category field is present and valid
+			const categories = result.map((m: any) => m.category);
+			expect(categories).toContain('transcription');
+			expect(categories).toContain('tts');
+			expect(categories).toContain('voice-conversion');
+
+			// Verify recommended field is present and boolean
+			for (const model of result) {
+				expect(typeof (model as any).recommended).toBe('boolean');
+			}
+
+			// Verify the recommended model is whisper-large-v3-turbo
+			const recommended = result.find((m: any) => m.recommended);
+			expect(recommended).toBeDefined();
+			expect((recommended as any).model_name).toBe('whisper-large-v3-turbo');
+		});
+	});
+
+	describe('deleteModel', () => {
+		it('invokes the delete_model command with model name', async () => {
+			mockedInvoke.mockResolvedValueOnce(undefined);
+
+			await client.deleteModel('whisper-small');
+			expect(mockedInvoke).toHaveBeenCalledWith('delete_model', { model: 'whisper-small' });
+		});
+
+		it('propagates errors from Tauri layer', async () => {
+			mockedInvoke.mockRejectedValueOnce(new Error('Model not found'));
+
+			await expect(client.deleteModel('nonexistent')).rejects.toThrow('Model not found');
+		});
 	});
 
 	describe('listProfiles', () => {

@@ -110,6 +110,9 @@ pub struct AppConfig {
     /// Local TTS mode: "tts" (text-to-speech via Qwen) or "vc" (voice conversion via CosyVoice)
     #[serde(default)]
     pub local_tts_mode: LocalTtsMode,
+    /// Whisper model to use for transcription
+    #[serde(default = "default_whisper_model")]
+    pub whisper_model: String,
 }
 
 fn default_output_dir() -> String {
@@ -127,6 +130,10 @@ fn default_local_endpoint() -> String {
     "http://localhost:17493".to_string()
 }
 
+fn default_whisper_model() -> String {
+    "whisper-large-v3-turbo".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -140,6 +147,7 @@ impl Default for AppConfig {
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
             local_tts_mode: LocalTtsMode::default(),
+            whisper_model: default_whisper_model(),
         }
     }
 }
@@ -366,6 +374,7 @@ mod tests {
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
             local_tts_mode: LocalTtsMode::Tts,
+            whisper_model: "whisper-large-v3-turbo".to_string(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -382,6 +391,7 @@ mod tests {
         assert_eq!(deserialized.preferences.webcam_position, WebcamPosition::BottomLeft);
         assert_eq!(deserialized.google_drive.connected, true);
         assert_eq!(deserialized.google_drive.expires_at, 1700000000);
+        assert_eq!(deserialized.whisper_model, "whisper-large-v3-turbo");
     }
 
     #[test]
@@ -397,6 +407,18 @@ mod tests {
         assert!(!config.preferences.webcam_enabled);
         assert_eq!(config.preferences.webcam_position, WebcamPosition::BottomRight);
         assert!(!config.google_drive.connected);
+        assert_eq!(config.whisper_model, "whisper-large-v3-turbo");
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_custom_whisper_model() {
+        let mut config = AppConfig::default();
+        config.whisper_model = "whisper-small-mlx".to_string();
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.whisper_model, "whisper-small-mlx");
     }
 
     #[test]

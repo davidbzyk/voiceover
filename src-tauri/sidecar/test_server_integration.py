@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from starlette.testclient import TestClient
 
-from server import app
+from server import app, MODEL_REGISTRY, _LEGACY_MODEL_ALIASES
 
 
 @pytest.fixture
@@ -214,13 +214,33 @@ class TestModelEndpoints:
         data = response.json()
         assert "models" in data
         assert isinstance(data["models"], list)
-        assert len(data["models"]) == 3
+        assert len(data["models"]) == 4
 
     def test_download_unknown_model(self, client):
         response = client.post("/models/download", json={
             "model_name": "nonexistent-model",
         })
         assert response.status_code == 400
+
+    def test_delete_unknown_model(self, client):
+        """DELETE with an unknown model name should return 400."""
+        response = client.delete("/models/nonexistent-model")
+        assert response.status_code == 400
+        data = response.json()
+        assert "error" in data
+
+    def test_delete_not_downloaded_model(self, client):
+        """DELETE a valid but not-downloaded model should return 404."""
+        response = client.delete("/models/whisper-large-v3-turbo")
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+
+    def test_delete_legacy_alias_resolves(self, client):
+        """DELETE using a legacy alias should resolve and attempt deletion."""
+        response = client.delete("/models/whisper")
+        # Should resolve to whisper-large-v3-turbo and return 404 (not downloaded)
+        assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +366,74 @@ class TestHappyPaths:
         for m in models:
             assert "model_name" in m
             assert "downloaded" in m
+
+
+# ---------------------------------------------------------------------------
+# MODEL_REGISTRY
+# ---------------------------------------------------------------------------
+
+
+class TestModelRegistry:
+    def test_registry_has_expected_entry_count(self):
+        assert len(MODEL_REGISTRY) == 4
+
+    def test_registry_contains_expected_models(self):
+        expected = {
+            "whisper-medium",
+            "whisper-large-v3-turbo",
+            "qwen-tts-1.7B",
+            "cosyvoice3-0.5B",
+        }
+        assert set(MODEL_REGISTRY.keys()) == expected
+
+    def test_each_entry_has_required_fields(self):
+        required_fields = {"repo_id", "display_name", "category", "recommended"}
+        for model_name, entry in MODEL_REGISTRY.items():
+            for field in required_fields:
+                assert field in entry, f"Model '{model_name}' missing field '{field}'"
+
+    def test_categories_are_valid_values(self):
+        valid_categories = {"transcription", "tts", "voice-conversion"}
+        for model_name, entry in MODEL_REGISTRY.items():
+            assert entry["category"] in valid_categories, (
+                f"Model '{model_name}' has invalid category '{entry['category']}'"
+            )
+
+    def test_recommended_field_is_boolean(self):
+        for model_name, entry in MODEL_REGISTRY.items():
+            assert isinstance(entry["recommended"], bool), (
+                f"Model '{model_name}' recommended field is not boolean"
+            )
+
+    def test_repo_id_is_nonempty_string(self):
+        for model_name, entry in MODEL_REGISTRY.items():
+            assert isinstance(entry["repo_id"], str) and len(entry["repo_id"]) > 0, (
+                f"Model '{model_name}' has empty or non-string repo_id"
+            )
+
+
+# ---------------------------------------------------------------------------
+# _LEGACY_MODEL_ALIASES
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyModelAliases:
+    def test_all_aliases_map_to_valid_registry_keys(self):
+        for alias, canonical in _LEGACY_MODEL_ALIASES.items():
+            assert canonical in MODEL_REGISTRY, (
+                f"Legacy alias '{alias}' maps to '{canonical}' which is not in MODEL_REGISTRY"
+            )
+
+    def test_whisper_alias_maps_to_turbo(self):
+        assert _LEGACY_MODEL_ALIASES["whisper"] == "whisper-large-v3-turbo"
+
+    def test_qwen_alias_maps_to_canonical(self):
+        assert _LEGACY_MODEL_ALIASES["qwen"] == "qwen-tts-1.7B"
+
+    def test_cosyvoice3_alias_maps_to_canonical(self):
+        assert _LEGACY_MODEL_ALIASES["cosyvoice3"] == "cosyvoice3-0.5B"
+
+    def test_case_insensitive_aliases_exist(self):
+        """Lowercase aliases for case-sensitive model names should exist."""
+        assert "qwen-tts-1.7b" in _LEGACY_MODEL_ALIASES
+        assert "cosyvoice3-0.5b" in _LEGACY_MODEL_ALIASES

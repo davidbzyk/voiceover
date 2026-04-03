@@ -42,6 +42,10 @@ describe('AppState defaults', () => {
 	it('has Google Drive disconnected', () => {
 		expect(appState.config.google_drive.connected).toBe(false);
 	});
+
+	it('has whisper_model defaulting to whisper-large-v3-turbo', () => {
+		expect(appState.config.whisper_model).toBe('whisper-large-v3-turbo');
+	});
 });
 
 describe('derived: selectedVoice', () => {

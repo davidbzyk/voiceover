@@ -2,10 +2,11 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 
-	const navItems = [
+	const navItems: { path: string; label: string; icon: string; indent?: boolean }[] = [
 		{ path: '/', label: 'Record', icon: '🎙️' },
 		{ path: '/library', label: 'Library', icon: '📁' },
-		{ path: '/settings', label: 'Settings', icon: '⚙️' }
+		{ path: '/settings', label: 'Settings', icon: '⚙️' },
+		{ path: '/models', label: 'Models', icon: '🧠', indent: true }
 	];
 
 	function isActive(itemPath: string, currentPath: string): boolean {
@@ -26,6 +27,7 @@
 			<button
 				class="nav-item"
 				class:active={isActive(item.path, $page.url.pathname)}
+				class:indent={item.indent}
 				onclick={() => goto(item.path)}
 			>
 				<span class="nav-icon">{item.icon}</span>
@@ -78,6 +80,14 @@
 		color: #f1f5f9;
 		background: #1e293b;
 		border-left-color: #f97316;
+	}
+	.nav-item.indent {
+		padding-left: 20px;
+		font-size: 12px;
+		opacity: 0.85;
+	}
+	.nav-item.indent .nav-icon {
+		font-size: 13px;
 	}
 	.nav-icon {
 		font-size: 15px;

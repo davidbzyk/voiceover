@@ -5,6 +5,7 @@ Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
 """
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
@@ -34,6 +35,12 @@ LANGUAGE_CODE_TO_NAME = {
 # ---------------------------------------------------------------------------
 
 _whisper_model = None
+_whisper_model_name = None  # Track which model is loaded
+
+WHISPER_MODELS = {
+    "whisper-medium": "mlx-community/whisper-medium-mlx",
+    "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
 
 
 def _group_words_into_phrases(words: list, min_pause_sec: float = 0.3) -> list:
@@ -136,24 +143,48 @@ def _filter_segments(raw_segments: list) -> list:
     return filtered
 
 
-def transcribe(audio_path: str, models_dir: str) -> dict:
+def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-large-v3-turbo") -> dict:
     """Transcribe audio file using MLX Whisper via mlx-audio.
 
     Uses mlx_audio.stt.load() which handles model loading correctly
     in PyInstaller binaries (unlike mlx_whisper which has npz issues).
 
+    Args:
+        audio_path: Path to the audio file to transcribe.
+        models_dir: Path to HuggingFace model cache directory.
+        model_name: Key into WHISPER_MODELS dict (default: whisper-large-v3-turbo).
+
     Returns dict with text, duration, and segments (with timestamps).
     """
-    global _whisper_model
+    global _whisper_model, _whisper_model_name
+
+    # Resolve model_name to HuggingFace repo ID
+    if model_name not in WHISPER_MODELS:
+        raise ValueError(
+            f"Unknown whisper model: {model_name}. "
+            f"Valid: {list(WHISPER_MODELS.keys())}"
+        )
+    repo_id = WHISPER_MODELS[model_name]
 
     os.environ["HF_HUB_CACHE"] = models_dir
 
+    # Reload if a different model is requested
+    if model_name != _whisper_model_name:
+        _whisper_model = None
+        gc.collect()
+        try:
+            import mlx.core as mx
+            mx.metal.clear_cache()
+        except Exception:
+            pass
+
     if _whisper_model is None:
-        logger.info("Loading Whisper model (first use)...")
+        logger.info("Loading Whisper model '%s' (%s)...", model_name, repo_id)
         from mlx_audio.stt.utils import load_model as load_stt_model
 
-        _whisper_model = load_stt_model("mlx-community/whisper-large-v3-turbo")
-        logger.info("Whisper model loaded")
+        _whisper_model = load_stt_model(repo_id)
+        _whisper_model_name = model_name
+        logger.info("Whisper model loaded: %s", model_name)
 
     # Use word_timestamps=True for precise per-word timing.
     # Disable compression_ratio and no_speech thresholds so Whisper doesn't

@@ -3,6 +3,8 @@
 	import { appState, isTauri, type Voice } from '$lib/state.svelte';
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
+	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { getRequiredModelNames } from '$lib/models';
 	import { onMount } from 'svelte';
 
 	let newVoiceName = $state('');
@@ -21,8 +23,29 @@
 	let localLoading = $state(false);
 	let localError = $state('');
 
+	// Model status for smart button
+	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
+
+	let requiredModelsReady = $derived.by(() => {
+		const required = getRequiredModelNames(appState.config);
+		return required.every((name) =>
+			modelStatuses.some((m) => m.model_name === name && m.downloaded)
+		);
+	});
+
+	async function loadModelStatuses() {
+		try {
+			modelStatuses = await new VoiceboxClient().getModelStatus();
+		} catch (err) {
+			logger.error('settings', 'Failed to check model status', err);
+		}
+	}
+
 	onMount(() => {
 		loadLocalVoices();
+		if (appState.config.provider === 'local') {
+			loadModelStatuses();
+		}
 	});
 
 	async function loadLocalVoices() {
@@ -265,9 +288,15 @@
 						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
 					{/if}
 
-					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
-						+ Create Voice
-					</button>
+					{#if requiredModelsReady}
+						<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+							+ Create Voice
+						</button>
+					{:else}
+						<button class="small-btn accent" onclick={() => goto('/models')}>
+							Setup Models
+						</button>
+					{/if}
 				</div>
 
 				<div class="section-header">
