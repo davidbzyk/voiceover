@@ -110,27 +110,18 @@
 		}
 
 		try {
-			// Download each missing model
 			for (const model of missing) {
-				downloadError = `Downloading ${model.display_name}...`;
-				await client.downloadModel(model.model_name);
+				await client.downloadModel(model.model_name, (_progress, status) => {
+					downloadError = status;
+				});
 			}
 			downloadError = '';
 
-			// Poll until all models show as downloaded
-			let attempts = 0;
-			while (attempts < 600) {
-				await new Promise((r) => setTimeout(r, 3000));
-				const updated = await client.getModelStatus();
-				if (updated.every((m) => m.downloaded)) {
-					models = updated;
-					step = 2;
-					downloading = false;
-					return;
-				}
-				attempts++;
+			// Refresh model status after all downloads complete
+			models = await client.getModelStatus();
+			if (models.every((m) => m.downloaded)) {
+				step = 2;
 			}
-			downloadError = 'Download timed out. Try restarting the app.';
 		} catch (err) {
 			downloadError = String(err);
 		}

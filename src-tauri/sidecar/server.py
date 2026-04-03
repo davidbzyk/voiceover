@@ -650,6 +650,7 @@ async def health():
         "models": {
             "whisper": _is_model_downloaded(models_dir, "whisper"),
             "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "qwen"),
+            "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "cosyvoice"),
         },
     }
 
@@ -1010,6 +1011,7 @@ async def models_status():
     models_dir = DATA_DIR / "models"
     whisper_downloaded = _is_model_downloaded(models_dir, "whisper")
     qwen_downloaded = _is_model_downloaded(models_dir, "qwen")
+    cosyvoice_downloaded = _is_model_downloaded(models_dir, "cosyvoice")
 
     return {
         "models": [
@@ -1024,6 +1026,12 @@ async def models_status():
                 "display_name": "Qwen TTS 1.7B",
                 "downloaded": qwen_downloaded,
                 "loaded": is_qwen_loaded(),
+            },
+            {
+                "model_name": "cosyvoice3-0.5B",
+                "display_name": "CosyVoice3 0.5B",
+                "downloaded": cosyvoice_downloaded,
+                "loaded": _vc_model is not None,
             },
         ]
     }
@@ -1042,6 +1050,9 @@ async def download_model(request: dict):
         "qwen": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         "qwen-tts-1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         "qwen-tts-1.7b": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "cosyvoice3": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "cosyvoice3-0.5B": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "cosyvoice3-0.5b": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
     }
 
     if model not in model_map:
