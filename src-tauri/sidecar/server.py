@@ -1141,6 +1141,8 @@ async def download_model(request: dict):
                 )
 
             path = await asyncio.to_thread(_download)
+            # Invalidate the model cache so /models/status returns fresh results
+            _model_cache.pop(repo_id, None)
             yield f"data: {json.dumps({'progress': 1.0, 'status': 'Download complete', 'path': str(path)})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'progress': -1, 'status': f'Download failed: {e}', 'error': str(e)})}\n\n"
