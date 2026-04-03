@@ -312,9 +312,12 @@
 					{@const missing = models.filter((m) => !m.downloaded)}
 					{#if missing.length > 0}
 						<div class="hint-text">
-							{missing.length === 1
-								? `${missing[0].display_name} needs to be downloaded.`
-								: `${missing.map((m) => m.display_name).join(' and ')} need to be downloaded (~4GB total).`}
+							{#if missing.length === 1}
+								{missing[0].display_name} needs to be downloaded.
+							{:else}
+								{@const names = missing.map((m) => m.display_name)}
+								{names.slice(0, -1).join(', ')} and {names[names.length - 1]} need to be downloaded (~5GB total).
+							{/if}
 						</div>
 						<button
 							class="small-btn accent"
