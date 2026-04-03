@@ -420,11 +420,15 @@ async def _do_generate(
                     sample_rate = chunk_sr
             audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
-        # Pad or truncate to match original duration so ffmpeg
-        # (which no longer uses -shortest) doesn't produce mismatched output
+        # Pad or truncate to match original duration with smooth fade-out
         if original_duration > 0 and sample_rate:
             target_samples = int(original_duration * sample_rate)
             if len(audio) < target_samples:
+                # Fade out last 300ms before silence padding
+                fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
+                if fade_samples > 0:
+                    fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                    audio[-fade_samples:] *= fade
                 audio = np.pad(audio, (0, target_samples - len(audio)))
             elif len(audio) > target_samples:
                 audio = audio[:target_samples]
@@ -594,10 +598,15 @@ async def _do_voice_convert(
         audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
         sample_rate = model_sr
 
-    # Pad or truncate to match original duration (same as TTS path)
+    # Pad or truncate to match original duration with a smooth fade-out
     if original_duration > 0 and sample_rate:
         target_samples = int(original_duration * sample_rate)
         if len(audio) < target_samples:
+            # Fade out last 300ms before silence padding
+            fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
+            if fade_samples > 0:
+                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                audio[-fade_samples:] *= fade
             audio = np.pad(audio, (0, target_samples - len(audio)))
         elif len(audio) > target_samples:
             audio = audio[:target_samples]

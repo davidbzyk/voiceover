@@ -23,12 +23,9 @@ pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
 }
 
 /// Build ffmpeg arguments for audio replacement.
-/// Uses `-af apad -shortest` so that if the new audio is shorter than the video,
-/// it is silence-padded to match the video duration (preventing early cutoff).
 pub(crate) fn replace_audio_args(input_video: &str, new_audio: &str, output: &str) -> Vec<String> {
     ["-y", "-i", input_video, "-i", new_audio, "-map", "0:v", "-map", "1:a",
-     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-af", "apad", "-shortest",
-     "-c:v", "libx264", "-preset", "fast",
+     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
      "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
@@ -101,7 +98,10 @@ pub async fn probe_duration(input: &Path) -> Result<f64, String> {
         PathBuf::from("ffprobe")
     };
 
-    let output = Command::new(&ffprobe_bin)
+    // Try video stream duration first
+    let mut best_duration: f64 = 0.0;
+
+    let stream_output = Command::new(&ffprobe_bin)
         .args([
             "-v", "error",
             "-select_streams", "v:0",
@@ -112,17 +112,42 @@ pub async fn probe_duration(input: &Path) -> Result<f64, String> {
         .output()
         .await;
 
-    if let Ok(out) = output {
+    if let Ok(out) = stream_output {
         let stdout = String::from_utf8_lossy(&out.stdout);
         if let Ok(dur) = stdout.trim().parse::<f64>() {
             if dur > 0.0 {
-                return Ok(dur);
+                log::info!("[ffmpeg] ffprobe video stream duration: {:.2}s", dur);
+                best_duration = dur;
             }
         }
-        log::debug!("[ffmpeg] ffprobe returned non-positive or unparseable duration, falling back to ffmpeg decode");
-    } else {
-        log::debug!("[ffmpeg] ffprobe failed, falling back to ffmpeg decode");
     }
+
+    // Also try format/container duration (WebM often lacks per-stream duration
+    // but has a container-level Duration field)
+    let format_output = Command::new(&ffprobe_bin)
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            input_str,
+        ])
+        .output()
+        .await;
+
+    if let Ok(out) = format_output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if let Ok(dur) = stdout.trim().parse::<f64>() {
+            if dur > best_duration {
+                log::info!("[ffmpeg] ffprobe format duration: {:.2}s (longer than stream: {:.2}s)", dur, best_duration);
+                best_duration = dur;
+            }
+        }
+    }
+
+    if best_duration > 0.0 {
+        return Ok(best_duration);
+    }
+    log::debug!("[ffmpeg] ffprobe returned no usable duration, falling back to ffmpeg decode");
 
     // Fallback: use ffmpeg to decode and count frames (slower but works for WebM without duration)
     let output = Command::new(resolve_ffmpeg_path())
@@ -265,15 +290,11 @@ mod tests {
     }
 
     #[test]
-    fn replace_audio_args_uses_apad_shortest() {
+    fn replace_audio_args_no_shortest_flag() {
         let args = replace_audio_args("video.webm", "audio.mp3", "output.mp4");
         assert!(
-            args.contains(&"apad".to_string()),
-            "replace_audio_args should use apad filter to silence-pad short audio"
-        );
-        assert!(
-            args.contains(&"-shortest".to_string()),
-            "replace_audio_args should use -shortest so output ends at video duration"
+            !args.contains(&"-shortest".to_string()),
+            "replace_audio_args must not use -shortest (audio is padded to video duration upstream)"
         );
     }
 

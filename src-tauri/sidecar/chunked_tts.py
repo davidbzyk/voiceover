@@ -148,6 +148,42 @@ def concatenate_audio_chunks(
 # ---------------------------------------------------------------------------
 
 
+def _fix_degenerate_timestamps(word_timing: list) -> list:
+    """Interpolate timestamps for words where Whisper gave zero duration.
+
+    Whisper sometimes collapses multiple words to the same timestamp when it
+    loses track (common with repetitive content). This estimates real timing
+    by chaining degenerate words sequentially using the average valid word
+    duration from the same segment.
+    """
+    if not word_timing or len(word_timing) < 2:
+        return word_timing
+
+    # Calculate average duration from words with valid timestamps
+    valid_durations = [
+        w["end"] - w["start"]
+        for w in word_timing
+        if w["end"] - w["start"] > 0.01
+    ]
+    if not valid_durations:
+        return word_timing
+
+    avg_duration = sum(valid_durations) / len(valid_durations)
+    avg_gap = avg_duration * 0.15  # ~15% of word duration as inter-word gap
+
+    fixed = []
+    for w in word_timing:
+        fw = dict(w)
+        dur = w["end"] - w["start"]
+        if dur < 0.01:  # degenerate zero-duration word
+            if fixed:
+                fw["start"] = fixed[-1]["end"] + avg_gap
+            fw["end"] = fw["start"] + avg_duration
+        fixed.append(fw)
+
+    return fixed
+
+
 def pad_audio_to_match_timing(
     audio: np.ndarray,
     sample_rate: int,
@@ -169,6 +205,9 @@ def pad_audio_to_match_timing(
     if not word_timing or len(word_timing) < 2 or len(audio) == 0:
         return audio
 
+    # Fix degenerate timestamps before calculating gaps
+    word_timing = _fix_degenerate_timestamps(word_timing)
+
     # Calculate original inter-word gaps (the pauses TTS didn't reproduce)
     gaps = []
     for i in range(1, len(word_timing)):
@@ -188,7 +227,10 @@ def pad_audio_to_match_timing(
         return audio
 
     # Build the padded output by splitting TTS audio at estimated word
-    # boundaries and inserting silence proportional to original gaps
+    # boundaries and inserting silence proportional to original gaps.
+    # Apply short crossfades at boundaries for smooth transitions.
+    fade_samples = min(int(sample_rate * 0.025), 400)  # 25ms fade
+
     pieces = []
     audio_pos = 0
 
@@ -199,19 +241,45 @@ def pad_audio_to_match_timing(
 
         # Extract this word's audio
         word_end = min(audio_pos + word_samples, len(audio))
-        pieces.append(audio[audio_pos:word_end])
+        word_piece = np.array(audio[audio_pos:word_end], dtype=np.float32, copy=True)
         audio_pos = word_end
 
+        # Apply crossfades at boundaries where we'll insert silence
+        if i < len(gaps) and gaps[i] > 0.01 and len(word_piece) > fade_samples * 2:
+            # Fade out end of this word piece
+            fade_out = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+            word_piece[-fade_samples:] *= fade_out
+
+        pieces.append(word_piece)
+
         # Insert silence matching the original gap after this word
-        if i < len(gaps) and gaps[i] > 0.01:  # skip tiny gaps < 10ms
+        if i < len(gaps) and gaps[i] > 0.01:
             silence_samples = int(gaps[i] * sample_rate)
             pieces.append(np.zeros(silence_samples, dtype=np.float32))
+
+            # Fade in the start of the next word piece (applied on next iteration)
+            # — handled by peeking at the next piece after the loop
 
     # Append any remaining audio
     if audio_pos < len(audio):
         pieces.append(audio[audio_pos:])
 
-    return np.concatenate(pieces) if pieces else audio
+    if not pieces:
+        return audio
+
+    # Apply fade-in to each word piece that follows a silence gap
+    result_pieces = []
+    for j, piece in enumerate(pieces):
+        if j > 0 and len(piece) > fade_samples * 2:
+            # Check if previous piece was silence (all zeros)
+            prev = result_pieces[-1] if result_pieces else None
+            if prev is not None and len(prev) > 0 and np.max(np.abs(prev)) < 1e-6:
+                piece = np.array(piece, dtype=np.float32, copy=True)
+                fade_in = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+                piece[:fade_samples] *= fade_in
+        result_pieces.append(piece)
+
+    return np.concatenate(result_pieces)
 
 
 # ---------------------------------------------------------------------------
