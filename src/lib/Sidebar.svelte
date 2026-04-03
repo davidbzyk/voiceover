@@ -82,16 +82,17 @@
 		border-left-color: #f97316;
 	}
 	.nav-item.indent {
-		padding-left: 34px;
+		padding-left: 20px;
 		font-size: 12px;
+		opacity: 0.85;
+	}
+	.nav-item.indent .nav-icon {
+		font-size: 13px;
 	}
 	.nav-icon {
 		font-size: 15px;
 		width: 20px;
 		text-align: center;
-	}
-	.nav-item.indent .nav-icon {
-		font-size: 13px;
 	}
 	.nav-label {
 		font-weight: 500;
