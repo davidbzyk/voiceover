@@ -1,8 +1,9 @@
-"""Tests for tts.py — word grouping and segment filtering."""
+"""Tests for tts.py — word grouping, segment filtering, and model registry."""
 
 import pytest
+from unittest.mock import patch, MagicMock
 
-from tts import _filter_segments, _group_words_into_phrases
+from tts import _filter_segments, _group_words_into_phrases, WHISPER_MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -299,3 +300,77 @@ class TestGroupWordsIntoPhrases:
         assert result[1]["words"][2]["word"] == "there"
         assert result[1]["words"][0]["start"] == 2.5
         assert result[1]["words"][2]["end"] == 3.6
+
+
+# ---------------------------------------------------------------------------
+# WHISPER_MODELS registry
+# ---------------------------------------------------------------------------
+
+
+class TestWhisperModels:
+    def test_contains_all_expected_entries(self):
+        expected_keys = {"whisper-small", "whisper-medium", "whisper-large-v3-turbo"}
+        assert set(WHISPER_MODELS.keys()) == expected_keys
+
+    def test_whisper_small_maps_to_correct_repo(self):
+        assert WHISPER_MODELS["whisper-small"] == "mlx-community/whisper-small-mlx"
+
+    def test_whisper_medium_maps_to_correct_repo(self):
+        assert WHISPER_MODELS["whisper-medium"] == "mlx-community/whisper-medium-mlx"
+
+    def test_whisper_large_v3_turbo_maps_to_correct_repo(self):
+        assert WHISPER_MODELS["whisper-large-v3-turbo"] == "mlx-community/whisper-large-v3-turbo"
+
+
+# ---------------------------------------------------------------------------
+# transcribe() with model_name parameter
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeModelName:
+    """Tests for the transcribe() function's model_name parameter.
+
+    These mock the mlx_audio model loading since actual models
+    aren't available in the test environment.
+    """
+
+    def test_transcribe_accepts_model_name_parameter(self):
+        """Verify transcribe() signature accepts a model_name parameter."""
+        import inspect
+        from tts import transcribe
+
+        sig = inspect.signature(transcribe)
+        assert "model_name" in sig.parameters
+        # Default value should be the turbo model
+        assert sig.parameters["model_name"].default == "whisper-large-v3-turbo"
+
+    def test_different_model_name_changes_loaded_model(self):
+        """Passing a different model_name should update _whisper_model_name global."""
+        import tts
+
+        # Reset global state
+        original_model = tts._whisper_model
+        original_name = tts._whisper_model_name
+        tts._whisper_model = None
+        tts._whisper_model_name = None
+
+        try:
+            # Mock the model loading to avoid needing actual ML models
+            mock_model = MagicMock()
+            mock_result = {
+                "text": "hello",
+                "segments": [{"text": "hello", "start": 0.0, "end": 1.0}],
+            }
+            mock_model.transcribe.return_value = mock_result
+
+            with patch("mlx_audio.stt.utils.load_model", return_value=mock_model):
+                from tts import transcribe
+
+                transcribe("/tmp/fake-audio.wav", "/tmp/models", model_name="whisper-small")
+                assert tts._whisper_model_name == "whisper-small"
+        except ImportError:
+            # mlx_audio not available in test environment — skip gracefully
+            pytest.skip("mlx_audio not available in test environment")
+        finally:
+            tts._whisper_model = original_model
+            tts._whisper_model_name = original_name

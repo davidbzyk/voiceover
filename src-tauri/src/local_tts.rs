@@ -220,6 +220,7 @@ pub async fn speech_to_speech(
     input_wav: &Path,
     output_wav: &Path,
     video_duration: Option<f64>,
+    whisper_model: Option<&str>,
 ) -> Result<(), String> {
     let audio_bytes = std::fs::read(input_wav)
         .map_err(|e| format!("Failed to read input audio: {e}"))?;
@@ -236,7 +237,7 @@ pub async fn speech_to_speech(
     let start = std::time::Instant::now();
 
     // --- Step 1: Transcribe audio to text ---
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part(
             "file",
             reqwest::multipart::Part::bytes(audio_bytes)
@@ -244,6 +245,10 @@ pub async fn speech_to_speech(
                 .mime_str("audio/wav")
                 .map_err(|e| e.to_string())?,
         );
+
+    if let Some(model) = whisper_model {
+        form = form.text("model_name", model.to_string());
+    }
 
     let response = send_with_timeout(
         client.post(format!("{}/transcribe", base)).multipart(form).send(),

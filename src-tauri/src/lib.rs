@@ -84,6 +84,7 @@ pub fn run() {
             sidecar::get_sidecar_status,
             models::check_models_downloaded,
             models::download_model,
+            models::delete_model,
             models::get_models_disk_usage,
             google_drive::google_drive_connect,
             google_drive::google_drive_disconnect,

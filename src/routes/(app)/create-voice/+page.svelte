@@ -84,9 +84,19 @@
 			}
 
 			models = await client.getModelStatus();
-			const allDownloaded = models.every((m) => m.downloaded);
 
-			// Auto-advance if all models are ready
+			// Only check models required for the current mode
+			const requiredModels = [appState.config.whisper_model];
+			if (appState.config.local_tts_mode === 'vc') {
+				requiredModels.push('cosyvoice3-0.5B');
+			} else {
+				requiredModels.push('qwen-tts-1.7B');
+			}
+			const allDownloaded = requiredModels.every((reqName) =>
+				models.some((m) => m.model_name === reqName && m.downloaded)
+			);
+
+			// Auto-advance if all required models are ready
 			if (allDownloaded) {
 				step = 2;
 			}
@@ -101,7 +111,17 @@
 		downloading = true;
 		downloadError = '';
 		const client = getClient();
-		const missing = models.filter((m) => !m.downloaded);
+
+		// Only download models required for the current mode
+		const requiredModels = [appState.config.whisper_model];
+		if (appState.config.local_tts_mode === 'vc') {
+			requiredModels.push('cosyvoice3-0.5B');
+		} else {
+			requiredModels.push('qwen-tts-1.7B');
+		}
+		const missing = models.filter(
+			(m) => !m.downloaded && requiredModels.includes(m.model_name)
+		);
 
 		if (missing.length === 0) {
 			step = 2;
@@ -119,7 +139,10 @@
 
 			// Refresh model status after all downloads complete
 			models = await client.getModelStatus();
-			if (models.every((m) => m.downloaded)) {
+			const allDownloaded = requiredModels.every((reqName) =>
+				models.some((m) => m.model_name === reqName && m.downloaded)
+			);
+			if (allDownloaded) {
 				step = 2;
 			}
 		} catch (err) {
@@ -309,15 +332,19 @@
 						<span>TTS engine ready</span>
 					</div>
 
-					<!-- Show status of each model -->
-					{#each models as model}
+					<!-- Show status of required models only -->
+					{@const requiredModelNames = [
+						appState.config.whisper_model,
+						...(appState.config.local_tts_mode === 'vc' ? ['cosyvoice3-0.5B'] : ['qwen-tts-1.7B'])
+					]}
+					{#each models.filter((m) => requiredModelNames.includes(m.model_name)) as model}
 						<div class="status-row">
 							<span class="status-dot" class:connected={model.downloaded}></span>
 							<span>{model.display_name}</span>
 						</div>
 					{/each}
 
-					{@const missing = models.filter((m) => !m.downloaded)}
+					{@const missing = models.filter((m) => !m.downloaded && requiredModelNames.includes(m.model_name))}
 					{#if missing.length > 0}
 						<div class="hint-text">
 							{#if missing.length === 1}

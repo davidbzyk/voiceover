@@ -15,6 +15,8 @@ export interface VoiceboxProfile {
 export interface VoiceboxModelStatus {
 	model_name: string;
 	display_name: string;
+	category: 'transcription' | 'tts' | 'voice-conversion';
+	recommended: boolean;
 	downloaded: boolean;
 	loaded: boolean;
 }
@@ -75,6 +77,11 @@ export class VoiceboxClient {
 		};
 
 		await invoke('download_model', { model: modelName, onEvent });
+	}
+
+	/** Delete a downloaded model from the HuggingFace cache */
+	async deleteModel(modelName: string): Promise<void> {
+		await tauriInvoke('delete_model', { model: modelName });
 	}
 
 	/** Create a new voice profile */

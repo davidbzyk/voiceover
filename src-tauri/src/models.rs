@@ -137,6 +137,40 @@ pub async fn download_model(
     Ok(())
 }
 
+/// Delete a downloaded model from the HuggingFace cache via the sidecar.
+#[tauri::command]
+pub async fn delete_model(
+    app: tauri::AppHandle,
+    model: String,
+) -> Result<serde_json::Value, String> {
+    let port = sidecar::ensure_running(&app).await?;
+    let url = format!("http://127.0.0.1:{}/models/{}", port, model);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Delete request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Model deletion failed: {body}"));
+    }
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse delete response: {e}"))?;
+
+    log::info!("[models] Deleted model: {}", model);
+    Ok(result)
+}
+
 /// Get the total disk usage of downloaded models.
 #[tauri::command]
 pub async fn get_models_disk_usage(app: tauri::AppHandle) -> Result<u64, String> {

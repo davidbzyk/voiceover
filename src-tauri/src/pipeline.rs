@@ -180,6 +180,7 @@ pub async fn process_recording(
                 &extracted_wav,
                 &transformed_audio,
                 video_duration,
+                Some(&config.whisper_model),
             ).await?;
         }
 

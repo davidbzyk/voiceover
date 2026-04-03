@@ -60,6 +60,7 @@ export type AppConfig = {
 	local_endpoint?: string;
 	local_voice_profile_id: string;
 	local_tts_mode: string;
+	whisper_model: string;
 };
 
 export type RecordingState =
@@ -95,7 +96,8 @@ class AppState {
 		},
 		provider: 'elevenlabs',
 		local_voice_profile_id: '',
-		local_tts_mode: 'tts'
+		local_tts_mode: 'tts',
+		whisper_model: 'whisper-large-v3-turbo'
 	});
 
 	webcamStream = $state<MediaStream | null>(null);

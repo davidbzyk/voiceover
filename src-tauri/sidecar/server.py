@@ -98,6 +98,55 @@ logging.basicConfig(
 logger = logging.getLogger("voiceover-tts")
 
 # ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+
+MODEL_REGISTRY = {
+    # Whisper variants (transcription)
+    "whisper-small": {
+        "repo_id": "mlx-community/whisper-small-mlx",
+        "display_name": "Whisper Small",
+        "category": "transcription",
+        "recommended": False,
+    },
+    "whisper-medium": {
+        "repo_id": "mlx-community/whisper-medium-mlx",
+        "display_name": "Whisper Medium",
+        "category": "transcription",
+        "recommended": False,
+    },
+    "whisper-large-v3-turbo": {
+        "repo_id": "mlx-community/whisper-large-v3-turbo",
+        "display_name": "Whisper Large v3 Turbo",
+        "category": "transcription",
+        "recommended": True,
+    },
+    # TTS
+    "qwen-tts-1.7B": {
+        "repo_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "display_name": "Qwen TTS 1.7B",
+        "category": "tts",
+        "recommended": False,
+    },
+    # Voice conversion
+    "cosyvoice3-0.5B": {
+        "repo_id": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "display_name": "CosyVoice3 0.5B",
+        "category": "voice-conversion",
+        "recommended": False,
+    },
+}
+
+# Legacy short names -> canonical model names for /models/download compatibility
+_LEGACY_MODEL_ALIASES = {
+    "whisper": "whisper-large-v3-turbo",
+    "qwen": "qwen-tts-1.7B",
+    "qwen-tts-1.7b": "qwen-tts-1.7B",
+    "cosyvoice3": "cosyvoice3-0.5B",
+    "cosyvoice3-0.5b": "cosyvoice3-0.5B",
+}
+
+# ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
 
@@ -619,13 +668,13 @@ async def _do_voice_convert(
 # ---------------------------------------------------------------------------
 
 
-_model_cache: dict = {}  # keyword -> (is_available, timestamp)
+_model_cache: dict = {}  # repo_id -> (is_available, timestamp)
 _MODEL_CACHE_TTL = 30  # seconds
 
 
-def _is_model_downloaded(models_dir: Path, keyword: str) -> bool:
-    """Check if a model matching keyword is in the HF cache."""
-    cache_key = keyword
+def _is_model_downloaded(models_dir: Path, repo_id: str) -> bool:
+    """Check if a model with the exact repo_id is in the HF cache."""
+    cache_key = repo_id
     now = time.time()
     if cache_key in _model_cache:
         cached_result, cached_time = _model_cache[cache_key]
@@ -639,11 +688,11 @@ def _is_model_downloaded(models_dir: Path, keyword: str) -> bool:
         if models_dir.exists():
             cache_info = scan_cache_dir(str(models_dir))
             for repo in cache_info.repos:
-                if keyword in repo.repo_id.lower():
+                if repo.repo_id == repo_id:
                     result = True
                     break
     except Exception as e:
-        logger.warning(f"Error scanning model cache for {keyword}: {e}")
+        logger.warning(f"Error scanning model cache for {repo_id}: {e}")
     _model_cache[cache_key] = (result, now)
     return result
 
@@ -657,9 +706,9 @@ async def health():
     return {
         "status": "healthy",
         "models": {
-            "whisper": _is_model_downloaded(models_dir, "whisper"),
-            "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "qwen"),
-            "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "cosyvoice"),
+            "whisper": _is_model_downloaded(models_dir, "mlx-community/whisper-large-v3-turbo"),
+            "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
+            "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"),
         },
     }
 
@@ -670,7 +719,7 @@ async def health():
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(file: UploadFile = File(...), model_name: str = Form(None)):
     """Transcribe audio using MLX Whisper."""
     temp_path = DATA_DIR / "temp" / f"{uuid.uuid4()}.wav"
     temp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -683,7 +732,11 @@ async def transcribe(file: UploadFile = File(...)):
 
         from tts import transcribe as do_transcribe
 
-        result = do_transcribe(str(temp_path), str(DATA_DIR / "models"))
+        kwargs = {}
+        if model_name:
+            kwargs["model_name"] = model_name
+
+        result = do_transcribe(str(temp_path), str(DATA_DIR / "models"), **kwargs)
         logger.info(
             f"Transcribed: {result['duration']:.1f}s audio -> "
             f"{len(result['text'])} chars"
@@ -700,6 +753,7 @@ async def transcribe(file: UploadFile = File(...)):
 async def transcribe_path(request: dict):
     """Transcribe audio from a file already on disk (used after YouTube extraction)."""
     audio_path = request.get("audio_path", "")
+    model_name = request.get("model_name")
     try:
         _validate_path(audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
     except ValueError as e:
@@ -711,7 +765,11 @@ async def transcribe_path(request: dict):
         logger.info(f"Transcribing from path: {audio_path}")
         from tts import transcribe as do_transcribe
 
-        result = do_transcribe(audio_path, str(DATA_DIR / "models"))
+        kwargs = {}
+        if model_name:
+            kwargs["model_name"] = model_name
+
+        result = do_transcribe(audio_path, str(DATA_DIR / "models"), **kwargs)
         logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
         return result
     except Exception as e:
@@ -1014,36 +1072,37 @@ async def delete_profile(profile_id: str):
 
 @app.get("/models/status")
 async def models_status():
-    """Get model download/load status."""
-    from tts import is_qwen_loaded
+    """Get model download/load status for all registered models."""
+    from tts import is_qwen_loaded, _whisper_model, _whisper_model_name
 
     models_dir = DATA_DIR / "models"
-    whisper_downloaded = _is_model_downloaded(models_dir, "whisper")
-    qwen_downloaded = _is_model_downloaded(models_dir, "qwen")
-    cosyvoice_downloaded = _is_model_downloaded(models_dir, "cosyvoice")
+    result = []
 
-    return {
-        "models": [
-            {
-                "model_name": "whisper-large-v3-turbo",
-                "display_name": "Whisper Large v3 Turbo",
-                "downloaded": whisper_downloaded,
-                "loaded": whisper_downloaded,  # Whisper loads on demand
-            },
-            {
-                "model_name": "qwen-tts-1.7B",
-                "display_name": "Qwen TTS 1.7B",
-                "downloaded": qwen_downloaded,
-                "loaded": is_qwen_loaded(),
-            },
-            {
-                "model_name": "cosyvoice3-0.5B",
-                "display_name": "CosyVoice3 0.5B",
-                "downloaded": cosyvoice_downloaded,
-                "loaded": _vc_model is not None,
-            },
-        ]
-    }
+    for model_name, entry in MODEL_REGISTRY.items():
+        repo_id = entry["repo_id"]
+        downloaded = _is_model_downloaded(models_dir, repo_id)
+
+        # Determine loaded status per category
+        category = entry["category"]
+        if category == "transcription":
+            loaded = _whisper_model is not None and _whisper_model_name == model_name
+        elif category == "tts":
+            loaded = is_qwen_loaded()
+        elif category == "voice-conversion":
+            loaded = _vc_model is not None
+        else:
+            loaded = False
+
+        result.append({
+            "model_name": model_name,
+            "display_name": entry["display_name"],
+            "category": category,
+            "recommended": entry["recommended"],
+            "downloaded": downloaded,
+            "loaded": loaded,
+        })
+
+    return {"models": result}
 
 
 @app.post("/models/download")
@@ -1052,25 +1111,17 @@ async def download_model(request: dict):
     # Accept both "model" and "model_name" keys (Voicebox compat)
     model = request.get("model_name", "") or request.get("model", "")
 
-    # Accept short names ("whisper", "qwen") and full names from /models/status
-    model_map = {
-        "whisper": "mlx-community/whisper-large-v3-turbo",
-        "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-        "qwen": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        "qwen-tts-1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        "qwen-tts-1.7b": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        "cosyvoice3": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
-        "cosyvoice3-0.5B": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
-        "cosyvoice3-0.5b": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
-    }
+    # Resolve legacy short names to canonical model names
+    if model in _LEGACY_MODEL_ALIASES:
+        model = _LEGACY_MODEL_ALIASES[model]
 
-    if model not in model_map:
+    if model not in MODEL_REGISTRY:
         return JSONResponse(
             status_code=400,
             content={"error": f"Unknown model: {model}"},
         )
 
-    repo_id = model_map[model]
+    repo_id = MODEL_REGISTRY[model]["repo_id"]
     models_dir = str(DATA_DIR / "models")
 
     async def _stream():
@@ -1095,6 +1146,74 @@ async def download_model(request: dict):
             yield f"data: {json.dumps({'progress': -1, 'status': f'Download failed: {e}', 'error': str(e)})}\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.delete("/models/{model_name}")
+async def delete_model(model_name: str):
+    """Delete a downloaded model from the HuggingFace cache and clear in-memory references."""
+    # Resolve legacy short names to canonical model names
+    canonical = _LEGACY_MODEL_ALIASES.get(model_name, model_name)
+    if canonical not in MODEL_REGISTRY:
+        return error_response(400, f"Unknown model: {model_name}")
+
+    entry = MODEL_REGISTRY[canonical]
+    repo_id = entry["repo_id"]
+    category = entry["category"]
+
+    models_dir = DATA_DIR / "models"
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        if not models_dir.exists():
+            return error_response(404, "Model not downloaded")
+
+        cache_info = scan_cache_dir(str(models_dir))
+
+        # Find the repo matching the exact repo_id
+        target_repo = None
+        for repo in cache_info.repos:
+            if repo.repo_id == repo_id:
+                target_repo = repo
+                break
+
+        if target_repo is None:
+            return error_response(404, "Model not downloaded")
+
+        # Collect all revision hashes and delete them
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        delete_strategy = cache_info.delete_revisions(*revision_hashes)
+        freed_size = delete_strategy.expected_freed_size
+        delete_strategy.execute()
+
+        logger.info(
+            f"Deleted model {canonical} (repo_id={repo_id}), "
+            f"freed {freed_size / (1024 * 1024):.1f} MB"
+        )
+
+        # Clear in-memory model references based on category
+        if category == "transcription":
+            import tts as _tts_module
+            _tts_module._whisper_model = None
+            _tts_module._whisper_model_name = None
+        elif category == "tts":
+            import tts as _tts_module
+            _tts_module._qwen_model = None
+            _tts_module._qwen_model_size = None
+        elif category == "voice-conversion":
+            global _vc_model, _vc_model_name
+            _vc_model = None
+            _vc_model_name = None
+
+        # Invalidate the model cache entry so _is_model_downloaded() doesn't return stale results
+        if repo_id in _model_cache:
+            del _model_cache[repo_id]
+
+        return {"deleted": model_name, "freed_bytes": freed_size}
+
+    except Exception as e:
+        logger.error(f"Failed to delete model {canonical}: {e}", exc_info=True)
+        return error_response(500, f"Failed to delete model: {e}")
 
 
 # ---------------------------------------------------------------------------
