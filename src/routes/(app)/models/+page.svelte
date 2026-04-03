@@ -3,6 +3,7 @@
 	import { appState } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
 	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import ModelCard from '$lib/ModelCard.svelte';
 	import { onMount } from 'svelte';
 
 	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
@@ -41,6 +42,7 @@
 		} catch (err) {
 			downloadProgress = '';
 			modelsError = `Download failed: ${err}`;
+			logger.error('models', 'Model download failed', err);
 		}
 		downloadingModel = null;
 	}
@@ -49,6 +51,8 @@
 		deletingModel = modelName;
 		try {
 			await getClient().deleteModel(modelName);
+			// Refresh statuses before fallback selection so we use fresh data
+			await loadModelStatuses();
 			// If we deleted the active whisper model, select another downloaded one
 			if (modelName === appState.config.whisper_model) {
 				const otherWhisper = modelStatuses.find(
@@ -57,17 +61,24 @@
 				appState.config.whisper_model = otherWhisper?.model_name ?? 'whisper-large-v3-turbo';
 				await appState.saveConfig();
 			}
-			await loadModelStatuses();
 		} catch (err) {
 			modelsError = `Delete failed: ${err}`;
+			logger.error('models', 'Model deletion failed', err);
 		}
 		deletingModel = null;
 		confirmingDelete = null;
 	}
 
 	async function selectWhisperModel(modelName: string) {
+		const prev = appState.config.whisper_model;
 		appState.config.whisper_model = modelName;
-		await appState.saveConfig();
+		try {
+			await appState.saveConfig();
+		} catch (err) {
+			appState.config.whisper_model = prev;
+			modelsError = `Failed to save model selection: ${err}`;
+			logger.error('models', 'Failed to save whisper model selection', err);
+		}
 	}
 
 	onMount(() => {
@@ -98,55 +109,19 @@
 					Whisper converts speech to text. Larger models are more accurate but use more memory.
 				</div>
 				{#each modelStatuses.filter((m) => m.category === 'transcription') as model}
-					<div class="model-row">
-						<div class="model-info">
-							<div class="model-name">
-								{model.display_name}
-								{#if model.recommended}
-									<span class="recommended-badge">Recommended</span>
-								{/if}
-							</div>
-							<div class="model-status-text">
-								{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-							</div>
-						</div>
-						<div class="model-actions">
-							{#if model.downloaded}
-								<button
-									class="radio-btn"
-									class:active={appState.config.whisper_model === model.model_name}
-									onclick={() => selectWhisperModel(model.model_name)}
-									title="Use this model"
-								>
-									{appState.config.whisper_model === model.model_name ? '● Active' : '○ Select'}
-								</button>
-								{#if confirmingDelete === model.model_name}
-									<button
-										class="small-btn danger"
-										onclick={() => handleDeleteModel(model.model_name)}
-										disabled={deletingModel === model.model_name}
-									>
-										{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-									</button>
-									<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-								{:else}
-									<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-										Delete
-									</button>
-								{/if}
-							{:else if downloadingModel === model.model_name}
-								<span class="download-status">{downloadProgress}</span>
-							{:else}
-								<button
-									class="small-btn accent"
-									onclick={() => handleDownloadModel(model.model_name)}
-									disabled={downloadingModel !== null}
-								>
-									Download
-								</button>
-							{/if}
-						</div>
-					</div>
+					<ModelCard
+						{model}
+						{downloadingModel}
+						{downloadProgress}
+						{confirmingDelete}
+						{deletingModel}
+						activeModelName={appState.config.whisper_model}
+						onSelect={selectWhisperModel}
+						onDownload={handleDownloadModel}
+						onDelete={handleDeleteModel}
+						onConfirmDelete={(name) => (confirmingDelete = name)}
+						onCancelDelete={() => (confirmingDelete = null)}
+					/>
 				{/each}
 			</div>
 		</div>
@@ -159,42 +134,17 @@
 					Qwen generates speech from text using your cloned voice.
 				</div>
 				{#each modelStatuses.filter((m) => m.category === 'tts') as model}
-					<div class="model-row">
-						<div class="model-info">
-							<div class="model-name">{model.display_name}</div>
-							<div class="model-status-text">
-								{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-							</div>
-						</div>
-						<div class="model-actions">
-							{#if model.downloaded}
-								{#if confirmingDelete === model.model_name}
-									<button
-										class="small-btn danger"
-										onclick={() => handleDeleteModel(model.model_name)}
-										disabled={deletingModel === model.model_name}
-									>
-										{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-									</button>
-									<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-								{:else}
-									<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-										Delete
-									</button>
-								{/if}
-							{:else if downloadingModel === model.model_name}
-								<span class="download-status">{downloadProgress}</span>
-							{:else}
-								<button
-									class="small-btn accent"
-									onclick={() => handleDownloadModel(model.model_name)}
-									disabled={downloadingModel !== null}
-								>
-									Download
-								</button>
-							{/if}
-						</div>
-					</div>
+					<ModelCard
+						{model}
+						{downloadingModel}
+						{downloadProgress}
+						{confirmingDelete}
+						{deletingModel}
+						onDownload={handleDownloadModel}
+						onDelete={handleDeleteModel}
+						onConfirmDelete={(name) => (confirmingDelete = name)}
+						onCancelDelete={() => (confirmingDelete = null)}
+					/>
 				{/each}
 			</div>
 		</div>
@@ -207,42 +157,17 @@
 					CosyVoice converts your voice directly, preserving natural timing and inflection.
 				</div>
 				{#each modelStatuses.filter((m) => m.category === 'voice-conversion') as model}
-					<div class="model-row">
-						<div class="model-info">
-							<div class="model-name">{model.display_name}</div>
-							<div class="model-status-text">
-								{model.downloaded ? 'Downloaded' : 'Not downloaded'}
-							</div>
-						</div>
-						<div class="model-actions">
-							{#if model.downloaded}
-								{#if confirmingDelete === model.model_name}
-									<button
-										class="small-btn danger"
-										onclick={() => handleDeleteModel(model.model_name)}
-										disabled={deletingModel === model.model_name}
-									>
-										{deletingModel === model.model_name ? 'Deleting...' : 'Confirm'}
-									</button>
-									<button class="small-btn" onclick={() => (confirmingDelete = null)}>Cancel</button>
-								{:else}
-									<button class="small-btn danger-outline" onclick={() => (confirmingDelete = model.model_name)}>
-										Delete
-									</button>
-								{/if}
-							{:else if downloadingModel === model.model_name}
-								<span class="download-status">{downloadProgress}</span>
-							{:else}
-								<button
-									class="small-btn accent"
-									onclick={() => handleDownloadModel(model.model_name)}
-									disabled={downloadingModel !== null}
-								>
-									Download
-								</button>
-							{/if}
-						</div>
-					</div>
+					<ModelCard
+						{model}
+						{downloadingModel}
+						{downloadProgress}
+						{confirmingDelete}
+						{deletingModel}
+						onDownload={handleDownloadModel}
+						onDelete={handleDeleteModel}
+						onConfirmDelete={(name) => (confirmingDelete = name)}
+						onCancelDelete={() => (confirmingDelete = null)}
+					/>
 				{/each}
 			</div>
 		</div>
@@ -304,86 +229,5 @@
 	.small-btn:hover {
 		color: #cbd5e1;
 		border-color: #475569;
-	}
-	.small-btn.accent {
-		border-color: #f97316;
-		color: #f97316;
-	}
-	.small-btn.accent:hover {
-		background: rgba(249, 115, 22, 0.1);
-	}
-	.small-btn.danger {
-		color: #ef4444;
-		border-color: #ef4444;
-	}
-	.small-btn.danger-outline {
-		color: #94a3b8;
-		border-color: #475569;
-	}
-	.small-btn.danger-outline:hover {
-		color: #ef4444;
-		border-color: #ef4444;
-	}
-	.model-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 10px 0;
-		border-bottom: 1px solid #334155;
-	}
-	.model-row:last-child {
-		border-bottom: none;
-	}
-	.model-info {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.model-name {
-		font-size: 13px;
-		color: #e2e8f0;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-	.model-status-text {
-		font-size: 10px;
-		color: #64748b;
-	}
-	.model-actions {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-	}
-	.recommended-badge {
-		font-size: 9px;
-		background: rgba(99, 102, 241, 0.15);
-		color: #818cf8;
-		padding: 1px 6px;
-		border-radius: 3px;
-		font-weight: 500;
-	}
-	.radio-btn {
-		background: none;
-		border: 1px solid #475569;
-		color: #94a3b8;
-		font-size: 10px;
-		padding: 3px 8px;
-		border-radius: 4px;
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-	.radio-btn.active {
-		border-color: #6366f1;
-		color: #a5b4fc;
-		background: rgba(99, 102, 241, 0.1);
-	}
-	.download-status {
-		font-size: 10px;
-		color: #94a3b8;
-		max-width: 150px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 </style>

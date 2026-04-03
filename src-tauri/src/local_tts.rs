@@ -15,7 +15,7 @@ pub struct HttpClient {
 }
 
 /// Send an HTTP request with a per-call timeout.
-async fn send_with_timeout(
+pub(crate) async fn send_with_timeout(
     future: impl std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
     timeout_secs: u64,
     context: &str,

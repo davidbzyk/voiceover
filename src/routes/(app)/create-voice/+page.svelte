@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { appState } from '$lib/state.svelte';
 	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { getRequiredModelNames } from '$lib/models';
 	import { onMount } from 'svelte';
 
 	// Wizard step (1-5)
@@ -86,12 +87,7 @@
 			models = await client.getModelStatus();
 
 			// Only check models required for the current mode
-			const requiredModels = [appState.config.whisper_model];
-			if (appState.config.local_tts_mode === 'vc') {
-				requiredModels.push('cosyvoice3-0.5B');
-			} else {
-				requiredModels.push('qwen-tts-1.7B');
-			}
+			const requiredModels = getRequiredModelNames(appState.config);
 			const allDownloaded = requiredModels.every((reqName) =>
 				models.some((m) => m.model_name === reqName && m.downloaded)
 			);
@@ -113,12 +109,7 @@
 		const client = getClient();
 
 		// Only download models required for the current mode
-		const requiredModels = [appState.config.whisper_model];
-		if (appState.config.local_tts_mode === 'vc') {
-			requiredModels.push('cosyvoice3-0.5B');
-		} else {
-			requiredModels.push('qwen-tts-1.7B');
-		}
+		const requiredModels = getRequiredModelNames(appState.config);
 		const missing = models.filter(
 			(m) => !m.downloaded && requiredModels.includes(m.model_name)
 		);

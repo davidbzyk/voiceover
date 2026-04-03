@@ -1,4 +1,6 @@
+use crate::local_tts::{HttpClient, send_with_timeout};
 use crate::sidecar;
+use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::Manager;
@@ -16,40 +18,61 @@ pub enum ModelDownloadEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Tauri commands
+// Utilities
 // ---------------------------------------------------------------------------
 
-/// Check which models are downloaded and/or loaded.
-#[tauri::command]
-pub async fn check_models_downloaded(
-    app: tauri::AppHandle,
-) -> Result<Vec<crate::local_tts::ModelInfo>, String> {
-    let port = sidecar::ensure_running(&app).await?;
-    let url = format!("http://127.0.0.1:{}/models/status", port);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to check model status: {e}"))?;
-
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("Model status check failed: {body}"));
+/// Recursively walk a directory tree and sum file sizes.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                total += dir_size(&path);
+            } else if let Ok(meta) = path.metadata() {
+                total += meta.len();
+            }
+        }
     }
-
-    let wrapper: crate::local_tts::ModelsResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse model status: {e}"))?;
-
-    Ok(wrapper.models)
+    total
 }
+
+// ---------------------------------------------------------------------------
+// SSE parsing
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+enum SseEvent {
+    Progress { progress: f32, status: String },
+    Error { message: String },
+}
+
+fn parse_sse_line(line: &str) -> Option<SseEvent> {
+    let data = line.strip_prefix("data: ")?;
+    let event: serde_json::Value = serde_json::from_str(data).ok()?;
+
+    let progress = event.get("progress").and_then(|p| p.as_f64()).unwrap_or(0.0) as f32;
+    let status = event
+        .get("status")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if progress < 0.0 {
+        let message = event
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("Unknown error")
+            .to_string();
+        Some(SseEvent::Error { message })
+    } else {
+        Some(SseEvent::Progress { progress, status })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
 
 /// Download a model from HuggingFace via the sidecar.
 ///
@@ -70,17 +93,13 @@ pub async fn download_model(
         })
         .ok();
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(1800)) // 30 min for large downloads
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .post(&url)
-        .json(&serde_json::json!({"model": model}))
-        .send()
-        .await
-        .map_err(|e| format!("Download request failed: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client.post(&url).json(&serde_json::json!({"model": model})).send(),
+        1800,
+        "Download request failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -92,37 +111,32 @@ pub async fn download_model(
         return Err(format!("Download failed: {body}"));
     }
 
-    // Read SSE stream from sidecar and forward progress to frontend
-    let body = response.text().await.unwrap_or_default();
-    for line in body.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                let progress = event
-                    .get("progress")
-                    .and_then(|p| p.as_f64())
-                    .unwrap_or(0.0) as f32;
-                let status = event
-                    .get("status")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .to_string();
+    // Stream SSE from sidecar and forward progress to frontend in real-time
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
 
-                if progress < 0.0 {
-                    // Error
-                    let err_msg = event
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .unwrap_or("Unknown error")
-                        .to_string();
-                    on_event
-                        .send(ModelDownloadEvent::Error { message: err_msg.clone() })
-                        .ok();
-                    return Err(err_msg);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+
+            if let Some(parsed) = parse_sse_line(&line) {
+                match parsed {
+                    SseEvent::Progress { progress, status } => {
+                        on_event
+                            .send(ModelDownloadEvent::Progress { progress, status })
+                            .ok();
+                    }
+                    SseEvent::Error { message } => {
+                        on_event
+                            .send(ModelDownloadEvent::Error { message: message.clone() })
+                            .ok();
+                        return Err(message);
+                    }
                 }
-
-                on_event
-                    .send(ModelDownloadEvent::Progress { progress, status })
-                    .ok();
             }
         }
     }
@@ -146,16 +160,13 @@ pub async fn delete_model(
     let port = sidecar::ensure_running(&app).await?;
     let url = format!("http://127.0.0.1:{}/models/{}", port, model);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let response = client
-        .delete(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Delete request failed: {e}"))?;
+    let http = app.state::<HttpClient>();
+    let response = send_with_timeout(
+        http.client.delete(&url).send(),
+        60,
+        "Delete request failed",
+    )
+    .await?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -182,22 +193,6 @@ pub async fn get_models_disk_usage(app: tauri::AppHandle) -> Result<u64, String>
 
     if !models_dir.exists() {
         return Ok(0);
-    }
-
-    // Walk the directory tree and sum file sizes
-    fn dir_size(path: &std::path::Path) -> u64 {
-        let mut total = 0u64;
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    total += dir_size(&path);
-                } else if let Ok(meta) = path.metadata() {
-                    total += meta.len();
-                }
-            }
-        }
-        total
     }
 
     Ok(dir_size(&models_dir))
@@ -239,5 +234,86 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["event"], "error");
         assert_eq!(v["data"]["message"], "Network error");
+    }
+
+    // SSE parsing tests (BUG-20)
+
+    #[test]
+    fn parse_sse_line_progress() {
+        let line = r#"data: {"progress": 0.5, "status": "Downloading model..."}"#;
+        let result = parse_sse_line(line);
+        assert_eq!(
+            result,
+            Some(SseEvent::Progress {
+                progress: 0.5,
+                status: "Downloading model...".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_sse_line_complete() {
+        let line = r#"data: {"progress": 1.0, "status": "Download complete"}"#;
+        let result = parse_sse_line(line);
+        assert_eq!(
+            result,
+            Some(SseEvent::Progress {
+                progress: 1.0,
+                status: "Download complete".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_sse_line_error() {
+        let line = r#"data: {"progress": -1, "status": "Failed", "error": "Disk full"}"#;
+        let result = parse_sse_line(line);
+        assert_eq!(
+            result,
+            Some(SseEvent::Error {
+                message: "Disk full".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_sse_line_ignores_non_data() {
+        assert_eq!(parse_sse_line(""), None);
+        assert_eq!(parse_sse_line("event: message"), None);
+        assert_eq!(parse_sse_line(": comment"), None);
+    }
+
+    #[test]
+    fn parse_sse_line_ignores_malformed_json() {
+        assert_eq!(parse_sse_line("data: not-json"), None);
+    }
+
+    // dir_size tests (BUG-21)
+
+    #[test]
+    fn dir_size_empty_dir() {
+        let tmp = std::env::temp_dir().join("voiceover_test_dir_size_empty");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(dir_size(&tmp), 0);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn dir_size_nested_files() {
+        let tmp = std::env::temp_dir().join("voiceover_test_dir_size_nested");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("a.txt"), "hello").unwrap(); // 5 bytes
+        std::fs::write(tmp.join("sub/b.txt"), "world!").unwrap(); // 6 bytes
+        assert_eq!(dir_size(&tmp), 11);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn dir_size_nonexistent() {
+        let tmp = std::env::temp_dir().join("voiceover_test_dir_size_nonexist");
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(dir_size(&tmp), 0);
     }
 }

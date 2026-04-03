@@ -318,6 +318,28 @@ class TestWhisperModels:
     def test_whisper_large_v3_turbo_maps_to_correct_repo(self):
         assert WHISPER_MODELS["whisper-large-v3-turbo"] == "mlx-community/whisper-large-v3-turbo"
 
+    def test_whisper_models_match_model_registry(self):
+        """WHISPER_MODELS in tts.py must stay in sync with MODEL_REGISTRY in server.py."""
+        try:
+            from server import MODEL_REGISTRY
+        except ImportError:
+            pytest.skip("server.py dependencies not available in test environment")
+
+        registry_transcription = {
+            name: entry["repo_id"]
+            for name, entry in MODEL_REGISTRY.items()
+            if entry["category"] == "transcription"
+        }
+        assert set(WHISPER_MODELS.keys()) == set(registry_transcription.keys()), (
+            f"Key mismatch: WHISPER_MODELS={set(WHISPER_MODELS.keys())}, "
+            f"MODEL_REGISTRY transcription={set(registry_transcription.keys())}"
+        )
+        for name, repo_id in WHISPER_MODELS.items():
+            assert repo_id == registry_transcription[name], (
+                f"WHISPER_MODELS[{name}]={repo_id} != "
+                f"MODEL_REGISTRY[{name}].repo_id={registry_transcription[name]}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # transcribe() with model_name parameter

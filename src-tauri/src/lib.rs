@@ -82,7 +82,6 @@ pub fn run() {
             local_tts::sidecar_fetch,
             local_tts::sidecar_upload,
             sidecar::get_sidecar_status,
-            models::check_models_downloaded,
             models::download_model,
             models::delete_model,
             models::get_models_disk_usage,

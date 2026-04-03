@@ -4,6 +4,7 @@
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
 	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { getRequiredModelNames } from '$lib/models';
 	import { onMount } from 'svelte';
 
 	let newVoiceName = $state('');
@@ -25,13 +26,8 @@
 	// Model status for smart button
 	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
 
-	let requiredModelsReady = $derived(() => {
-		const required = [appState.config.whisper_model];
-		if (appState.config.local_tts_mode === 'vc') {
-			required.push('cosyvoice3-0.5B');
-		} else {
-			required.push('qwen-tts-1.7B');
-		}
+	let requiredModelsReady = $derived.by(() => {
+		const required = getRequiredModelNames(appState.config);
 		return required.every((name) =>
 			modelStatuses.some((m) => m.model_name === name && m.downloaded)
 		);
@@ -40,8 +36,8 @@
 	async function loadModelStatuses() {
 		try {
 			modelStatuses = await new VoiceboxClient().getModelStatus();
-		} catch {
-			// Silent — smart button defaults to "Setup Models" if check fails
+		} catch (err) {
+			logger.error('settings', 'Failed to check model status', err);
 		}
 	}
 
@@ -292,7 +288,7 @@
 						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
 					{/if}
 
-					{#if requiredModelsReady()}
+					{#if requiredModelsReady}
 						<button class="small-btn accent" onclick={() => goto('/create-voice')}>
 							+ Create Voice
 						</button>

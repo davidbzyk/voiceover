@@ -222,6 +222,26 @@ class TestModelEndpoints:
         })
         assert response.status_code == 400
 
+    def test_delete_unknown_model(self, client):
+        """DELETE with an unknown model name should return 400."""
+        response = client.delete("/models/nonexistent-model")
+        assert response.status_code == 400
+        data = response.json()
+        assert "error" in data
+
+    def test_delete_not_downloaded_model(self, client):
+        """DELETE a valid but not-downloaded model should return 404."""
+        response = client.delete("/models/whisper-large-v3-turbo")
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+
+    def test_delete_legacy_alias_resolves(self, client):
+        """DELETE using a legacy alias should resolve and attempt deletion."""
+        response = client.delete("/models/whisper")
+        # Should resolve to whisper-large-v3-turbo and return 404 (not downloaded)
+        assert response.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # Transcription endpoints

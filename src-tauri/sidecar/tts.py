@@ -5,6 +5,7 @@ Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
 """
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
@@ -158,13 +159,24 @@ def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-larg
     global _whisper_model, _whisper_model_name
 
     # Resolve model_name to HuggingFace repo ID
-    repo_id = WHISPER_MODELS.get(model_name, model_name)
+    if model_name not in WHISPER_MODELS:
+        raise ValueError(
+            f"Unknown whisper model: {model_name}. "
+            f"Valid: {list(WHISPER_MODELS.keys())}"
+        )
+    repo_id = WHISPER_MODELS[model_name]
 
     os.environ["HF_HUB_CACHE"] = models_dir
 
     # Reload if a different model is requested
     if model_name != _whisper_model_name:
         _whisper_model = None
+        gc.collect()
+        try:
+            import mlx.core as mx
+            mx.metal.clear_cache()
+        except Exception:
+            pass
 
     if _whisper_model is None:
         logger.info("Loading Whisper model '%s' (%s)...", model_name, repo_id)

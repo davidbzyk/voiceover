@@ -55,6 +55,7 @@ if getattr(sys, "frozen", False) and len(sys.argv) == 1:
 import argparse
 import asyncio
 import functools
+import gc
 import logging
 import signal
 import threading
@@ -687,6 +688,7 @@ def _is_model_downloaded(models_dir: Path, repo_id: str) -> bool:
                     break
     except Exception as e:
         logger.warning(f"Error scanning model cache for {repo_id}: {e}")
+        return False  # Don't cache transient errors
     _model_cache[cache_key] = (result, now)
     return result
 
@@ -700,7 +702,11 @@ async def health():
     return {
         "status": "healthy",
         "models": {
-            "whisper": _is_model_downloaded(models_dir, "mlx-community/whisper-large-v3-turbo"),
+            "whisper": any(
+                _is_model_downloaded(models_dir, entry["repo_id"])
+                for entry in MODEL_REGISTRY.values()
+                if entry["category"] == "transcription"
+            ),
             "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
             "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"),
         },
@@ -730,7 +736,9 @@ async def transcribe(file: UploadFile = File(...), model_name: str = Form(None))
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = do_transcribe(str(temp_path), str(DATA_DIR / "models"), **kwargs)
+        result = await asyncio.to_thread(
+            do_transcribe, str(temp_path), str(DATA_DIR / "models"), **kwargs
+        )
         logger.info(
             f"Transcribed: {result['duration']:.1f}s audio -> "
             f"{len(result['text'])} chars"
@@ -763,7 +771,9 @@ async def transcribe_path(request: dict):
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = do_transcribe(audio_path, str(DATA_DIR / "models"), **kwargs)
+        result = await asyncio.to_thread(
+            do_transcribe, audio_path, str(DATA_DIR / "models"), **kwargs
+        )
         logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
         return result
     except Exception as e:
@@ -1072,9 +1082,19 @@ async def models_status():
     models_dir = DATA_DIR / "models"
     result = []
 
+    # Scan HF cache once for all models (instead of once per model)
+    downloaded_repos: set = set()
+    if models_dir.exists():
+        try:
+            from huggingface_hub import scan_cache_dir
+            cache_info = scan_cache_dir(str(models_dir))
+            downloaded_repos = {repo.repo_id for repo in cache_info.repos}
+        except Exception:
+            pass
+
     for model_name, entry in MODEL_REGISTRY.items():
         repo_id = entry["repo_id"]
-        downloaded = _is_model_downloaded(models_dir, repo_id)
+        downloaded = repo_id in downloaded_repos
 
         # Determine loaded status per category
         category = entry["category"]
@@ -1158,6 +1178,7 @@ async def delete_model(model_name: str):
 
     models_dir = DATA_DIR / "models"
 
+    # --- File deletion ---
     try:
         from huggingface_hub import scan_cache_dir
 
@@ -1186,30 +1207,50 @@ async def delete_model(model_name: str):
             f"Deleted model {canonical} (repo_id={repo_id}), "
             f"freed {freed_size / (1024 * 1024):.1f} MB"
         )
+    except Exception as e:
+        logger.error(f"Failed to delete model {canonical}: {e}", exc_info=True)
+        return error_response(500, f"Failed to delete model: {e}")
 
-        # Clear in-memory model references based on category
+    # --- In-memory cleanup (best-effort, files already deleted) ---
+    try:
         if category == "transcription":
             import tts as _tts_module
             _tts_module._whisper_model = None
             _tts_module._whisper_model_name = None
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
         elif category == "tts":
             import tts as _tts_module
             _tts_module._qwen_model = None
             _tts_module._qwen_model_size = None
+            gc.collect()
+            try:
+                import torch
+                torch.mps.empty_cache()
+            except Exception:
+                pass
         elif category == "voice-conversion":
             global _vc_model, _vc_model_name
             _vc_model = None
             _vc_model_name = None
-
-        # Invalidate the model cache entry so _is_model_downloaded() doesn't return stale results
-        if repo_id in _model_cache:
-            del _model_cache[repo_id]
-
-        return {"deleted": model_name, "freed_bytes": freed_size}
-
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
     except Exception as e:
-        logger.error(f"Failed to delete model {canonical}: {e}", exc_info=True)
-        return error_response(500, f"Failed to delete model: {e}")
+        logger.warning(f"In-memory cleanup failed for {canonical}: {e}")
+
+    # Invalidate the model cache entry so _is_model_downloaded() doesn't return stale results
+    if repo_id in _model_cache:
+        del _model_cache[repo_id]
+
+    return {"deleted": model_name, "freed_bytes": freed_size}
 
 
 # ---------------------------------------------------------------------------
