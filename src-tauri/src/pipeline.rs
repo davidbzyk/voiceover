@@ -40,21 +40,9 @@ pub async fn process_recording(
     );
 
     let config = config::get_config(app.clone()).await?;
-    let output_dir = PathBuf::from(&config.output_dir);
-
-    // Fall back to default output dir if configured path can't be created
-    let output_dir = match std::fs::create_dir_all(&output_dir) {
-        Ok(_) => output_dir,
-        Err(e) => {
-            log::warn!("[pipeline] Can't create output dir {:?}: {}, using default", output_dir, e);
-            let fallback = dirs::video_dir()
-                .or_else(dirs::home_dir)
-                .map(|p| p.join("VoiceOver"))
-                .unwrap_or_else(|| PathBuf::from("/tmp/VoiceOver"));
-            std::fs::create_dir_all(&fallback).map_err(|e| e.to_string())?;
-            fallback
-        }
-    };
+    let output_dir = crate::library::resolve_output_dir(&config.output_dir);
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Failed to create output directory {:?}: {}", output_dir, e))?;
 
     let timestamp = chrono_timestamp();
     let final_name = format!("voiceover-{timestamp}.mp4");
@@ -297,7 +285,7 @@ fn write_meta(output_path: &Path, config: &config::AppConfig, voice_replacement:
         "voiceProfile": voice_profile,
         "provider": if voice_replacement { Some(&config.provider) } else { None },
         "voiceReplacement": voice_replacement,
-        "createdAt": chrono_timestamp(),
+        "createdAt": chrono_timestamp().parse::<u64>().unwrap_or(0),
     });
 
     let meta_path = output_path.with_extension("meta.json");

@@ -127,6 +127,7 @@
 		try {
 			await libraryState.openInSystem(recording.path);
 		} catch (err) {
+			errorMessage = `Could not open: ${err}`;
 			logger.error('library', 'Failed to open recording', err);
 		}
 	}
@@ -135,6 +136,7 @@
 		try {
 			await libraryState.revealInFinder(recording.path);
 		} catch (err) {
+			errorMessage = `Could not reveal: ${err}`;
 			logger.error('library', 'Failed to reveal in Finder', err);
 		}
 	}

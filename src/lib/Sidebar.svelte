@@ -12,6 +12,9 @@
 		if (itemPath === '/') {
 			return currentPath === '/' || currentPath.startsWith('/preview');
 		}
+		if (itemPath === '/settings') {
+			return currentPath.startsWith('/settings') || currentPath.startsWith('/create-voice');
+		}
 		return currentPath.startsWith(itemPath);
 	}
 </script>

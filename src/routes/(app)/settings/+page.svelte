@@ -338,7 +338,7 @@
 			<div class="section-title">Output</div>
 			<div class="card">
 				<label class="field-label" for="output-dir">Save Location</label>
-				<input id="output-dir" bind:value={appState.config.output_dir} class="input" />
+				<input id="output-dir" bind:value={appState.config.output_dir} class="input" onblur={() => appState.saveConfig()} />
 			</div>
 		</div>
 
@@ -356,6 +356,7 @@
 						placeholder="sk-..."
 						class="input"
 						autocomplete="off"
+						onblur={() => appState.saveConfig()}
 					/>
 					<button class="small-btn" onclick={() => (apiKeyVisible = !apiKeyVisible)}>
 						{apiKeyVisible ? '🙈' : '👁️'}
@@ -391,6 +392,7 @@
 						bind:value={appState.config.google_drive.client_id}
 						placeholder="your-app.apps.googleusercontent.com"
 						class="input"
+						onblur={() => appState.saveConfig()}
 					/>
 					<label class="field-label" for="gdrive-client-secret">Client Secret</label>
 					<input
@@ -400,6 +402,7 @@
 						placeholder="GOCSPX-..."
 						class="input"
 						autocomplete="off"
+						onblur={() => appState.saveConfig()}
 					/>
 					<div class="drive-hint">
 						Create at console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Desktop app)

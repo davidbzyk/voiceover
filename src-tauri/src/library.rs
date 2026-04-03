@@ -118,7 +118,7 @@ fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
 
 /// Resolve the actual output directory, falling back to the system default
 /// if the configured path doesn't exist. Mirrors the pipeline's fallback logic.
-fn resolve_output_dir(configured: &str) -> PathBuf {
+pub(crate) fn resolve_output_dir(configured: &str) -> PathBuf {
     let configured_path = PathBuf::from(configured);
     if !configured.is_empty() && configured_path.exists() {
         return configured_path;
@@ -127,7 +127,11 @@ fn resolve_output_dir(configured: &str) -> PathBuf {
     // Configured path missing or empty — use macOS default ~/Movies/VoiceOver
     let fallback = dirs::video_dir()
         .map(|p| p.join("VoiceOver"))
-        .expect("dirs::video_dir() should always return a path on macOS");
+        .unwrap_or_else(|| {
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+            log::error!("[library] dirs::video_dir() returned None — using {:?}/VoiceOver", home);
+            home.join("VoiceOver")
+        });
 
     if configured_path != fallback {
         log::warn!("[library] Configured output dir {:?} unavailable, using {:?}", configured_path, fallback);
@@ -344,6 +348,21 @@ mod tests {
             result_str.contains("VoiceOver") || result_str == "/nonexistent/path/VoiceOver",
             "expected VoiceOver in fallback path, got: {result_str}"
         );
+    }
+
+    #[test]
+    fn resolve_output_dir_never_returns_empty_path() {
+        let result = resolve_output_dir("");
+        assert!(!result.to_string_lossy().is_empty(), "empty config must not produce empty path");
+        assert!(result.is_absolute(), "must return absolute path, got: {:?}", result);
+        assert!(result.to_string_lossy().contains("VoiceOver"),
+            "empty config should fall back to ~/Movies/VoiceOver, got: {:?}", result);
+    }
+
+    #[test]
+    fn resolve_output_dir_never_returns_relative_path() {
+        let result = resolve_output_dir("relative/path");
+        assert!(result.is_absolute(), "must return absolute path even for relative input, got: {:?}", result);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 	import { logger } from '$lib/logger';
 
 	let sidecarHealthy = $state(false);
+	let localVoiceName = $state('');
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 
 	async function checkSidecar() {
@@ -18,8 +19,19 @@
 		}
 	}
 
+	async function resolveLocalVoiceName() {
+		if (!isTauri() || !appState.config.local_voice_profile_id) return;
+		try {
+			const voices = await tauriInvoke<{ id: string; name: string }[]>('list_local_voices');
+			localVoiceName = voices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? '';
+		} catch (err) {
+			logger.debug('statusbar', 'Failed to resolve local voice name', err);
+		}
+	}
+
 	onMount(() => {
 		checkSidecar();
+		resolveLocalVoiceName();
 		pollHandle = setInterval(checkSidecar, 30_000);
 	});
 
@@ -33,7 +45,7 @@
 
 	const voiceLabel = $derived.by(() => {
 		if (appState.config.provider === 'local') {
-			return appState.config.local_voice_profile_id || 'No profile';
+			return localVoiceName || 'No profile';
 		}
 		const voice = appState.config.voices?.find((v: { is_default: boolean }) => v.is_default)
 			?? appState.config.voices?.[0];

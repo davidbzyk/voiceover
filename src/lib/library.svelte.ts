@@ -1,5 +1,6 @@
 import { tauriInvoke } from './tauri';
 import { isTauri } from './state.svelte';
+import { logger } from './logger';
 
 export type RecordingMeta = {
 	voiceProfile: string | null;
@@ -56,7 +57,8 @@ class LibraryState {
 		try {
 			this.recordings = await tauriInvoke<RecordingInfo[]>('list_recordings');
 		} catch (err) {
-			this.error = String(err);
+			logger.error('library', 'Failed to load recordings', err);
+			this.error = 'Could not load recordings. Check output directory in Settings.';
 			this.recordings = [];
 		} finally {
 			this.loading = false;

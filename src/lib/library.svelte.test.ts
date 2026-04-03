@@ -61,12 +61,12 @@ describe('LibraryState.load', () => {
 		expect(libraryState.recordings[0].filename).toBe('voiceover-1740000001.mp4');
 	});
 
-	it('sets error on invoke failure', async () => {
+	it('sets user-friendly error on invoke failure', async () => {
 		mockInvoke.mockRejectedValue(new Error('Sidecar not running'));
 
 		await libraryState.load();
 
-		expect(libraryState.error).toContain('Sidecar not running');
+		expect(libraryState.error).toContain('Could not load recordings');
 		expect(libraryState.recordings).toEqual([]);
 	});
 
