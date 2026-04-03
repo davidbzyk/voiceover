@@ -214,7 +214,7 @@ class TestModelEndpoints:
         data = response.json()
         assert "models" in data
         assert isinstance(data["models"], list)
-        assert len(data["models"]) == 5
+        assert len(data["models"]) == 4
 
     def test_download_unknown_model(self, client):
         response = client.post("/models/download", json={
@@ -354,12 +354,11 @@ class TestHappyPaths:
 
 
 class TestModelRegistry:
-    def test_registry_has_exactly_five_entries(self):
-        assert len(MODEL_REGISTRY) == 5
+    def test_registry_has_expected_entry_count(self):
+        assert len(MODEL_REGISTRY) == 4
 
     def test_registry_contains_expected_models(self):
         expected = {
-            "whisper-small",
             "whisper-medium",
             "whisper-large-v3-turbo",
             "qwen-tts-1.7B",

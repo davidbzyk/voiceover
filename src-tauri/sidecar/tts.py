@@ -37,7 +37,6 @@ _whisper_model = None
 _whisper_model_name = None  # Track which model is loaded
 
 WHISPER_MODELS = {
-    "whisper-small": "mlx-community/whisper-small-mlx",
     "whisper-medium": "mlx-community/whisper-medium-mlx",
     "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }

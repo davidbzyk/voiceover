@@ -103,12 +103,6 @@ logger = logging.getLogger("voiceover-tts")
 
 MODEL_REGISTRY = {
     # Whisper variants (transcription)
-    "whisper-small": {
-        "repo_id": "mlx-community/whisper-small-mlx",
-        "display_name": "Whisper Small",
-        "category": "transcription",
-        "recommended": False,
-    },
     "whisper-medium": {
         "repo_id": "mlx-community/whisper-medium-mlx",
         "display_name": "Whisper Medium",

@@ -309,11 +309,8 @@ class TestGroupWordsIntoPhrases:
 
 class TestWhisperModels:
     def test_contains_all_expected_entries(self):
-        expected_keys = {"whisper-small", "whisper-medium", "whisper-large-v3-turbo"}
+        expected_keys = {"whisper-medium", "whisper-large-v3-turbo"}
         assert set(WHISPER_MODELS.keys()) == expected_keys
-
-    def test_whisper_small_maps_to_correct_repo(self):
-        assert WHISPER_MODELS["whisper-small"] == "mlx-community/whisper-small-mlx"
 
     def test_whisper_medium_maps_to_correct_repo(self):
         assert WHISPER_MODELS["whisper-medium"] == "mlx-community/whisper-medium-mlx"
@@ -366,8 +363,8 @@ class TestTranscribeModelName:
             with patch("mlx_audio.stt.utils.load_model", return_value=mock_model):
                 from tts import transcribe
 
-                transcribe("/tmp/fake-audio.wav", "/tmp/models", model_name="whisper-small")
-                assert tts._whisper_model_name == "whisper-small"
+                transcribe("/tmp/fake-audio.wav", "/tmp/models", model_name="whisper-medium")
+                assert tts._whisper_model_name == "whisper-medium"
         except ImportError:
             # mlx_audio not available in test environment — skip gracefully
             pytest.skip("mlx_audio not available in test environment")
