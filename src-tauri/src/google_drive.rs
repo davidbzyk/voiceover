@@ -281,6 +281,29 @@ pub async fn upload_to_drive(
         })
         .ok();
 
+    // Update .meta.json with drive URL
+    let meta_path = Path::new(&file_path).with_extension("meta.json");
+    let timestamp: u64 = crate::pipeline::chrono_timestamp()
+        .parse()
+        .unwrap_or(0);
+    let mut meta = if meta_path.exists() {
+        std::fs::read_to_string(&meta_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    meta["driveUrl"] = serde_json::Value::String(share_link.clone());
+    meta["uploadedAt"] = serde_json::json!(timestamp);
+    match serde_json::to_string_pretty(&meta) {
+        Ok(json) => match std::fs::write(&meta_path, json) {
+            Ok(_) => log::info!("[drive] Wrote meta.json with drive URL"),
+            Err(e) => log::warn!("[drive] Failed to write meta.json: {} (upload succeeded)", e),
+        },
+        Err(e) => log::warn!("[drive] Failed to serialize meta.json: {}", e),
+    }
+
     Ok(share_link)
 }
 

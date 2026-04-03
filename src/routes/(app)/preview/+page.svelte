@@ -6,13 +6,25 @@
 	import { refreshDriveToken, driveUploadWithToken, DriveUploadError } from '$lib/drive';
 
 	import { onMount } from 'svelte';
+	import { tauriInvoke } from '$lib/tauri';
 
 	let isProcessing = $state(false);
 	let processingError = $state('');
 	let transformedAudioUrl = $state('');
 	let videoSrc = $state('');
+	let localVoiceName = $state('');
 
 	onMount(async () => {
+		// Resolve local voice name if using local provider
+		if (appState.config.provider === 'local' && appState.config.local_voice_profile_id && isTauri()) {
+			try {
+				const voices = await tauriInvoke<{ id: string; name: string }[]>('list_local_voices');
+				localVoiceName = voices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? '';
+			} catch (err) {
+				logger.error('preview', 'Failed to load local voice names', err);
+			}
+		}
+
 		if (!appState.recordingPath) return;
 		if (appState.recordingPath.startsWith('blob:')) {
 			videoSrc = appState.recordingPath;
@@ -70,6 +82,7 @@
 			} else if (msg.event === 'complete') {
 				appState.outputPath = msg.data.outputPath;
 				appState.recordingState = 'saved';
+				appState.libraryStale = true;
 				logger.pipelineComplete(msg.data.outputPath);
 				isProcessing = false;
 			} else if (msg.event === 'error') {
@@ -87,6 +100,7 @@
 		});
 		appState.outputPath = result;
 		appState.recordingState = 'saved';
+		appState.libraryStale = true;
 	}
 
 	async function processViaBrowser() {
@@ -374,15 +388,13 @@
 </script>
 
 <div class="preview">
-	<div class="header">
-		<h2>
-			{#if appState.recordingState === 'saved'}
-				✅ Saved
-			{:else}
-				Preview
-			{/if}
-		</h2>
-	</div>
+	<h2 class="page-title">
+		{#if appState.recordingState === 'saved'}
+			✅ Saved
+		{:else}
+			Preview
+		{/if}
+	</h2>
 
 	<!-- Video preview -->
 	{#if videoSrc}
@@ -399,9 +411,13 @@
 			<div>
 				<div class="toggle-label">🎙️ Replace Voice</div>
 				<div class="toggle-hint">
-					{appState.config.preferences.voice_replacement_enabled
-						? `Using: ${appState.selectedVoice?.name ?? 'None'}`
-						: 'Save raw recording'}
+					{#if !appState.config.preferences.voice_replacement_enabled}
+						Save raw recording
+					{:else if appState.config.provider === 'local'}
+						Using: {localVoiceName || appState.config.local_voice_profile_id || 'None'}
+					{:else}
+						Using: {appState.selectedVoice?.name ?? 'None'}
+					{/if}
 				</div>
 			</div>
 			<button
@@ -482,8 +498,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
+		max-width: 600px;
+		margin: 0 auto;
+		width: 100%;
 	}
-	.header h2 {
+	.page-title {
 		margin: 0;
 		font-size: 18px;
 	}

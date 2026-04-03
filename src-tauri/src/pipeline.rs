@@ -40,21 +40,9 @@ pub async fn process_recording(
     );
 
     let config = config::get_config(app.clone()).await?;
-    let output_dir = PathBuf::from(&config.output_dir);
-
-    // Fall back to default output dir if configured path can't be created
-    let output_dir = match std::fs::create_dir_all(&output_dir) {
-        Ok(_) => output_dir,
-        Err(e) => {
-            log::warn!("[pipeline] Can't create output dir {:?}: {}, using default", output_dir, e);
-            let fallback = dirs::video_dir()
-                .or_else(dirs::home_dir)
-                .map(|p| p.join("VoiceOver"))
-                .unwrap_or_else(|| PathBuf::from("/tmp/VoiceOver"));
-            std::fs::create_dir_all(&fallback).map_err(|e| e.to_string())?;
-            fallback
-        }
-    };
+    let output_dir = crate::library::resolve_output_dir(&config.output_dir);
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format!("Failed to create output directory {:?}: {}", output_dir, e))?;
 
     let timestamp = chrono_timestamp();
     let final_name = format!("voiceover-{timestamp}.mp4");
@@ -71,6 +59,7 @@ pub async fn process_recording(
             .ok();
 
         ffmpeg::normalize_to_mp4(&recording, &final_path).await?;
+        write_meta(&final_path, &config, false, None);
 
         on_event
             .send(PipelineEvent::Complete {
@@ -159,6 +148,9 @@ pub async fn process_recording(
         .ok();
 
     // Stage 2: Voice transformation (10-85%)
+    // Track the resolved voice name for metadata (human-readable, not opaque ID)
+    let resolved_voice_name: Option<String>;
+
     if use_local {
         on_event
             .send(PipelineEvent::Progress {
@@ -189,6 +181,17 @@ pub async fn process_recording(
                 video_duration,
             ).await?;
         }
+
+        // Resolve local voice profile ID → human-readable name from sidecar
+        resolved_voice_name = match local_tts::list_local_voices(app.clone()).await {
+            Ok(voices) => voices.iter()
+                .find(|v| v.id == config.local_voice_profile_id)
+                .map(|v| v.name.clone()),
+            Err(e) => {
+                log::warn!("[pipeline] Could not resolve local voice name: {}", e);
+                None
+            }
+        };
     } else {
         on_event
             .send(PipelineEvent::Progress {
@@ -203,6 +206,12 @@ pub async fn process_recording(
             &extracted_wav,
             &transformed_audio,
         ).await?;
+
+        // Resolve ElevenLabs voice name from config
+        resolved_voice_name = config.voices.iter()
+            .find(|v| v.is_default)
+            .or_else(|| config.voices.first())
+            .map(|v| v.name.clone());
     }
 
     on_event
@@ -235,6 +244,8 @@ pub async fn process_recording(
         }
     }
 
+    write_meta(&final_path, &config, true, resolved_voice_name.as_deref());
+
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
         final_path.display(),
@@ -265,7 +276,32 @@ fn cleanup_temp(path: &Path) {
     std::fs::remove_file(path).ok();
 }
 
-fn chrono_timestamp() -> String {
+/// Write a .meta.json sidecar alongside the output MP4.
+/// `voice_name` should be the resolved human-readable name, not an opaque ID.
+fn write_meta(output_path: &Path, config: &config::AppConfig, voice_replacement: bool, voice_name: Option<&str>) {
+    let voice_profile = if voice_replacement { voice_name } else { None };
+
+    let meta = serde_json::json!({
+        "voiceProfile": voice_profile,
+        "provider": if voice_replacement { Some(&config.provider) } else { None },
+        "voiceReplacement": voice_replacement,
+        "createdAt": chrono_timestamp().parse::<u64>().unwrap_or(0),
+    });
+
+    let meta_path = output_path.with_extension("meta.json");
+    match serde_json::to_string_pretty(&meta) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&meta_path, json) {
+                log::warn!("[pipeline] Failed to write meta.json: {}", e);
+            } else {
+                log::info!("[pipeline] Wrote metadata: {:?}", meta_path);
+            }
+        }
+        Err(e) => log::warn!("[pipeline] Failed to serialize meta.json: {}", e),
+    }
+}
+
+pub(crate) fn chrono_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -327,5 +363,84 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["event"], "error");
         assert_eq!(v["data"]["message"], "Something went wrong");
+    }
+
+    #[test]
+    fn write_meta_creates_sidecar_file() {
+        let tmp = std::env::temp_dir().join("vo-test-write-meta");
+        std::fs::create_dir_all(&tmp).ok();
+        let mp4 = tmp.join("voiceover-1740000000.mp4");
+        std::fs::write(&mp4, b"fake").ok();
+
+        let config = config::AppConfig::default();
+        write_meta(&mp4, &config, false, None);
+
+        let meta_path = mp4.with_extension("meta.json");
+        assert!(meta_path.exists(), "meta.json should be created");
+
+        let content = std::fs::read_to_string(&meta_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["voiceReplacement"], false);
+        assert!(v["voiceProfile"].is_null());
+
+        // Cleanup
+        std::fs::remove_file(&mp4).ok();
+        std::fs::remove_file(&meta_path).ok();
+        std::fs::remove_dir(&tmp).ok();
+    }
+
+    #[test]
+    fn write_meta_includes_voice_profile_when_replacement() {
+        let tmp = std::env::temp_dir().join("vo-test-write-meta-vr");
+        std::fs::create_dir_all(&tmp).ok();
+        let mp4 = tmp.join("voiceover-1740000001.mp4");
+        std::fs::write(&mp4, b"fake").ok();
+
+        let mut config = config::AppConfig::default();
+        config.provider = "elevenlabs".to_string();
+        config.voices = vec![config::Voice {
+            id: "voice123".to_string(),
+            name: "TestVoice".to_string(),
+            description: "".to_string(),
+            is_default: true,
+        }];
+        write_meta(&mp4, &config, true, Some("TestVoice"));
+
+        let meta_path = mp4.with_extension("meta.json");
+        let content = std::fs::read_to_string(&meta_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["voiceReplacement"], true);
+        assert_eq!(v["voiceProfile"], "TestVoice");
+        assert_eq!(v["provider"], "elevenlabs");
+
+        // Cleanup
+        std::fs::remove_file(&mp4).ok();
+        std::fs::remove_file(&meta_path).ok();
+        std::fs::remove_dir(&tmp).ok();
+    }
+
+    #[test]
+    fn write_meta_stores_local_voice_name_not_id() {
+        let tmp = std::env::temp_dir().join("vo-test-write-meta-local");
+        std::fs::create_dir_all(&tmp).ok();
+        let mp4 = tmp.join("voiceover-1740000002.mp4");
+        std::fs::write(&mp4, b"fake").ok();
+
+        let mut config = config::AppConfig::default();
+        config.provider = "local".to_string();
+        config.local_voice_profile_id = "4ad88b19-3bfe-493d-8xxx".to_string();
+        // Pass the resolved name, not the ID
+        write_meta(&mp4, &config, true, Some("MJ"));
+
+        let meta_path = mp4.with_extension("meta.json");
+        let content = std::fs::read_to_string(&meta_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["voiceReplacement"], true);
+        assert_eq!(v["voiceProfile"], "MJ", "should store human-readable name, not UUID");
+        assert_eq!(v["provider"], "local");
+
+        std::fs::remove_file(&mp4).ok();
+        std::fs::remove_file(&meta_path).ok();
+        std::fs::remove_dir(&tmp).ok();
     }
 }

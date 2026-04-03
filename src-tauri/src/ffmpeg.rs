@@ -181,6 +181,32 @@ pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), Str
     Ok(())
 }
 
+/// Build ffmpeg arguments for thumbnail extraction (first frame at 1s, 320px wide JPEG).
+pub(crate) fn thumbnail_args(input: &str, output: &str) -> Vec<String> {
+    ["-y", "-i", input, "-ss", "00:00:01", "-vframes", "1",
+     "-vf", "scale=320:-1", "-q:v", "3", output]
+        .iter().map(|s| s.to_string()).collect()
+}
+
+/// Extract a thumbnail JPEG from a video file.
+pub async fn extract_thumbnail(input: &Path, output: &Path) -> Result<(), String> {
+    let args = thumbnail_args(
+        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        output.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+    );
+    let status = Command::new(resolve_ffmpeg_path())
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
+
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        return Err(format!("ffmpeg thumbnail extraction failed: {stderr}"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +319,26 @@ mod tests {
     fn parse_ffmpeg_time_wrong_format_too_few_parts() {
         let result = parse_ffmpeg_time("1:2");
         assert!(result.is_err(), "expected Err for wrong format, got {result:?}");
+    }
+
+    #[test]
+    fn thumbnail_args_use_overwrite_flag() {
+        let args = thumbnail_args("input.mp4", "output.jpg");
+        assert_eq!(args[0], "-y", "thumbnail_args should start with -y");
+    }
+
+    #[test]
+    fn thumbnail_args_seek_and_single_frame() {
+        let args = thumbnail_args("input.mp4", "output.jpg");
+        assert!(args.contains(&"-ss".to_string()));
+        assert!(args.contains(&"00:00:01".to_string()));
+        assert!(args.contains(&"-vframes".to_string()));
+        assert!(args.contains(&"1".to_string()));
+    }
+
+    #[test]
+    fn thumbnail_args_scale_width_320() {
+        let args = thumbnail_args("input.mp4", "output.jpg");
+        assert!(args.contains(&"scale=320:-1".to_string()));
     }
 }

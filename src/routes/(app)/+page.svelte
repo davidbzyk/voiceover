@@ -41,6 +41,12 @@
 	}
 
 	onMount(async () => {
+		// If there's a pending recording, redirect to preview
+		if (appState.recordingPath && ['recorded', 'processing', 'complete', 'saved'].includes(appState.recordingState)) {
+			goto('/preview');
+			return;
+		}
+
 		try {
 			audioDevices = await getAudioDevices();
 			if (audioDevices.length > 0) {
@@ -148,14 +154,6 @@
 </script>
 
 <div class="home">
-	<!-- Top bar -->
-	<div class="topbar">
-		<div class="logo">🎙️ VoiceOver</div>
-		<div class="topbar-actions">
-			<button class="topbar-btn" onclick={() => goto('/settings')}>⚙️ Settings</button>
-		</div>
-	</div>
-
 	<!-- Capture mode -->
 	<div class="section">
 		<div class="section-label">Capture Mode</div>
@@ -258,6 +256,22 @@
 					Local
 				</button>
 			</div>
+
+			{#if appState.config.provider === 'local'}
+				<!-- Voice mode toggle (TTS vs VC) -->
+				<div class="voice-mode-toggle">
+					<button
+						class="voice-mode-btn"
+						class:active={appState.config.local_tts_mode !== 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
+					>Text-to-Speech</button>
+					<button
+						class="voice-mode-btn"
+						class:active={appState.config.local_tts_mode === 'vc'}
+						onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
+					>Voice Conversion</button>
+				</div>
+			{/if}
 
 			<!-- Voice selector based on provider -->
 			{#if appState.config.provider === 'elevenlabs'}
@@ -380,34 +394,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 20px;
-	}
-
-	.topbar {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.logo {
-		font-size: 18px;
-		font-weight: 700;
-		color: #f97316;
-	}
-	.topbar-actions {
-		display: flex;
-		gap: 8px;
-	}
-	.topbar-btn {
-		background: #334155;
-		border: none;
-		color: #94a3b8;
-		padding: 6px 14px;
-		border-radius: 6px;
-		font-size: 12px;
-		cursor: pointer;
-	}
-	.topbar-btn:hover {
-		background: #475569;
-		color: #f1f5f9;
+		max-width: 500px;
+		margin: 0 auto;
+		width: 100%;
 	}
 
 	.section {
@@ -481,6 +470,26 @@
 	.option-hint {
 		color: #64748b;
 		font-style: italic;
+	}
+	.voice-mode-toggle {
+		display: flex;
+		gap: 8px;
+	}
+	.voice-mode-btn {
+		flex: 1;
+		padding: 8px 12px;
+		border: 1px solid #334155;
+		border-radius: 6px;
+		background: transparent;
+		color: #94a3b8;
+		font-size: 12px;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+	.voice-mode-btn.active {
+		background: #1e293b;
+		border-color: #6366f1;
+		color: #e2e8f0;
 	}
 	.on {
 		color: #22c55e;

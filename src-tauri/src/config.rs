@@ -185,6 +185,12 @@ pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
         // Always overlay secrets from keychain (authoritative source)
         crate::secrets::load_secrets(&mut config);
 
+        // Ensure output_dir is never empty (serde default only applies to missing fields)
+        if config.output_dir.is_empty() {
+            config.output_dir = default_output_dir();
+            log::info!("[config] Empty output_dir — reset to default: {}", config.output_dir);
+        }
+
         Ok(config)
     }).await.map_err(|e| format!("Config task failed: {e}"))?
 }

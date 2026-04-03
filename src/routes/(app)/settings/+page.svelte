@@ -22,9 +22,7 @@
 	let localError = $state('');
 
 	onMount(() => {
-		if (appState.config.provider === 'local') {
-			loadLocalVoices();
-		}
+		loadLocalVoices();
 	});
 
 	async function loadLocalVoices() {
@@ -75,10 +73,6 @@
 		}
 	}
 
-	async function saveAndBack() {
-		await appState.saveConfig();
-		goto('/');
-	}
 
 	let testError = $state('');
 
@@ -127,6 +121,7 @@
 		];
 		newVoiceName = '';
 		newVoiceId = '';
+		appState.saveConfig();
 	}
 
 	function removeVoice(id: string) {
@@ -135,6 +130,7 @@
 		if (wasDefault && appState.config.voices.length > 0) {
 			appState.config.voices[0].is_default = true;
 		}
+		appState.saveConfig();
 	}
 
 	function setDefault(id: string) {
@@ -142,6 +138,7 @@
 			...v,
 			is_default: v.id === id
 		}));
+		appState.saveConfig();
 	}
 
 	let connectingDrive = $state(false);
@@ -186,100 +183,169 @@
 		};
 		await appState.saveConfig();
 	}
+	let activeTab = $state<'voice' | 'recording' | 'cloud'>('voice');
+
+	const tabs: { value: 'voice' | 'recording' | 'cloud'; label: string }[] = [
+		{ value: 'voice', label: 'Voice' },
+		{ value: 'recording', label: 'Recording' },
+		{ value: 'cloud', label: 'Cloud' },
+	];
 </script>
 
 <div class="settings">
 	<div class="header">
-		<button class="back-btn" onclick={saveAndBack}>← Back</button>
 		<h2>Settings</h2>
 	</div>
 
-	<!-- TTS Provider Toggle -->
-	<div class="section">
-		<div class="section-title">TTS Provider</div>
-		<div class="card">
-			<div class="provider-toggle">
-				<button
-					class="provider-btn"
-					class:active={appState.config.provider === 'elevenlabs'}
-					onclick={() => setProvider('elevenlabs')}
-				>
-					ElevenLabs
-				</button>
-				<button
-					class="provider-btn"
-					class:active={appState.config.provider === 'local'}
-					onclick={() => setProvider('local')}
-				>
-					Local
-				</button>
-			</div>
-		</div>
+	<div class="tab-bar">
+		{#each tabs as tab}
+			<button
+				class="tab-btn"
+				class:active={activeTab === tab.value}
+				onclick={() => (activeTab = tab.value)}
+			>
+				{tab.label}
+			</button>
+		{/each}
 	</div>
 
-	{#if appState.config.provider === 'local'}
-		<!-- Local Voice Collection -->
+	{#if activeTab === 'voice'}
+		<!-- TTS Provider Toggle -->
 		<div class="section">
-			<div class="section-header">
-				<div class="section-title">Voice Collection</div>
-			</div>
+			<div class="section-title">TTS Provider</div>
 			<div class="card">
-				{#if localLoading}
-					<div class="hint-text">Loading voices...</div>
-				{:else if localError}
-					<div class="status invalid">{localError}</div>
-				{:else if localVoices.length > 0}
-					{#each localVoices as voice}
-						<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
+				<div class="provider-toggle">
+					<button
+						class="provider-btn"
+						class:active={appState.config.provider === 'elevenlabs'}
+						onclick={() => setProvider('elevenlabs')}
+					>
+						ElevenLabs
+					</button>
+					<button
+						class="provider-btn"
+						class:active={appState.config.provider === 'local'}
+						onclick={() => setProvider('local')}
+					>
+						Local
+					</button>
+				</div>
+			</div>
+		</div>
+
+		{#if appState.config.provider === 'local'}
+			<!-- Local Voice Collection -->
+			<div class="section">
+				<div class="section-header">
+					<div class="section-title">Voice Collection</div>
+				</div>
+				<div class="card">
+					{#if localLoading}
+						<div class="hint-text">Loading voices...</div>
+					{:else if localError}
+						<div class="status invalid">{localError}</div>
+					{:else if localVoices.length > 0}
+						{#each localVoices as voice}
+							<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
+								<div class="voice-info">
+									<div class="voice-name">{voice.name}</div>
+									<div class="voice-id">{voice.id.slice(0, 20)}</div>
+								</div>
+								<div class="voice-actions">
+									{#if voice.id === appState.config.local_voice_profile_id}
+										<span class="default-badge">Default</span>
+									{:else}
+										<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
+									{/if}
+									<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
+								</div>
+							</div>
+						{/each}
+					{:else}
+						<div class="hint-text">No voice profiles yet. Create one to get started.</div>
+					{/if}
+
+					<button class="small-btn accent" onclick={() => goto('/create-voice')}>
+						+ Create Voice
+					</button>
+				</div>
+
+				<div class="section-header">
+					<div class="section-title">Voice Mode</div>
+				</div>
+				<div class="card">
+					<div class="hint-text" style="margin-bottom: 8px">
+						<strong>Text-to-Speech:</strong> Transcribes then generates new speech (faster, less sync)<br>
+						<strong>Voice Conversion:</strong> Converts your voice directly (slower, preserves timing)
+					</div>
+					<div class="toggle-row">
+						<button
+							class="toggle-btn"
+							class:active={appState.config.local_tts_mode !== 'vc'}
+							onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
+						>Text-to-Speech</button>
+						<button
+							class="toggle-btn"
+							class:active={appState.config.local_tts_mode === 'vc'}
+							onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
+						>Voice Conversion</button>
+					</div>
+				</div>
+			</div>
+		{:else}
+			<!-- ElevenLabs Voice Collection -->
+			<div class="section">
+				<div class="section-header">
+					<div class="section-title">Voice Collection</div>
+				</div>
+
+				<div class="card">
+					{#each appState.config.voices as voice}
+						<div class="voice-item" class:default={voice.is_default}>
 							<div class="voice-info">
 								<div class="voice-name">{voice.name}</div>
-								<div class="voice-id">{voice.id.slice(0, 20)}</div>
+								<div class="voice-id">{voice.id}</div>
 							</div>
 							<div class="voice-actions">
-								{#if voice.id === appState.config.local_voice_profile_id}
-									<span class="default-badge">Default</span>
+								{#if voice.is_default}
+									<span class="default-badge">★ Default</span>
 								{:else}
-									<button class="link-btn" onclick={() => setDefaultLocalVoice(voice.id)}>Set default</button>
+									<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
 								{/if}
-								<button class="link-btn danger" onclick={() => removeLocalVoice(voice.id)}>Remove</button>
+								<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
 							</div>
 						</div>
 					{/each}
-				{:else}
-					<div class="hint-text">No voice profiles yet. Create one to get started.</div>
-				{/if}
 
-				<button class="small-btn accent" onclick={() => goto('/create-voice')}>
-					+ Create Voice
-				</button>
+					<div class="add-voice">
+						<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
+						<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
+						<button
+							class="small-btn accent"
+							onclick={addVoice}
+							disabled={!newVoiceName.trim() || !newVoiceId.trim()}
+						>
+							+ Add
+						</button>
+					</div>
+				</div>
 			</div>
+		{/if}
 
-			<div class="section-header">
-				<div class="section-title">Voice Mode</div>
-			</div>
+	{:else if activeTab === 'recording'}
+		<!-- Output -->
+		<div class="section">
+			<div class="section-title">Output</div>
 			<div class="card">
-				<div class="hint-text" style="margin-bottom: 8px">
-					<strong>Text-to-Speech:</strong> Transcribes then generates new speech (faster, less sync)<br>
-					<strong>Voice Conversion:</strong> Converts your voice directly (slower, preserves timing)
-				</div>
-				<div class="toggle-row">
-					<button
-						class="toggle-btn"
-						class:active={appState.config.local_tts_mode !== 'vc'}
-						onclick={() => { appState.config.local_tts_mode = 'tts'; appState.saveConfig(); }}
-					>Text-to-Speech</button>
-					<button
-						class="toggle-btn"
-						class:active={appState.config.local_tts_mode === 'vc'}
-						onclick={() => { appState.config.local_tts_mode = 'vc'; appState.saveConfig(); }}
-					>Voice Conversion</button>
-				</div>
+				<label class="field-label" for="output-dir">Save Location</label>
+				<input id="output-dir" bind:value={appState.config.output_dir} class="input" onblur={() => appState.saveConfig()} />
 			</div>
 		</div>
-	{:else}
+
+	{:else if activeTab === 'cloud'}
 		<!-- ElevenLabs API Key -->
 		<form class="section" onsubmit={(e) => { e.preventDefault(); testApiKey(); }}>
-			<div class="section-title">ElevenLabs</div>
+			<div class="section-title">ElevenLabs API Key</div>
 			<div class="card">
 				<label class="field-label" for="api-key">API Key</label>
 				<div class="key-row">
@@ -290,6 +356,7 @@
 						placeholder="sk-..."
 						class="input"
 						autocomplete="off"
+						onblur={() => appState.saveConfig()}
 					/>
 					<button class="small-btn" onclick={() => (apiKeyVisible = !apiKeyVisible)}>
 						{apiKeyVisible ? '🙈' : '👁️'}
@@ -306,99 +373,54 @@
 			</div>
 		</form>
 
-		<!-- Voice Collection -->
+		<!-- Google Drive -->
 		<div class="section">
-			<div class="section-header">
-				<div class="section-title">Voice Collection</div>
-			</div>
-
+			<div class="section-title">Google Drive</div>
 			<div class="card">
-				{#each appState.config.voices as voice}
-					<div class="voice-item" class:default={voice.is_default}>
-						<div class="voice-info">
-							<div class="voice-name">{voice.name}</div>
-							<div class="voice-id">{voice.id}</div>
+				{#if appState.config.google_drive.connected}
+					<div class="drive-status">
+						<div class="drive-connected">
+							<span class="drive-dot"></span>
+							Connected as {appState.config.google_drive.email || 'unknown'}
 						</div>
-						<div class="voice-actions">
-							{#if voice.is_default}
-								<span class="default-badge">★ Default</span>
-							{:else}
-								<button class="link-btn" onclick={() => setDefault(voice.id)}>Set default</button>
-							{/if}
-							<button class="link-btn danger" onclick={() => removeVoice(voice.id)}>Remove</button>
-						</div>
+						<button class="link-btn danger" onclick={disconnectDrive}>Disconnect</button>
 					</div>
-				{/each}
-
-				<div class="add-voice">
-					<input bind:value={newVoiceName} placeholder="Voice name" class="input small" />
-					<input bind:value={newVoiceId} placeholder="Voice ID" class="input small" />
+				{:else}
+					<label class="field-label" for="gdrive-client-id">OAuth Client ID</label>
+					<input
+						id="gdrive-client-id"
+						bind:value={appState.config.google_drive.client_id}
+						placeholder="your-app.apps.googleusercontent.com"
+						class="input"
+						onblur={() => appState.saveConfig()}
+					/>
+					<label class="field-label" for="gdrive-client-secret">Client Secret</label>
+					<input
+						id="gdrive-client-secret"
+						type="password"
+						bind:value={appState.config.google_drive.client_secret}
+						placeholder="GOCSPX-..."
+						class="input"
+						autocomplete="off"
+						onblur={() => appState.saveConfig()}
+					/>
+					<div class="drive-hint">
+						Create at console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Desktop app)
+					</div>
 					<button
 						class="small-btn accent"
-						onclick={addVoice}
-						disabled={!newVoiceName.trim() || !newVoiceId.trim()}
+						onclick={connectDrive}
+						disabled={!appState.config.google_drive.client_id.trim() || !appState.config.google_drive.client_secret.trim() || connectingDrive}
 					>
-						+ Add
+						{connectingDrive ? 'Connecting...' : 'Connect Google Drive'}
 					</button>
-				</div>
+					{#if driveError}
+						<div class="status invalid">{driveError}</div>
+					{/if}
+				{/if}
 			</div>
 		</div>
 	{/if}
-
-	<!-- Output -->
-	<div class="section">
-		<div class="section-title">Output</div>
-		<div class="card">
-			<label class="field-label" for="output-dir">Save Location</label>
-			<input id="output-dir" bind:value={appState.config.output_dir} class="input" />
-		</div>
-	</div>
-
-	<!-- Google Drive -->
-	<div class="section">
-		<div class="section-title">Google Drive</div>
-		<div class="card">
-			{#if appState.config.google_drive.connected}
-				<div class="drive-status">
-					<div class="drive-connected">
-						<span class="drive-dot"></span>
-						Connected as {appState.config.google_drive.email || 'unknown'}
-					</div>
-					<button class="link-btn danger" onclick={disconnectDrive}>Disconnect</button>
-				</div>
-			{:else}
-				<label class="field-label" for="gdrive-client-id">OAuth Client ID</label>
-				<input
-					id="gdrive-client-id"
-					bind:value={appState.config.google_drive.client_id}
-					placeholder="your-app.apps.googleusercontent.com"
-					class="input"
-				/>
-				<label class="field-label" for="gdrive-client-secret">Client Secret</label>
-				<input
-					id="gdrive-client-secret"
-					type="password"
-					bind:value={appState.config.google_drive.client_secret}
-					placeholder="GOCSPX-..."
-					class="input"
-					autocomplete="off"
-				/>
-				<div class="drive-hint">
-					Create at console.cloud.google.com → APIs → Credentials → OAuth 2.0 Client ID (Desktop app)
-				</div>
-				<button
-					class="small-btn accent"
-					onclick={connectDrive}
-					disabled={!appState.config.google_drive.client_id.trim() || !appState.config.google_drive.client_secret.trim() || connectingDrive}
-				>
-					{connectingDrive ? 'Connecting...' : 'Connect Google Drive'}
-				</button>
-				{#if driveError}
-					<div class="status invalid">{driveError}</div>
-				{/if}
-			{/if}
-		</div>
-	</div>
 </div>
 
 <style>
@@ -408,6 +430,34 @@
 		flex-direction: column;
 		gap: 20px;
 		max-width: 480px;
+		margin: 0 auto;
+		width: 100%;
+	}
+	.tab-bar {
+		display: flex;
+		gap: 4px;
+		background: #0f172a;
+		border-radius: 6px;
+		padding: 3px;
+	}
+	.tab-btn {
+		flex: 1;
+		background: transparent;
+		border: none;
+		color: #64748b;
+		padding: 8px 12px;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 13px;
+		font-weight: 500;
+		transition: all 0.15s;
+	}
+	.tab-btn.active {
+		background: #334155;
+		color: #f1f5f9;
+	}
+	.tab-btn:hover:not(.active) {
+		color: #94a3b8;
 	}
 	.section-header {
 		display: flex;
