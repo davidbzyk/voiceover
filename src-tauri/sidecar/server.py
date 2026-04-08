@@ -1010,8 +1010,6 @@ async def extract_youtube(request: dict):
                 "outtmpl": str(video_path),
                 "quiet": True,
                 "no_warnings": True,
-                "noplaylist": True,
-                "max_downloads": 1,
                 "socket_timeout": 30,
                 "retries": 2,
             }

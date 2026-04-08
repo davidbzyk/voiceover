@@ -1,6 +1,6 @@
 [package]
 name = "voiceover"
-version = "0.1.0"
+version = "0.2.0"
 description = "Screen recorder with ElevenLabs voice replacement"
 authors = ["dave"]
 license = "MIT"
