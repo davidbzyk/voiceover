@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.0] - 2026-04-08
+
+**57 files | 3,086 additions | 608 deletions | 3 PRs | 29 commits**
+
+### 🌟 New Features
+
+- **Model Settings panel** — dedicated sidebar page to browse, download, and manage AI models with category tags, recommended badges, and Whisper model selection (#21)
+- **Video rename** — rename recordings directly from the library view (#20)
+- **Auto-detect `ELEVENLABS_API_KEY`** from environment variables — no manual entry needed if already exported (#20)
+- **Version bump tooling** — `bump.sh` script for consistent release versioning
+
+### 🐛 Bug Fixes
+
+- **Slow/deep voice on first generation** after switching voices — TTS engine now reinitializes properly on voice change
+- **Video clipping** in both TTS and voice conversion modes — output duration now matches source (#20)
+- **TTS timing and transcription accuracy** improvements — better duration probing and segment alignment (#20)
+- **Model cache not refreshing** after download completes — cache invalidation added (#21)
+- **CosyVoice3 missing** from prerequisites UI and download JSON parsing error (#20)
+- **Sidecar code signing** added to PyInstaller build for macOS Gatekeeper (#20)
+- **84 findings** from comprehensive codebase review resolved — spanning error handling, edge cases, and code quality
+- **22 model-related bugs** fixed in consolidated review (#21)
+- **`whisper-small` removed** — too low quality for production use (#21)
+- **Models nav alignment** fixed in sidebar (#21)
+- **`yt-dlp` options** corrected for voice extraction
+
+### 🛠️ Other Improvements
+
+- Models page moved from settings sub-tab to dedicated sidebar route with `ModelInfo` struct enriched with `category` and `recommended` fields (#21)
+- `cleanup_stale_recordings` test made deterministic (#21)
+- README updated: Linux references removed (macOS-only app), visual architecture diagram replaces ASCII, TTS audio cutoff added to known issues (#19, #20)
+- Integration tests updated for CosyVoice3 three-model setup (#20)
+- Unused CI workflow files cleaned up (#20)
+
 ## [0.1.0] - 2026-04-02
 
 **86 files | 12,367 lines | 18 PRs | 99 commits**
