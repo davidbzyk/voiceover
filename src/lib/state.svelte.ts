@@ -27,6 +27,9 @@ export function isTauri(): boolean {
 	return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
 }
 
+export type TtsProvider = 'elevenlabs' | 'local';
+export type LocalTtsMode = 'tts' | 'vc';
+
 export type Voice = {
 	id: string;
 	name: string;
@@ -55,11 +58,11 @@ export type AppConfig = {
 		webcam_position: 'bottom-left' | 'bottom-right';
 	};
 	google_drive: GoogleDrive;
-	provider: string;
+	provider: TtsProvider;
 	/** @deprecated Kept for backward compatibility with old config files. Not used — sidecar runs on managed port. */
 	local_endpoint?: string;
 	local_voice_profile_id: string;
-	local_tts_mode: string;
+	local_tts_mode: LocalTtsMode;
 	whisper_model: string;
 };
 
@@ -134,13 +137,16 @@ class AppState {
 		if (isTauri()) {
 			try {
 				const tauriConfig = await tauriInvoke<AppConfig>('get_config');
-				if (tauriConfig.elevenlabs_api_key) {
+				const hasValidConfig = tauriConfig.provider === 'local'
+					? true  // Local mode doesn't need an API key
+					: !!tauriConfig.elevenlabs_api_key;
+				if (hasValidConfig) {
 					this.config = tauriConfig;
 					localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeForStorage(this.config)));
 					logger.configLoaded('Tauri app data');
 					return;
 				}
-				logger.warn('config', 'Tauri config has no API key, checking static fallback');
+				logger.warn('config', 'Tauri config not valid (no API key and not local mode), checking static fallback');
 			} catch (e) {
 				logger.error('config', 'Failed to load from Tauri', e);
 			}

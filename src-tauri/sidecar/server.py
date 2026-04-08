@@ -73,16 +73,23 @@ from contextlib import asynccontextmanager
 # We don't need its functionality (attention capture, cache management).
 import transformers.utils.generic as _tug
 
+if hasattr(_tug, "check_model_inputs"):
+    _original = _tug.check_model_inputs
 
-def _noop_check_model_inputs(*args, **kwargs):
-    if args and callable(args[0]):
-        return args[0]  # @check_model_inputs without parens
-    def decorator(func):
-        return func
-    return decorator  # @check_model_inputs() with parens
+    def _noop_check_model_inputs(*args, **kwargs):
+        if args and callable(args[0]):
+            return args[0]  # @check_model_inputs without parens
+        def decorator(func):
+            return func
+        return decorator  # @check_model_inputs() with parens
 
-
-_tug.check_model_inputs = _noop_check_model_inputs
+    _tug.check_model_inputs = _noop_check_model_inputs
+else:
+    logger = logging.getLogger("voiceover-tts")
+    logger.info(
+        "transformers.utils.generic.check_model_inputs not found — "
+        "monkey-patch may no longer be needed"
+    )
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
@@ -165,13 +172,15 @@ def _validate_path(path_str: str, allowed_parents: list) -> Path:
         raise ValueError("Invalid path")
     resolved = Path(path_str).resolve()
     for parent in allowed_parents:
-        if str(resolved).startswith(str(Path(parent).resolve())):
+        parent_resolved = Path(parent).resolve()
+        if resolved.is_relative_to(parent_resolved):
             return resolved
     raise ValueError("Path not within allowed directories")
 
 # Generation queue: serial processing to prevent GPU contention
-_generation_queue: asyncio.Queue = asyncio.Queue()
+_generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 _generations: dict = {}  # id -> {status, error, audio_path, completed_at}
+MAX_GENERATIONS = 1000
 
 
 def _cleanup_generations():
@@ -206,6 +215,13 @@ async def lifespan(app):
 
 
 app = FastAPI(title="VoiceOver TTS Sidecar", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return error_response(500, str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Parent PID watchdog (ported from Voicebox server.py pattern)
@@ -242,13 +258,16 @@ def _is_pid_alive(pid: int) -> bool:
 
 def _start_parent_watchdog(parent_pid: int) -> None:
     """Monitor parent process and exit if it dies."""
+    from logging.handlers import RotatingFileHandler
+
     watchdog_logger = logging.getLogger("watchdog")
 
     log_dir = DATA_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(log_dir / "watchdog.log")
-    fh.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-    watchdog_logger.addHandler(fh)
+    log_path = log_dir / "watchdog.log"
+    handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+    watchdog_logger.addHandler(handler)
     watchdog_logger.setLevel(logging.INFO)
 
     def _watch() -> None:
@@ -295,11 +314,35 @@ async def _run_generation(gen_id: str, generate_fn):
     try:
         audio, sample_rate, log_label = await generate_fn()
 
+        # Diagnostic: log audio properties before saving
+        audio_duration = len(audio) / sample_rate if sample_rate else 0
+        logger.info(
+            f"{log_label} {gen_id}: audio_samples={len(audio)}, "
+            f"sample_rate={sample_rate}, duration={audio_duration:.3f}s"
+        )
+
         # Save to file
         gen_dir = DATA_DIR / "generations"
         gen_dir.mkdir(parents=True, exist_ok=True)
         audio_path = gen_dir / f"{gen_id}.wav"
         sf.write(str(audio_path), audio, sample_rate)
+
+        # Verify WAV was written correctly by reading it back
+        try:
+            info = sf.info(str(audio_path))
+            logger.info(
+                f"{log_label} {gen_id}: WAV verify: sr={info.samplerate}, "
+                f"frames={info.frames}, duration={info.duration:.3f}s, "
+                f"format={info.subtype}"
+            )
+            if abs(info.duration - audio_duration) > 0.1:
+                logger.warning(
+                    f"{log_label} {gen_id}: WAV duration mismatch! "
+                    f"expected={audio_duration:.3f}s, actual={info.duration:.3f}s"
+                )
+        except Exception as verify_err:
+            logger.warning(f"{log_label} {gen_id}: WAV verify failed: {verify_err}")
+
         _generations[gen_id]["audio_path"] = str(audio_path)
         _generations[gen_id]["status"] = "completed"
         _generations[gen_id]["completed_at"] = time.time()
@@ -324,6 +367,8 @@ async def _generation_worker():
             _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
+            if len(_generations) > 20:
+                _cleanup_generations()
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +401,7 @@ async def _do_generate(
         assemble_timed_segments,
         concatenate_audio_chunks,
         pad_audio_to_match_timing,
+        pad_or_truncate_to_duration,
         split_text_into_chunks,
     )
 
@@ -464,18 +510,22 @@ async def _do_generate(
                     sample_rate = chunk_sr
             audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
+        # Diagnostic: log raw TTS output before pad/truncate
+        raw_duration = len(audio) / sample_rate if sample_rate else 0
+        logger.info(
+            f"TTS generation: raw output {len(audio)} samples, "
+            f"{raw_duration:.3f}s at {sample_rate}Hz, "
+            f"target={original_duration:.3f}s"
+        )
+        if original_duration > 0 and abs(raw_duration - original_duration) / original_duration > 0.05:
+            logger.warning(
+                f"TTS generation: output duration {raw_duration:.3f}s deviates "
+                f"{abs(raw_duration - original_duration)/original_duration*100:.1f}% "
+                f"from target {original_duration:.3f}s"
+            )
+
         # Pad or truncate to match original duration with smooth fade-out
-        if original_duration > 0 and sample_rate:
-            target_samples = int(original_duration * sample_rate)
-            if len(audio) < target_samples:
-                # Fade out last 300ms before silence padding
-                fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
-                if fade_samples > 0:
-                    fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-                    audio[-fade_samples:] *= fade
-                audio = np.pad(audio, (0, target_samples - len(audio)))
-            elif len(audio) > target_samples:
-                audio = audio[:target_samples]
+        audio = pad_or_truncate_to_duration(audio, sample_rate, original_duration)
 
     return audio, sample_rate, "Generation"
 
@@ -536,6 +586,7 @@ async def _do_voice_convert(
         raise ValueError(f"No samples found for profile {profile_id}")
 
     model_sr = _vc_model.sample_rate
+    logger.info(f"Voice conversion: model_sr={model_sr}, original_duration={original_duration:.3f}s")
     max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
 
     ref_parts = []
@@ -579,6 +630,17 @@ async def _do_voice_convert(
     )
 
     source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+    source_duration = len(source_audio) / model_sr if model_sr else 0
+    logger.info(
+        f"Voice conversion: source_samples={len(source_audio)}, "
+        f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
+        f"original_duration={original_duration:.3f}s"
+    )
+    if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
+        logger.warning(
+            f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
+            f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+        )
 
     chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
     chunk_samples = int(chunk_duration * model_sr)
@@ -642,18 +704,26 @@ async def _do_voice_convert(
         audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
         sample_rate = model_sr
 
+    # Diagnostic: log raw output before pad/truncate
+    raw_duration = len(audio) / sample_rate if sample_rate else 0
+    logger.info(
+        f"Voice conversion: raw output {len(audio)} samples, "
+        f"{raw_duration:.3f}s at {sample_rate}Hz "
+        f"(target: {original_duration:.3f}s, ratio: {raw_duration/original_duration:.3f})"
+        if original_duration > 0 else
+        f"Voice conversion: raw output {len(audio)} samples, "
+        f"{raw_duration:.3f}s at {sample_rate}Hz (no target duration)"
+    )
+    if original_duration > 0 and abs(raw_duration - original_duration) / original_duration > 0.05:
+        logger.warning(
+            f"Voice conversion: output duration {raw_duration:.3f}s deviates "
+            f"{abs(raw_duration - original_duration)/original_duration*100:.1f}% "
+            f"from target {original_duration:.3f}s — this may cause A/V sync issues"
+        )
+
     # Pad or truncate to match original duration with a smooth fade-out
-    if original_duration > 0 and sample_rate:
-        target_samples = int(original_duration * sample_rate)
-        if len(audio) < target_samples:
-            # Fade out last 300ms before silence padding
-            fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
-            if fade_samples > 0:
-                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-                audio[-fade_samples:] *= fade
-            audio = np.pad(audio, (0, target_samples - len(audio)))
-        elif len(audio) > target_samples:
-            audio = audio[:target_samples]
+    from chunked_tts import pad_or_truncate_to_duration
+    audio = pad_or_truncate_to_duration(audio, sample_rate, original_duration)
 
     return audio, sample_rate, "Voice conversion"
 
@@ -804,6 +874,11 @@ async def generate(request: dict):
     if not profile_id or not text:
         return error_response(400, "profile_id and text are required")
 
+    if len(_generations) >= MAX_GENERATIONS:
+        _cleanup_generations()
+        if len(_generations) >= MAX_GENERATIONS:
+            return error_response(429, "Too many pending generations")
+
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
 
@@ -935,6 +1010,8 @@ async def extract_youtube(request: dict):
                 "outtmpl": str(video_path),
                 "quiet": True,
                 "no_warnings": True,
+                "socket_timeout": 30,
+                "retries": 2,
             }
             with ydl.YoutubeDL(opts) as dl:
                 dl.download([url])
@@ -1077,7 +1154,7 @@ async def delete_profile(profile_id: str):
 @app.get("/models/status")
 async def models_status():
     """Get model download/load status for all registered models."""
-    from tts import is_qwen_loaded, _whisper_model, _whisper_model_name
+    from tts import is_qwen_loaded, is_whisper_loaded, get_whisper_model_name
 
     models_dir = DATA_DIR / "models"
     result = []
@@ -1099,7 +1176,7 @@ async def models_status():
         # Determine loaded status per category
         category = entry["category"]
         if category == "transcription":
-            loaded = _whisper_model is not None and _whisper_model_name == model_name
+            loaded = is_whisper_loaded() and get_whisper_model_name() == model_name
         elif category == "tts":
             loaded = is_qwen_loaded()
         elif category == "voice-conversion":

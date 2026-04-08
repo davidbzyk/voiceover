@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tauri::ipc::Channel;
+use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -25,7 +26,7 @@ pub enum DriveEvent {
 
 /// Generate a random code verifier for PKCE.
 fn generate_code_verifier() -> String {
-    let bytes: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen()).collect();
+    let bytes: Vec<u8> = (0..32).map(|_| rand::rng().random()).collect();
     URL_SAFE_NO_PAD.encode(&bytes)
 }
 
@@ -37,12 +38,12 @@ fn code_challenge(verifier: &str) -> String {
 
 /// Start OAuth2 flow: open browser, listen for callback, exchange code for tokens.
 #[tauri::command]
-pub async fn google_drive_connect(client_id: String, client_secret: String) -> Result<DriveTokens, String> {
+pub async fn google_drive_connect(app: tauri::AppHandle, client_id: String, client_secret: String) -> Result<DriveTokens, String> {
     let verifier = generate_code_verifier();
     let challenge = code_challenge(&verifier);
 
     // Generate state parameter for CSRF protection
-    let state = format!("{:x}", rand::thread_rng().gen::<u64>());
+    let state = format!("{:x}", rand::rng().random::<u64>());
 
     // Find an available port for the loopback redirect
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
@@ -112,7 +113,8 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
     stream.flush().await.ok();
 
     // Exchange code for tokens
-    let client = reqwest::Client::new();
+    let http = app.state::<crate::local_tts::HttpClient>();
+    let client = &http.client;
     let token_response = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -153,7 +155,7 @@ pub async fn google_drive_connect(client_id: String, client_secret: String) -> R
         - 60;
 
     // Get user email
-    let email = get_user_email(&client, &access_token).await.unwrap_or_default();
+    let email = get_user_email(client, &access_token).await.unwrap_or_default();
 
     Ok(DriveTokens {
         access_token,
@@ -179,12 +181,13 @@ async fn get_user_email(client: &reqwest::Client, access_token: &str) -> Result<
 /// Refresh an expired access token.
 #[allow(dead_code)]
 pub async fn refresh_access_token(
+    app: &tauri::AppHandle,
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let resp = client
+    let http = app.state::<crate::local_tts::HttpClient>();
+    let resp = http.client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("client_id", client_id),
@@ -206,6 +209,7 @@ pub async fn refresh_access_token(
 /// Upload a file to Google Drive and return a shareable link.
 #[tauri::command]
 pub async fn upload_to_drive(
+    app: tauri::AppHandle,
     access_token: String,
     file_path: String,
     on_event: Channel<DriveEvent>,
@@ -228,7 +232,8 @@ pub async fn upload_to_drive(
         .send(DriveEvent::Progress { percent: 10.0 })
         .ok();
 
-    let client = reqwest::Client::new();
+    let http = app.state::<crate::local_tts::HttpClient>();
+    let client = &http.client;
 
     // Create file metadata
     let metadata = serde_json::json!({
@@ -283,9 +288,10 @@ pub async fn upload_to_drive(
 
     // Update .meta.json with drive URL
     let meta_path = Path::new(&file_path).with_extension("meta.json");
-    let timestamp: u64 = crate::pipeline::chrono_timestamp()
-        .parse()
-        .unwrap_or(0);
+    let timestamp: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut meta = if meta_path.exists() {
         std::fs::read_to_string(&meta_path)
             .ok()
@@ -324,10 +330,18 @@ fn build_multipart_body(metadata_json: &str, file_bytes: &[u8], _filename: &str)
     body
 }
 
-/// Disconnect Google Drive — clears stored secrets from keychain.
+/// Disconnect Google Drive — clears only Drive-related fields, not all secrets.
 #[tauri::command]
-pub fn google_drive_disconnect() -> Result<(), String> {
-    crate::secrets::clear_secrets();
+pub async fn google_drive_disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = crate::config::get_config(app.clone()).await?;
+    config.google_drive.client_secret = String::new();
+    config.google_drive.access_token = String::new();
+    config.google_drive.refresh_token = String::new();
+    config.google_drive.client_id = String::new();
+    config.google_drive.email = String::new();
+    config.google_drive.connected = false;
+    config.google_drive.expires_at = 0;
+    crate::config::save_config(app, config).await?;
     Ok(())
 }
 

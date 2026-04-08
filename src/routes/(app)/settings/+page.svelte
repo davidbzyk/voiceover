@@ -3,7 +3,7 @@
 	import { appState, isTauri, type Voice } from '$lib/state.svelte';
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
-	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { voicebox, type VoiceboxProfile, type VoiceboxModelStatus } from '$lib/voicebox';
 	import { getRequiredModelNames } from '$lib/models';
 	import { onMount } from 'svelte';
 
@@ -14,12 +14,7 @@
 	let keyValid = $state<boolean | null>(null);
 
 	// Local TTS state
-	interface LocalVoice {
-		id: string;
-		name: string;
-		language: string;
-	}
-	let localVoices = $state<LocalVoice[]>([]);
+	let localVoices = $state<VoiceboxProfile[]>([]);
 	let localLoading = $state(false);
 	let localError = $state('');
 
@@ -35,7 +30,7 @@
 
 	async function loadModelStatuses() {
 		try {
-			modelStatuses = await new VoiceboxClient().getModelStatus();
+			modelStatuses = await voicebox.getModelStatus();
 		} catch (err) {
 			logger.error('settings', 'Failed to check model status', err);
 		}
@@ -52,7 +47,7 @@
 		localLoading = true;
 		localError = '';
 		try {
-			localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
+			localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices');
 		} catch (err) {
 			localError = 'TTS engine unavailable. Try restarting the app.';
 			logger.error('settings', 'Failed to load local voices', err);
@@ -60,7 +55,7 @@
 		localLoading = false;
 	}
 
-	async function setProvider(provider: string) {
+	async function setProvider(provider: 'elevenlabs' | 'local') {
 		appState.config.provider = provider;
 		await appState.saveConfig();
 		if (provider === 'local') {
@@ -113,8 +108,7 @@
 		logger.elevenLabsTest(masked);
 		try {
 			if (isTauri()) {
-				const { invoke } = await import('@tauri-apps/api/core');
-				keyValid = await invoke<boolean>('test_api_key', { apiKey: key });
+				keyValid = await tauriInvoke<boolean>('test_api_key', { apiKey: key });
 			} else {
 				const resp = await fetch('https://api.elevenlabs.io/v1/user', {
 					headers: { 'xi-api-key': key }
@@ -174,8 +168,7 @@
 		try {
 			let tokens: { access_token: string; refresh_token: string; email: string; connected: boolean };
 			if (isTauri()) {
-				const { invoke } = await import('@tauri-apps/api/core');
-				tokens = await invoke('google_drive_connect', {
+				tokens = await tauriInvoke('google_drive_connect', {
 					clientId: appState.config.google_drive.client_id,
 					clientSecret: appState.config.google_drive.client_secret
 				});

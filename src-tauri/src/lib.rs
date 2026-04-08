@@ -36,7 +36,8 @@ pub fn run() {
                 log::error!("ffmpeg not found on system PATH");
             }
 
-            // Initialize sidecar state and shared HTTP client
+            // Initialize config cache, sidecar state, and shared HTTP client
+            app.manage(config::ConfigCache::new());
             app.manage(sidecar::SidecarState::default());
             app.manage(local_tts::HttpClient {
                 client: reqwest::Client::builder()
@@ -50,14 +51,7 @@ pub fn run() {
                 std::time::Duration::from_secs(3600),
             );
 
-            // Start TTS sidecar in background (don't block app launch)
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                match sidecar::start_sidecar(&app_handle).await {
-                    Ok(port) => log::info!("TTS sidecar started on port {}", port),
-                    Err(e) => log::warn!("TTS sidecar not started: {} (local TTS unavailable)", e),
-                }
-            });
+            // Sidecar starts lazily on first ensure_running() call
 
             Ok(())
         })

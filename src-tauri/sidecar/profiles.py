@@ -6,6 +6,8 @@ Each profile is a directory under {data_dir}/profiles/{uuid}/ containing:
 - samples/{uuid}.txt: transcript for each audio file
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
@@ -13,9 +15,13 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("voiceover-tts.profiles")
+
+__all__ = [
+    "list_profiles", "get_profile", "create_profile", "delete_profile",
+    "add_sample", "get_samples",
+]
 
 
 def _validate_profile_id(profile_id: str) -> None:
@@ -45,7 +51,7 @@ def list_profiles(data_dir: Path) -> list[dict]:
     return profiles
 
 
-def get_profile(data_dir: Path, profile_id: str) -> Optional[dict]:
+def get_profile(data_dir: Path, profile_id: str) -> dict | None:
     """Get a single profile by ID."""
     _validate_profile_id(profile_id)
     meta_file = _profiles_dir(data_dir) / profile_id / "profile.json"

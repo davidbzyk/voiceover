@@ -4,6 +4,8 @@ Whisper transcription (via mlx-audio) + Qwen TTS generation.
 Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
 """
 
+from __future__ import annotations
+
 import asyncio
 import gc
 import hashlib
@@ -11,7 +13,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -314,6 +315,21 @@ async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:
         _qwen_model_size = model_size
         logger.info(f"Qwen TTS {model_size} loaded successfully")
 
+        # Warmup: run a short dummy generation to prime MPS shader compilation
+        # and internal buffers. Without this, the first real generation can
+        # produce degraded output (slow/deep voice) on Apple Silicon.
+        try:
+            logger.info("Warming up Qwen TTS model...")
+            wavs, sr = _qwen_model.generate_voice_clone(
+                text="Hello.",
+                language="English",
+                voice_clone_prompt=None,
+                non_streaming_mode=True,
+            )
+            logger.info(f"Qwen TTS warmup complete (sr={sr})")
+        except Exception as e:
+            logger.warning(f"Qwen TTS warmup failed (non-critical): {e}")
+
     await asyncio.to_thread(_load_sync)
 
 
@@ -321,10 +337,18 @@ def is_qwen_loaded() -> bool:
     return _qwen_model is not None
 
 
+def is_whisper_loaded() -> bool:
+    return _whisper_model is not None
+
+
+def get_whisper_model_name() -> str | None:
+    return _whisper_model_name
+
+
 async def create_voice_prompt(
     audio_path: str,
     reference_text: str,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> list:
     """Create voice prompt from reference audio.
 
@@ -358,7 +382,7 @@ async def create_voice_prompt(
 async def combine_voice_prompts(
     audio_paths: list[str],
     reference_texts: list[str],
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> list:
     """Combine multiple samples into a list of VoiceClonePromptItems."""
     all_items = []
@@ -373,8 +397,8 @@ async def generate_speech(
     text: str,
     voice_prompt: list,
     language: str = "en",
-    seed: Optional[int] = None,
-) -> Tuple[np.ndarray, int]:
+    seed: int | None = None,
+) -> tuple[np.ndarray, int]:
     """Generate speech from text using voice clone prompt items."""
     if _qwen_model is None:
         raise RuntimeError("Qwen model not loaded")
@@ -420,13 +444,18 @@ def _cache_key(audio_path: str, reference_text: str) -> str:
     return h.hexdigest()
 
 
-def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
+def _load_cached_prompt(cache_dir: str, cache_key: str) -> dict | None:
     cache_path = Path(cache_dir) / f"{cache_key}.prompt"
     if not cache_path.exists():
         return None
     try:
         import torch
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+        from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
+        torch.serialization.add_safe_globals([VoiceClonePromptItem])
+        # Load to the same device the model uses so cached and fresh prompts
+        # produce identical generation output (avoids MPS vs CPU precision drift)
+        device = _get_device()
+        return torch.load(cache_path, map_location=device, weights_only=True)
     except Exception as e:
         logger.warning(f"Failed to load cached prompt: {e}")
         return None

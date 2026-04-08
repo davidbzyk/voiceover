@@ -66,8 +66,8 @@ fi
 echo ""
 echo "─── Test 2: Models status ───"
 MODELS=$(curl -sf http://127.0.0.1:$PORT/models/status)
-if echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['models'])==3" 2>/dev/null; then
-    pass "GET /models/status returns 3 models"
+if echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['models'])==4" 2>/dev/null; then
+    pass "GET /models/status returns 4 models"
 else
     fail "GET /models/status" "$MODELS"
 fi

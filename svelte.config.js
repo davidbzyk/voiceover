@@ -6,10 +6,6 @@ const config = {
 		adapter: adapter({
 			fallback: 'index.html'
 		})
-	},
-	vitePlugin: {
-		dynamicCompileOptions: ({ filename }) =>
-			filename.includes('node_modules') ? undefined : { runes: true }
 	}
 };
 

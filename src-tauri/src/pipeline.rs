@@ -44,7 +44,7 @@ pub async fn process_recording(
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format!("Failed to create output directory {:?}: {}", output_dir, e))?;
 
-    let timestamp = chrono_timestamp();
+    let timestamp = unix_timestamp();
     let final_name = format!("voiceover-{timestamp}.mp4");
     let final_path = output_dir.join(&final_name);
     let pipeline_start = std::time::Instant::now();
@@ -72,7 +72,7 @@ pub async fn process_recording(
     }
 
     // Voice replacement pipeline
-    let use_local = config.provider == "local";
+    let use_local = config.provider == crate::tts_provider::Provider::Local;
 
     if !use_local {
         let api_key = &config.elevenlabs_api_key;
@@ -203,6 +203,7 @@ pub async fn process_recording(
             .ok();
 
         elevenlabs::speech_to_speech(
+            &app,
             &config.elevenlabs_api_key,
             voice_id.as_deref().ok_or_else(|| "ElevenLabs voice ID is required but not configured".to_string())?,
             &extracted_wav,
@@ -233,6 +234,27 @@ pub async fn process_recording(
 
     log::info!("[pipeline] Splicing audio into video");
     ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
+
+    // Diagnostic: compare input vs output durations to detect A/V sync issues
+    match ffmpeg::probe_duration(&final_path).await {
+        Ok(output_dur) => {
+            log::info!(
+                "[pipeline] Output duration: {:.1}s (input video: {:.1}s)",
+                output_dur,
+                video_duration.unwrap_or(0.0),
+            );
+            if let Some(vid_dur) = video_duration {
+                let drift = (output_dur - vid_dur).abs();
+                if drift > 1.0 {
+                    log::warn!(
+                        "[pipeline] Duration drift: output={:.1}s vs input={:.1}s (drift={:.1}s) — possible A/V sync issue!",
+                        output_dur, vid_dur, drift,
+                    );
+                }
+            }
+        }
+        Err(e) => log::warn!("[pipeline] Could not probe output duration: {}", e),
+    }
 
     // Copy transcript alongside the final video (if local TTS generated one)
     if use_local {
@@ -267,9 +289,11 @@ pub async fn process_recording(
     cleanup_temp(&transformed_audio.with_extension("txt"));
 
     // Sweep stale artifacts from previous runs (>1 hour old)
-    crate::commands::recording::cleanup_stale_recordings(
-        std::time::Duration::from_secs(3600),
-    );
+    tokio::task::spawn_blocking(|| {
+        crate::commands::recording::cleanup_stale_recordings(
+            std::time::Duration::from_secs(3600),
+        );
+    });
 
     Ok(final_path.to_string_lossy().to_string())
 }
@@ -287,7 +311,7 @@ fn write_meta(output_path: &Path, config: &config::AppConfig, voice_replacement:
         "voiceProfile": voice_profile,
         "provider": if voice_replacement { Some(&config.provider) } else { None },
         "voiceReplacement": voice_replacement,
-        "createdAt": chrono_timestamp().parse::<u64>().unwrap_or(0),
+        "createdAt": unix_timestamp().parse::<u64>().unwrap_or(0),
     });
 
     let meta_path = output_path.with_extension("meta.json");
@@ -303,7 +327,7 @@ fn write_meta(output_path: &Path, config: &config::AppConfig, voice_replacement:
     }
 }
 
-pub(crate) fn chrono_timestamp() -> String {
+pub(crate) fn unix_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -317,8 +341,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chrono_timestamp_returns_numeric_string() {
-        let ts = chrono_timestamp();
+    fn unix_timestamp_returns_numeric_string() {
+        let ts = unix_timestamp();
         assert!(ts.chars().all(|c| c.is_ascii_digit()), "expected all digits, got: {ts}");
         let val: u64 = ts.parse().expect("should parse as u64");
         assert!(val > 1_577_836_800, "expected timestamp after year 2020, got: {val}");
@@ -399,7 +423,7 @@ mod tests {
         std::fs::write(&mp4, b"fake").ok();
 
         let mut config = config::AppConfig::default();
-        config.provider = "elevenlabs".to_string();
+        config.provider = crate::tts_provider::Provider::ElevenLabs;
         config.voices = vec![config::Voice {
             id: "voice123".to_string(),
             name: "TestVoice".to_string(),
@@ -429,7 +453,7 @@ mod tests {
         std::fs::write(&mp4, b"fake").ok();
 
         let mut config = config::AppConfig::default();
-        config.provider = "local".to_string();
+        config.provider = crate::tts_provider::Provider::Local;
         config.local_voice_profile_id = "4ad88b19-3bfe-493d-8xxx".to_string();
         // Pass the resolved name, not the ID
         write_meta(&mp4, &config, true, Some("MJ"));

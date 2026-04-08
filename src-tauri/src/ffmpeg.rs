@@ -1,39 +1,56 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::process::Command;
 
-/// Resolve the ffmpeg binary path.
+/// 16kHz mono PCM — optimal for speech-to-speech APIs
+const SPEECH_SAMPLE_RATE: &str = "16000";
+const SPEECH_CHANNELS: &str = "1";
+/// H.264 fast preset for screen recordings
+const VIDEO_PRESET: &str = "fast";
+/// 320px thumbnails for library grid
+const THUMBNAIL_WIDTH: &str = "320";
+
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Resolve the ffmpeg binary path (cached after first call).
 /// In a bundled .app, the sidecar lives next to the main executable in Contents/MacOS/.
 /// Falls back to "ffmpeg" on the system PATH for development.
-pub fn resolve_ffmpeg_path() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        let sidecar = exe.parent().unwrap_or(Path::new(".")).join("ffmpeg");
-        if sidecar.exists() {
-            log::info!("[ffmpeg] Using bundled binary: {:?}", sidecar);
-            return sidecar;
-        }
-    }
-    log::info!("[ffmpeg] Using system PATH ffmpeg");
-    PathBuf::from("ffmpeg")
+pub fn resolve_ffmpeg_path() -> &'static Path {
+    FFMPEG_PATH
+        .get_or_init(|| {
+            if let Ok(exe) = std::env::current_exe() {
+                let sidecar = exe.parent().unwrap_or(Path::new(".")).join("ffmpeg");
+                if sidecar.exists() {
+                    log::info!("[ffmpeg] Using bundled binary: {:?}", sidecar);
+                    return sidecar;
+                }
+            }
+            log::info!("[ffmpeg] Using system PATH ffmpeg");
+            PathBuf::from("ffmpeg")
+        })
+        .as_path()
 }
 
 /// Build ffmpeg arguments for audio extraction.
 pub(crate) fn extract_audio_args(input: &str, output: &str) -> Vec<String> {
-    ["-y", "-i", input, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", output]
+    ["-y", "-i", input, "-vn", "-acodec", "pcm_s16le", "-ar", SPEECH_SAMPLE_RATE, "-ac", SPEECH_CHANNELS, output]
         .iter().map(|s| s.to_string()).collect()
 }
 
 /// Build ffmpeg arguments for audio replacement.
 pub(crate) fn replace_audio_args(input_video: &str, new_audio: &str, output: &str) -> Vec<String> {
+    let video_codec = if cfg!(target_os = "macos") { "h264_videotoolbox" } else { "libx264" };
     ["-y", "-i", input_video, "-i", new_audio, "-map", "0:v", "-map", "1:a",
-     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-preset", "fast",
+     "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", video_codec, "-preset", VIDEO_PRESET,
      "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
 /// Build ffmpeg arguments for MP4 normalization.
 pub(crate) fn normalize_args(input: &str, output: &str) -> Vec<String> {
+    let video_codec = if cfg!(target_os = "macos") { "h264_videotoolbox" } else { "libx264" };
     ["-y", "-i", input, "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-     "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", output]
+     "-c:v", video_codec, "-preset", VIDEO_PRESET, "-c:a", "aac", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
@@ -211,8 +228,9 @@ pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), Str
 
 /// Build ffmpeg arguments for thumbnail extraction (first frame at 1s, 320px wide JPEG).
 pub(crate) fn thumbnail_args(input: &str, output: &str) -> Vec<String> {
+    let scale_filter = format!("scale={THUMBNAIL_WIDTH}:-1");
     ["-y", "-i", input, "-ss", "00:00:01", "-vframes", "1",
-     "-vf", "scale=320:-1", "-q:v", "3", output]
+     "-vf", &scale_filter, "-q:v", "3", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
@@ -271,7 +289,8 @@ mod tests {
     #[test]
     fn replace_audio_args_use_h264_and_aac() {
         let args = replace_audio_args("video.webm", "audio.mp3", "output.mp4");
-        assert!(args.contains(&"libx264".to_string()));
+        let expected_codec = if cfg!(target_os = "macos") { "h264_videotoolbox" } else { "libx264" };
+        assert!(args.contains(&expected_codec.to_string()));
         assert!(args.contains(&"aac".to_string()));
     }
 
@@ -284,7 +303,8 @@ mod tests {
     #[test]
     fn normalize_args_use_h264_aac_with_even_padding() {
         let args = normalize_args("input.webm", "output.mp4");
-        assert!(args.contains(&"libx264".to_string()));
+        let expected_codec = if cfg!(target_os = "macos") { "h264_videotoolbox" } else { "libx264" };
+        assert!(args.contains(&expected_codec.to_string()));
         assert!(args.contains(&"aac".to_string()));
         assert!(args.contains(&"pad=ceil(iw/2)*2:ceil(ih/2)*2".to_string()));
     }

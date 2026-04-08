@@ -1,3 +1,4 @@
+use crate::tts_provider::Provider;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -99,8 +100,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub secrets_migrated: bool,
     /// TTS provider: "elevenlabs" or "local"
-    #[serde(default = "default_provider")]
-    pub provider: String,
+    #[serde(default)]
+    pub provider: Provider,
     /// Endpoint for the local TTS sidecar
     #[serde(default = "default_local_endpoint")]
     pub local_endpoint: String,
@@ -122,10 +123,6 @@ fn default_output_dir() -> String {
         .unwrap_or_else(|| "~/VoiceOver".to_string())
 }
 
-fn default_provider() -> String {
-    "elevenlabs".to_string()
-}
-
 fn default_local_endpoint() -> String {
     "http://localhost:17493".to_string()
 }
@@ -143,12 +140,29 @@ impl Default for AppConfig {
             preferences: Preferences::default(),
             google_drive: GoogleDrive::default(),
             secrets_migrated: false,
-            provider: default_provider(),
+            provider: Provider::default(),
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
             local_tts_mode: LocalTtsMode::default(),
             whisper_model: default_whisper_model(),
         }
+    }
+}
+
+/// In-memory cache for AppConfig to avoid repeated disk + keychain reads.
+pub struct ConfigCache {
+    config: tokio::sync::RwLock<Option<AppConfig>>,
+}
+
+impl ConfigCache {
+    pub fn new() -> Self {
+        Self {
+            config: tokio::sync::RwLock::new(None),
+        }
+    }
+
+    pub async fn invalidate(&self) {
+        *self.config.write().await = None;
     }
 }
 
@@ -160,8 +174,17 @@ fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
+    // Check cache first
+    let cache = app.state::<ConfigCache>();
+    {
+        let guard = cache.config.read().await;
+        if let Some(ref cached) = *guard {
+            return Ok(cached.clone());
+        }
+    }
+
     let path = config_path(&app)?;
-    tokio::task::spawn_blocking(move || {
+    let config: Result<AppConfig, String> = tokio::task::spawn_blocking(move || {
         let mut config = if path.exists() {
             let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             serde_json::from_str(&content).map_err(|e| e.to_string())?
@@ -210,7 +233,15 @@ pub async fn get_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
         }
 
         Ok(config)
-    }).await.map_err(|e| format!("Config task failed: {e}"))?
+    }).await.map_err(|e| format!("Config task failed: {e}"))?;
+
+    // Populate cache
+    let config = config?;
+    {
+        let mut guard = cache.config.write().await;
+        *guard = Some(config.clone());
+    }
+    Ok(config)
 }
 
 /// Try reading config from static/_config.json (project root).
@@ -246,6 +277,8 @@ fn read_static_config() -> Option<AppConfig> {
 #[tauri::command]
 pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
     let path = config_path(&app)?;
+    let cache = app.state::<ConfigCache>();
+
     tokio::task::spawn_blocking(move || {
         // Store secrets in OS keychain
         crate::secrets::save_secrets(&config);
@@ -260,8 +293,12 @@ pub async fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(),
         // Sync non-secret config to static dir in dev mode
         sync_to_static(&file_config);
 
-        Ok(())
-    }).await.map_err(|e| format!("Config save task failed: {e}"))?
+        Ok::<(), String>(())
+    }).await.map_err(|e| format!("Config save task failed: {e}"))??;
+
+    // Invalidate cache after successful save
+    cache.invalidate().await;
+    Ok(())
 }
 
 /// Write config to the project's static dir so the Vite dev server can serve it.
@@ -370,7 +407,7 @@ mod tests {
                 expires_at: 1700000000,
             },
             secrets_migrated: false,
-            provider: "elevenlabs".to_string(),
+            provider: Provider::ElevenLabs,
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
             local_tts_mode: LocalTtsMode::Tts,

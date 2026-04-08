@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { appState } from '$lib/state.svelte';
-	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { voicebox, type VoiceboxModelStatus } from '$lib/voicebox';
 	import { getRequiredModelNames } from '$lib/models';
 	import { onMount } from 'svelte';
 
@@ -64,10 +64,6 @@
 		return YOUTUBE_URL_PATTERN.test(url.trim());
 	}
 
-	function getClient(): VoiceboxClient {
-		return new VoiceboxClient();
-	}
-
 	onMount(() => {
 		checkPrerequisites();
 	});
@@ -75,7 +71,7 @@
 	async function checkPrerequisites() {
 		checkingHealth = true;
 		prerequisiteError = '';
-		const client = getClient();
+		const client = voicebox;
 
 		try {
 			healthy = await client.checkHealth();
@@ -106,7 +102,7 @@
 	async function downloadModels() {
 		downloading = true;
 		downloadError = '';
-		const client = getClient();
+		const client = voicebox;
 
 		// Only download models required for the current mode
 		const requiredModels = getRequiredModelNames(appState.config);
@@ -145,7 +141,7 @@
 	async function createProfile() {
 		creating = true;
 		createError = '';
-		const client = getClient();
+		const client = voicebox;
 
 		try {
 			const profile = await client.createProfile(profileName.trim(), profileLanguage);
@@ -201,7 +197,7 @@
 		transcribing = true;
 		uploadError = '';
 		try {
-			const client = getClient();
+			const client = voicebox;
 			// Upload the file for transcription only
 			const { tauriInvoke } = await import('$lib/tauri');
 			const buffer = await audioFile.arrayBuffer();
@@ -224,7 +220,7 @@
 	async function uploadSample() {
 		uploading = true;
 		uploadError = '';
-		const client = getClient();
+		const client = voicebox;
 
 		try {
 			if (sampleSource === 'youtube' && extractedAudioPath) {
@@ -256,7 +252,7 @@
 		generateError = '';
 		if (generatedAudioUrl) URL.revokeObjectURL(generatedAudioUrl);
 		generatedAudioUrl = '';
-		const client = getClient();
+		const client = voicebox;
 
 		try {
 			const gen = await client.testGenerate(profileId, testText.trim());

@@ -1,6 +1,6 @@
 [package]
 name = "voiceover"
-version = "0.1.0"
+version = "0.2.0"
 description = "Screen recorder with ElevenLabs voice replacement"
 authors = ["dave"]
 license = "MIT"
@@ -28,10 +28,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 reqwest = { version = "0.12", features = ["multipart", "json", "stream"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "sync", "fs"] }
 dirs = "6"
 tauri-plugin-global-shortcut = "2"
-rand = "0.8"
+rand = "0.9"
 sha2 = "0.10"
 base64 = "0.22"
 url = "2"
