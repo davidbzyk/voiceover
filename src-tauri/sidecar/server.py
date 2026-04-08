@@ -295,11 +295,35 @@ async def _run_generation(gen_id: str, generate_fn):
     try:
         audio, sample_rate, log_label = await generate_fn()
 
+        # Diagnostic: log audio properties before saving
+        audio_duration = len(audio) / sample_rate if sample_rate else 0
+        logger.info(
+            f"{log_label} {gen_id}: audio_samples={len(audio)}, "
+            f"sample_rate={sample_rate}, duration={audio_duration:.3f}s"
+        )
+
         # Save to file
         gen_dir = DATA_DIR / "generations"
         gen_dir.mkdir(parents=True, exist_ok=True)
         audio_path = gen_dir / f"{gen_id}.wav"
         sf.write(str(audio_path), audio, sample_rate)
+
+        # Verify WAV was written correctly by reading it back
+        try:
+            info = sf.info(str(audio_path))
+            logger.info(
+                f"{log_label} {gen_id}: WAV verify: sr={info.samplerate}, "
+                f"frames={info.frames}, duration={info.duration:.3f}s, "
+                f"format={info.subtype}"
+            )
+            if abs(info.duration - audio_duration) > 0.1:
+                logger.warning(
+                    f"{log_label} {gen_id}: WAV duration mismatch! "
+                    f"expected={audio_duration:.3f}s, actual={info.duration:.3f}s"
+                )
+        except Exception as verify_err:
+            logger.warning(f"{log_label} {gen_id}: WAV verify failed: {verify_err}")
+
         _generations[gen_id]["audio_path"] = str(audio_path)
         _generations[gen_id]["status"] = "completed"
         _generations[gen_id]["completed_at"] = time.time()
@@ -464,6 +488,20 @@ async def _do_generate(
                     sample_rate = chunk_sr
             audio = concatenate_audio_chunks(audio_chunks, sample_rate)
 
+        # Diagnostic: log raw TTS output before pad/truncate
+        raw_duration = len(audio) / sample_rate if sample_rate else 0
+        logger.info(
+            f"TTS generation: raw output {len(audio)} samples, "
+            f"{raw_duration:.3f}s at {sample_rate}Hz, "
+            f"target={original_duration:.3f}s"
+        )
+        if original_duration > 0 and abs(raw_duration - original_duration) / original_duration > 0.05:
+            logger.warning(
+                f"TTS generation: output duration {raw_duration:.3f}s deviates "
+                f"{abs(raw_duration - original_duration)/original_duration*100:.1f}% "
+                f"from target {original_duration:.3f}s"
+            )
+
         # Pad or truncate to match original duration with smooth fade-out
         if original_duration > 0 and sample_rate:
             target_samples = int(original_duration * sample_rate)
@@ -536,6 +574,7 @@ async def _do_voice_convert(
         raise ValueError(f"No samples found for profile {profile_id}")
 
     model_sr = _vc_model.sample_rate
+    logger.info(f"Voice conversion: model_sr={model_sr}, original_duration={original_duration:.3f}s")
     max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
 
     ref_parts = []
@@ -579,6 +618,17 @@ async def _do_voice_convert(
     )
 
     source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+    source_duration = len(source_audio) / model_sr if model_sr else 0
+    logger.info(
+        f"Voice conversion: source_samples={len(source_audio)}, "
+        f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
+        f"original_duration={original_duration:.3f}s"
+    )
+    if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
+        logger.warning(
+            f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
+            f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+        )
 
     chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
     chunk_samples = int(chunk_duration * model_sr)
@@ -641,6 +691,23 @@ async def _do_voice_convert(
         from chunked_tts import concatenate_audio_chunks
         audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
         sample_rate = model_sr
+
+    # Diagnostic: log raw output before pad/truncate
+    raw_duration = len(audio) / sample_rate if sample_rate else 0
+    logger.info(
+        f"Voice conversion: raw output {len(audio)} samples, "
+        f"{raw_duration:.3f}s at {sample_rate}Hz "
+        f"(target: {original_duration:.3f}s, ratio: {raw_duration/original_duration:.3f})"
+        if original_duration > 0 else
+        f"Voice conversion: raw output {len(audio)} samples, "
+        f"{raw_duration:.3f}s at {sample_rate}Hz (no target duration)"
+    )
+    if original_duration > 0 and abs(raw_duration - original_duration) / original_duration > 0.05:
+        logger.warning(
+            f"Voice conversion: output duration {raw_duration:.3f}s deviates "
+            f"{abs(raw_duration - original_duration)/original_duration*100:.1f}% "
+            f"from target {original_duration:.3f}s — this may cause A/V sync issues"
+        )
 
     # Pad or truncate to match original duration with a smooth fade-out
     if original_duration > 0 and sample_rate:

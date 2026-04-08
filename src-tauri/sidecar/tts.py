@@ -314,6 +314,21 @@ async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:
         _qwen_model_size = model_size
         logger.info(f"Qwen TTS {model_size} loaded successfully")
 
+        # Warmup: run a short dummy generation to prime MPS shader compilation
+        # and internal buffers. Without this, the first real generation can
+        # produce degraded output (slow/deep voice) on Apple Silicon.
+        try:
+            logger.info("Warming up Qwen TTS model...")
+            wavs, sr = _qwen_model.generate_voice_clone(
+                text="Hello.",
+                language="English",
+                voice_clone_prompt=None,
+                non_streaming_mode=True,
+            )
+            logger.info(f"Qwen TTS warmup complete (sr={sr})")
+        except Exception as e:
+            logger.warning(f"Qwen TTS warmup failed (non-critical): {e}")
+
     await asyncio.to_thread(_load_sync)
 
 
@@ -426,7 +441,12 @@ def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
         return None
     try:
         import torch
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+        from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
+        torch.serialization.add_safe_globals([VoiceClonePromptItem])
+        # Load to the same device the model uses so cached and fresh prompts
+        # produce identical generation output (avoids MPS vs CPU precision drift)
+        device = _get_device()
+        return torch.load(cache_path, map_location=device, weights_only=True)
     except Exception as e:
         logger.warning(f"Failed to load cached prompt: {e}")
         return None

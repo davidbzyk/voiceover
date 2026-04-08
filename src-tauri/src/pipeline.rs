@@ -234,6 +234,27 @@ pub async fn process_recording(
     log::info!("[pipeline] Splicing audio into video");
     ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
 
+    // Diagnostic: compare input vs output durations to detect A/V sync issues
+    match ffmpeg::probe_duration(&final_path).await {
+        Ok(output_dur) => {
+            log::info!(
+                "[pipeline] Output duration: {:.1}s (input video: {:.1}s)",
+                output_dur,
+                video_duration.unwrap_or(0.0),
+            );
+            if let Some(vid_dur) = video_duration {
+                let drift = (output_dur - vid_dur).abs();
+                if drift > 1.0 {
+                    log::warn!(
+                        "[pipeline] Duration drift: output={:.1}s vs input={:.1}s (drift={:.1}s) — possible A/V sync issue!",
+                        output_dur, vid_dur, drift,
+                    );
+                }
+            }
+        }
+        Err(e) => log::warn!("[pipeline] Could not probe output duration: {}", e),
+    }
+
     // Copy transcript alongside the final video (if local TTS generated one)
     if use_local {
         let transcript_src = transformed_audio.with_extension("txt");
