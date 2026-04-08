@@ -155,7 +155,7 @@ pub async fn google_drive_connect(app: tauri::AppHandle, client_id: String, clie
         - 60;
 
     // Get user email
-    let email = get_user_email(&client, &access_token).await.unwrap_or_default();
+    let email = get_user_email(client, &access_token).await.unwrap_or_default();
 
     Ok(DriveTokens {
         access_token,

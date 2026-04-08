@@ -229,7 +229,7 @@ pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), Str
 /// Build ffmpeg arguments for thumbnail extraction (first frame at 1s, 320px wide JPEG).
 pub(crate) fn thumbnail_args(input: &str, output: &str) -> Vec<String> {
     let scale_filter = format!("scale={THUMBNAIL_WIDTH}:-1");
-    vec!["-y", "-i", input, "-ss", "00:00:01", "-vframes", "1",
+    ["-y", "-i", input, "-ss", "00:00:01", "-vframes", "1",
      "-vf", &scale_filter, "-q:v", "3", output]
         .iter().map(|s| s.to_string()).collect()
 }
