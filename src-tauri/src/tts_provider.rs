@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 /// Which TTS provider to use for voice transformation.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Provider {
     #[default]

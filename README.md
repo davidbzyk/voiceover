@@ -368,8 +368,8 @@ These are the IPC commands exposed by the Rust backend, invoked from the fronten
 | `sidecar_fetch` | Proxy a GET/POST request to the sidecar |
 | `sidecar_upload` | Proxy a file upload to the sidecar |
 | `get_sidecar_status` | Get sidecar process status |
-| `check_models_downloaded` | Check if required models are available |
 | `download_model` | Download a model from HuggingFace |
+| `delete_model` | Delete a downloaded model from the cache |
 | `get_models_disk_usage` | Get disk usage of downloaded models |
 | `google_drive_connect` | Start Google Drive OAuth2 flow |
 | `google_drive_disconnect` | Disconnect Google Drive |
@@ -404,6 +404,7 @@ HTTP endpoints served by the Python FastAPI sidecar on localhost.
 | `/profiles/{id}` | DELETE | Delete a voice profile |
 | `/models/status` | GET | Get model download/load status |
 | `/models/download` | POST | Download a model (streams progress as SSE) |
+| `/models/{model_name}` | DELETE | Delete a downloaded model |
 
 ## Debugging
 

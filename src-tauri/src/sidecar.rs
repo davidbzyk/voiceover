@@ -1,10 +1,16 @@
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use tauri::Manager;
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
+
+/// Lazily-initialised HTTP client for health checks.
+/// Uses its own client rather than the shared `HttpClient` because `health_check`
+/// is called during startup before Tauri managed state may be accessible.
+static HEALTH_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// How long to wait for the sidecar to become healthy after launch.
 const HEALTH_CHECK_TIMEOUT_SECS: u64 = 60;
@@ -28,6 +34,10 @@ pub struct SidecarState {
     starting: TokioMutex<bool>,
     /// Signalled when startup completes, replacing the old polling loop.
     startup_done: Notify,
+    /// True while the sidecar is busy with ML inference.
+    /// When set, `ensure_running` skips the health check to avoid
+    /// killing and restarting the sidecar during long-running operations.
+    pub busy: StdMutex<bool>,
 }
 
 impl Default for SidecarState {
@@ -38,6 +48,7 @@ impl Default for SidecarState {
             data_dir: TokioMutex::new(None),
             starting: TokioMutex::new(false),
             startup_done: Notify::new(),
+            busy: StdMutex::new(false),
         }
     }
 }
@@ -204,7 +215,7 @@ async fn start_sidecar_inner(app: &tauri::AppHandle) -> Result<u16, String> {
     // Store state
     let state = app.state::<SidecarState>();
     *state.child.lock().await = Some(child);
-    *state.port.lock().unwrap() = Some(port);
+    *state.port.lock().unwrap_or_else(|e| e.into_inner()) = Some(port);
     *state.data_dir.lock().await = Some(data_dir);
 
     // Poll /health until ready
@@ -251,19 +262,12 @@ pub async fn health_check(port: u16) -> bool {
     // Generous timeout: during ML inference (especially in PyInstaller builds),
     // the sidecar's event loop may be blocked by GIL-holding computation.
     // A short timeout here causes false "dead" detections and restarts.
-    //
-    // Uses its own client rather than the shared HttpClient because health_check
-    // is called during startup before state may be accessible.
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("[sidecar] Failed to build health check client: {e}");
-            return false;
-        }
-    };
+    let client = HEALTH_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to build health check client")
+    });
 
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -290,7 +294,7 @@ async fn stop_sidecar_inner(state: &SidecarState) {
         }
     }
     *guard = None;
-    *state.port.lock().unwrap() = None;
+    *state.port.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Stop the sidecar process.
@@ -322,7 +326,7 @@ pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
             return Err("TTS sidecar startup timed out".to_string());
         }
         // After notification, check if we have a port
-        let port = { *state.port.lock().unwrap() };
+        let port = { *state.port.lock().unwrap_or_else(|e| e.into_inner()) };
         if let Some(p) = port {
             if health_check(p).await {
                 return Ok(p);
@@ -332,8 +336,13 @@ pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
     }
 
     // Check if we have a recorded port
-    let port = { *state.port.lock().unwrap() };
-    if let Some(port) = port {
+    let current_port = { *state.port.lock().unwrap_or_else(|e| e.into_inner()) };
+    if let Some(port) = current_port {
+        // If the sidecar is busy with ML inference, skip the health check —
+        // the server may be unresponsive but the generation is still running.
+        if *state.busy.lock().unwrap_or_else(|e| e.into_inner()) {
+            return Ok(port);
+        }
         // Quick health check
         if health_check(port).await {
             return Ok(port);
@@ -348,7 +357,7 @@ pub async fn ensure_running(app: &tauri::AppHandle) -> Result<u16, String> {
 
 /// Get the sidecar's current port, if running.
 pub fn get_port(state: &SidecarState) -> Option<u16> {
-    *state.port.lock().unwrap()
+    *state.port.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +370,7 @@ pub async fn get_sidecar_status(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let state = app.state::<SidecarState>();
-    let port = { *state.port.lock().unwrap() };
+    let port = { *state.port.lock().unwrap_or_else(|e| e.into_inner()) };
 
     let (running, healthy) = if let Some(p) = port {
         (true, health_check(p).await)
@@ -404,7 +413,7 @@ mod tests {
     async fn sidecar_state_default_has_no_child() {
         let state = SidecarState::default();
         assert!(state.child.lock().await.is_none());
-        assert!(state.port.lock().unwrap().is_none());
+        assert!(state.port.lock().unwrap_or_else(|e| e.into_inner()).is_none());
         assert!(state.data_dir.lock().await.is_none());
     }
 
@@ -424,7 +433,7 @@ mod tests {
     #[test]
     fn get_port_returns_stored_port() {
         let state = SidecarState::default();
-        *state.port.lock().unwrap() = Some(12345);
+        *state.port.lock().unwrap_or_else(|e| e.into_inner()) = Some(12345);
         assert_eq!(get_port(&state), Some(12345));
     }
 }

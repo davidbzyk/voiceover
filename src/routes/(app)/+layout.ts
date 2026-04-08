@@ -1,2 +1,1 @@
-export const ssr = false;
-export const prerender = true;
+// Layout options inherited from root +layout.ts (ssr = false, prerender = true)

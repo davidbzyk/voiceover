@@ -4,6 +4,8 @@ Whisper transcription (via mlx-audio) + Qwen TTS generation.
 Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
 """
 
+from __future__ import annotations
+
 import asyncio
 import gc
 import hashlib
@@ -11,7 +13,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -336,10 +337,18 @@ def is_qwen_loaded() -> bool:
     return _qwen_model is not None
 
 
+def is_whisper_loaded() -> bool:
+    return _whisper_model is not None
+
+
+def get_whisper_model_name() -> str | None:
+    return _whisper_model_name
+
+
 async def create_voice_prompt(
     audio_path: str,
     reference_text: str,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> list:
     """Create voice prompt from reference audio.
 
@@ -373,7 +382,7 @@ async def create_voice_prompt(
 async def combine_voice_prompts(
     audio_paths: list[str],
     reference_texts: list[str],
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> list:
     """Combine multiple samples into a list of VoiceClonePromptItems."""
     all_items = []
@@ -388,8 +397,8 @@ async def generate_speech(
     text: str,
     voice_prompt: list,
     language: str = "en",
-    seed: Optional[int] = None,
-) -> Tuple[np.ndarray, int]:
+    seed: int | None = None,
+) -> tuple[np.ndarray, int]:
     """Generate speech from text using voice clone prompt items."""
     if _qwen_model is None:
         raise RuntimeError("Qwen model not loaded")
@@ -435,7 +444,7 @@ def _cache_key(audio_path: str, reference_text: str) -> str:
     return h.hexdigest()
 
 
-def _load_cached_prompt(cache_dir: str, cache_key: str) -> Optional[dict]:
+def _load_cached_prompt(cache_dir: str, cache_key: str) -> dict | None:
     cache_path = Path(cache_dir) / f"{cache_key}.prompt"
     if not cache_path.exists():
         return None

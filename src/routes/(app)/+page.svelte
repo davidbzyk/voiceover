@@ -15,6 +15,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { logger } from '$lib/logger';
 	import { tauriInvoke } from '$lib/tauri';
+	import type { VoiceboxProfile } from '$lib/voicebox';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
 	import RegionSelector from '$lib/RegionSelector.svelte';
 
@@ -27,13 +28,12 @@
 	let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Local voice profiles
-	interface LocalVoice { id: string; name: string; language: string; }
-	let localVoices = $state<LocalVoice[]>([]);
+	let localVoices = $state<VoiceboxProfile[]>([]);
 
 	async function loadLocalVoicesIfNeeded() {
 		if (appState.config.provider === 'local' && isTauri() && localVoices.length === 0) {
 			try {
-				localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices');
+				localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices');
 			} catch {
 				// Sidecar might not be ready yet
 			}
@@ -249,7 +249,7 @@
 						appState.config.provider = 'local';
 						appState.saveConfig();
 						if (isTauri()) {
-							try { localVoices = await tauriInvoke<LocalVoice[]>('list_local_voices'); } catch {}
+							try { localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices'); } catch {}
 						}
 					}}
 				>

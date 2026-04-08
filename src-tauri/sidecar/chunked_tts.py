@@ -9,9 +9,10 @@ original timestamps with silence gaps.
 Short text (≤ max_chunk_chars) uses the single-shot fast path with zero overhead.
 """
 
+from __future__ import annotations
+
 import logging
 import re
-from typing import List, Tuple
 
 import numpy as np
 
@@ -30,7 +31,7 @@ _ABBREVIATIONS = frozenset(
 _PARA_TAG_RE = re.compile(r"\[[^\]]*\]")
 
 
-def split_text_into_chunks(text: str, max_chars: int = DEFAULT_MAX_CHUNK_CHARS) -> List[str]:
+def split_text_into_chunks(text: str, max_chars: int = DEFAULT_MAX_CHUNK_CHARS) -> list[str]:
     """Split text at natural boundaries into chunks of at most max_chars."""
     text = text.strip()
     if not text:
@@ -38,7 +39,7 @@ def split_text_into_chunks(text: str, max_chars: int = DEFAULT_MAX_CHUNK_CHARS) 
     if len(text) <= max_chars:
         return [text]
 
-    chunks: List[str] = []
+    chunks: list[str] = []
     remaining = text
 
     while remaining:
@@ -115,7 +116,7 @@ def _safe_hard_cut(segment: str, max_chars: int) -> int:
 
 
 def concatenate_audio_chunks(
-    chunks: List[np.ndarray],
+    chunks: list[np.ndarray],
     sample_rate: int,
     crossfade_ms: int = 50,
 ) -> np.ndarray:
@@ -283,12 +284,34 @@ def pad_audio_to_match_timing(
 
 
 # ---------------------------------------------------------------------------
+# Pad / truncate to target duration
+# ---------------------------------------------------------------------------
+
+
+def pad_or_truncate_to_duration(audio: np.ndarray, sample_rate: int, target_duration: float, fade_ms: float = 300) -> np.ndarray:
+    """Pad (with fade-out) or truncate audio to match target duration."""
+    if target_duration <= 0 or not sample_rate:
+        return audio
+    target_samples = int(target_duration * sample_rate)
+    if len(audio) < target_samples:
+        fade_samples = min(int(fade_ms / 1000 * sample_rate), len(audio) // 2)
+        if fade_samples > 0:
+            fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+            audio = audio.copy()
+            audio[-fade_samples:] *= fade
+        audio = np.pad(audio, (0, target_samples - len(audio)))
+    elif len(audio) > target_samples:
+        audio = audio[:target_samples]
+    return audio
+
+
+# ---------------------------------------------------------------------------
 # Timestamp-aware audio assembly
 # ---------------------------------------------------------------------------
 
 
 def assemble_timed_segments(
-    tts_segments: List[Tuple[np.ndarray, float, float]],
+    tts_segments: list[tuple[np.ndarray, float, float]],
     original_duration: float,
     sample_rate: int,
 ) -> np.ndarray:

@@ -40,6 +40,7 @@ src-tauri/sidecar/__pycache__/
 src-tauri/sidecar/dist/
 src-tauri/sidecar/build/
 src-tauri/sidecar/.venv/
+src-tauri/sidecar/data/
 .sidecar-venv/
 
 # Superpowers

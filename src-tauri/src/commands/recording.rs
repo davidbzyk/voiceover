@@ -54,7 +54,8 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     let video_dir = std::fs::canonicalize(dirs::video_dir().unwrap_or_else(|| home_dir.join("Videos")))
         .unwrap_or_else(|_| home_dir.join("Videos"));
 
-    let allowed = requested.starts_with(&temp_dir)
+    let voiceover_temp = temp_dir.join("voiceover-recordings");
+    let allowed = requested.starts_with(&voiceover_temp)
         || requested.starts_with(&video_dir)
         || requested.starts_with(home_canon.join("VoiceOver"));
 
@@ -168,6 +169,9 @@ pub fn cleanup_stale_recordings(max_age: Duration) {
     }
 }
 
+/// Calculate total size of files directly in a directory (non-recursive).
+/// Recording session dirs are flat (chunks only), so recursion is unnecessary.
+/// For recursive traversal, see `models::dir_size`.
 fn fs_dir_size(path: &PathBuf) -> u64 {
     fs::read_dir(path)
         .map(|entries| {
@@ -364,13 +368,15 @@ mod tests {
     // --- read_file_bytes path containment tests ---
 
     #[test]
-    fn read_file_bytes_allows_path_in_temp_dir() {
-        // Create a file in the temp directory
-        let file_path = std::env::temp_dir().join(format!("voiceover-test-read-{}.bin", std::process::id()));
+    fn read_file_bytes_allows_path_in_voiceover_temp_dir() {
+        // Create a file in the voiceover-recordings temp subdirectory
+        let vo_temp = std::env::temp_dir().join("voiceover-recordings");
+        fs::create_dir_all(&vo_temp).ok();
+        let file_path = vo_temp.join(format!("voiceover-test-read-{}.bin", std::process::id()));
         fs::write(&file_path, b"test data").unwrap();
 
         let result = read_file_bytes(file_path.to_string_lossy().to_string());
-        assert!(result.is_ok(), "reading from temp dir should succeed: {result:?}");
+        assert!(result.is_ok(), "reading from voiceover-recordings temp dir should succeed: {result:?}");
         assert_eq!(result.unwrap(), b"test data");
 
         fs::remove_file(&file_path).ok();

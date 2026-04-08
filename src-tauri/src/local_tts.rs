@@ -721,6 +721,9 @@ pub async fn sidecar_fetch(
     Ok(text)
 }
 
+/// Permitted upload path prefixes — only these endpoints accept file uploads from the frontend.
+const ALLOWED_UPLOAD_PATHS: &[&str] = &["/profiles/"];
+
 /// Upload bytes to the TTS sidecar via multipart form (for sample uploads).
 #[tauri::command]
 pub async fn sidecar_upload(
@@ -731,6 +734,10 @@ pub async fn sidecar_upload(
     file_field: String,
     fields: std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
+    if !ALLOWED_UPLOAD_PATHS.iter().any(|prefix| path.starts_with(prefix)) {
+        return Err(format!("Upload path not allowed: {}", path));
+    }
+
     let port = crate::sidecar::ensure_running(&app).await?;
     let url = format!("http://127.0.0.1:{}{}", port, path);
     log::info!("[local_tts] Upload to {} (file: {}, {}KB)", url, file_name, file_bytes.len() / 1024);

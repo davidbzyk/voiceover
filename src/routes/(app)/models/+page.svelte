@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { appState } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
-	import { VoiceboxClient, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { voicebox, type VoiceboxModelStatus } from '$lib/voicebox';
 	import ModelCard from '$lib/ModelCard.svelte';
 	import { onMount } from 'svelte';
 
@@ -14,15 +14,11 @@
 	let confirmingDelete = $state<string | null>(null);
 	let deletingModel = $state<string | null>(null);
 
-	function getClient(): VoiceboxClient {
-		return new VoiceboxClient();
-	}
-
 	async function loadModelStatuses() {
 		modelsLoading = true;
 		modelsError = '';
 		try {
-			modelStatuses = await getClient().getModelStatus();
+			modelStatuses = await voicebox.getModelStatus();
 		} catch (err) {
 			modelsError = 'Failed to check model status. Is the TTS engine running?';
 			logger.error('models', 'Failed to load model statuses', err);
@@ -34,7 +30,7 @@
 		downloadingModel = modelName;
 		downloadProgress = 'Starting download...';
 		try {
-			await getClient().downloadModel(modelName, (_progress, status) => {
+			await voicebox.downloadModel(modelName, (_progress, status) => {
 				downloadProgress = status;
 			});
 			downloadProgress = '';
@@ -50,7 +46,7 @@
 	async function handleDeleteModel(modelName: string) {
 		deletingModel = modelName;
 		try {
-			await getClient().deleteModel(modelName);
+			await voicebox.deleteModel(modelName);
 			// Refresh statuses before fallback selection so we use fresh data
 			await loadModelStatuses();
 			// If we deleted the active whisper model, select another downloaded one

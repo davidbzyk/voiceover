@@ -73,16 +73,23 @@ from contextlib import asynccontextmanager
 # We don't need its functionality (attention capture, cache management).
 import transformers.utils.generic as _tug
 
+if hasattr(_tug, "check_model_inputs"):
+    _original = _tug.check_model_inputs
 
-def _noop_check_model_inputs(*args, **kwargs):
-    if args and callable(args[0]):
-        return args[0]  # @check_model_inputs without parens
-    def decorator(func):
-        return func
-    return decorator  # @check_model_inputs() with parens
+    def _noop_check_model_inputs(*args, **kwargs):
+        if args and callable(args[0]):
+            return args[0]  # @check_model_inputs without parens
+        def decorator(func):
+            return func
+        return decorator  # @check_model_inputs() with parens
 
-
-_tug.check_model_inputs = _noop_check_model_inputs
+    _tug.check_model_inputs = _noop_check_model_inputs
+else:
+    logger = logging.getLogger("voiceover-tts")
+    logger.info(
+        "transformers.utils.generic.check_model_inputs not found — "
+        "monkey-patch may no longer be needed"
+    )
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
@@ -165,13 +172,15 @@ def _validate_path(path_str: str, allowed_parents: list) -> Path:
         raise ValueError("Invalid path")
     resolved = Path(path_str).resolve()
     for parent in allowed_parents:
-        if str(resolved).startswith(str(Path(parent).resolve())):
+        parent_resolved = Path(parent).resolve()
+        if resolved.is_relative_to(parent_resolved):
             return resolved
     raise ValueError("Path not within allowed directories")
 
 # Generation queue: serial processing to prevent GPU contention
-_generation_queue: asyncio.Queue = asyncio.Queue()
+_generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 _generations: dict = {}  # id -> {status, error, audio_path, completed_at}
+MAX_GENERATIONS = 1000
 
 
 def _cleanup_generations():
@@ -206,6 +215,13 @@ async def lifespan(app):
 
 
 app = FastAPI(title="VoiceOver TTS Sidecar", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return error_response(500, str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Parent PID watchdog (ported from Voicebox server.py pattern)
@@ -242,13 +258,16 @@ def _is_pid_alive(pid: int) -> bool:
 
 def _start_parent_watchdog(parent_pid: int) -> None:
     """Monitor parent process and exit if it dies."""
+    from logging.handlers import RotatingFileHandler
+
     watchdog_logger = logging.getLogger("watchdog")
 
     log_dir = DATA_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(log_dir / "watchdog.log")
-    fh.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-    watchdog_logger.addHandler(fh)
+    log_path = log_dir / "watchdog.log"
+    handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+    watchdog_logger.addHandler(handler)
     watchdog_logger.setLevel(logging.INFO)
 
     def _watch() -> None:
@@ -348,6 +367,8 @@ async def _generation_worker():
             _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
+            if len(_generations) > 20:
+                _cleanup_generations()
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +401,7 @@ async def _do_generate(
         assemble_timed_segments,
         concatenate_audio_chunks,
         pad_audio_to_match_timing,
+        pad_or_truncate_to_duration,
         split_text_into_chunks,
     )
 
@@ -503,17 +525,7 @@ async def _do_generate(
             )
 
         # Pad or truncate to match original duration with smooth fade-out
-        if original_duration > 0 and sample_rate:
-            target_samples = int(original_duration * sample_rate)
-            if len(audio) < target_samples:
-                # Fade out last 300ms before silence padding
-                fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
-                if fade_samples > 0:
-                    fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-                    audio[-fade_samples:] *= fade
-                audio = np.pad(audio, (0, target_samples - len(audio)))
-            elif len(audio) > target_samples:
-                audio = audio[:target_samples]
+        audio = pad_or_truncate_to_duration(audio, sample_rate, original_duration)
 
     return audio, sample_rate, "Generation"
 
@@ -710,17 +722,8 @@ async def _do_voice_convert(
         )
 
     # Pad or truncate to match original duration with a smooth fade-out
-    if original_duration > 0 and sample_rate:
-        target_samples = int(original_duration * sample_rate)
-        if len(audio) < target_samples:
-            # Fade out last 300ms before silence padding
-            fade_samples = min(int(0.3 * sample_rate), len(audio) // 2)
-            if fade_samples > 0:
-                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-                audio[-fade_samples:] *= fade
-            audio = np.pad(audio, (0, target_samples - len(audio)))
-        elif len(audio) > target_samples:
-            audio = audio[:target_samples]
+    from chunked_tts import pad_or_truncate_to_duration
+    audio = pad_or_truncate_to_duration(audio, sample_rate, original_duration)
 
     return audio, sample_rate, "Voice conversion"
 
@@ -871,6 +874,11 @@ async def generate(request: dict):
     if not profile_id or not text:
         return error_response(400, "profile_id and text are required")
 
+    if len(_generations) >= MAX_GENERATIONS:
+        _cleanup_generations()
+        if len(_generations) >= MAX_GENERATIONS:
+            return error_response(429, "Too many pending generations")
+
     gen_id = str(uuid.uuid4())
     _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
 
@@ -1002,6 +1010,10 @@ async def extract_youtube(request: dict):
                 "outtmpl": str(video_path),
                 "quiet": True,
                 "no_warnings": True,
+                "noplaylist": True,
+                "max_downloads": 1,
+                "socket_timeout": 30,
+                "retries": 2,
             }
             with ydl.YoutubeDL(opts) as dl:
                 dl.download([url])
@@ -1144,7 +1156,7 @@ async def delete_profile(profile_id: str):
 @app.get("/models/status")
 async def models_status():
     """Get model download/load status for all registered models."""
-    from tts import is_qwen_loaded, _whisper_model, _whisper_model_name
+    from tts import is_qwen_loaded, is_whisper_loaded, get_whisper_model_name
 
     models_dir = DATA_DIR / "models"
     result = []
@@ -1166,7 +1178,7 @@ async def models_status():
         # Determine loaded status per category
         category = entry["category"]
         if category == "transcription":
-            loaded = _whisper_model is not None and _whisper_model_name == model_name
+            loaded = is_whisper_loaded() and get_whisper_model_name() == model_name
         elif category == "tts":
             loaded = is_qwen_loaded()
         elif category == "voice-conversion":

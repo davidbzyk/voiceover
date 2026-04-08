@@ -75,7 +75,8 @@ pub fn save_secrets(config: &super::config::AppConfig) {
     write_vault(&vault);
 }
 
-/// Remove all secrets from keychain
+/// Remove all secrets from keychain.
+#[allow(dead_code)]
 pub fn clear_secrets() {
     if let Ok(e) = entry() {
         let _ = e.delete_credential();

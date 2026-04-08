@@ -129,6 +129,6 @@ cd src-tauri/sidecar && pyinstaller voiceover-tts.spec
 
 ## Notes
 
-- **Unsigned app**: The .dmg is not code-signed. Users will see a macOS Gatekeeper warning on first launch. To open: right-click the app → "Open" → click "Open" in the dialog. This only needs to be done once.
+- **Code signing**: The build is configured with `signingIdentity: "Developer ID Application"` and hardened runtime. If a valid Developer ID certificate is in your keychain, the app will be signed automatically. Without the certificate, the app will be unsigned and users will see a macOS Gatekeeper warning on first launch (right-click → "Open" → "Open").
 - **ffmpeg is bundled**: The static ffmpeg binary is included inside the .app so users don't need to install it separately. It's ~60MB and excluded from git via `.gitignore`.
 - **Settings location**: App config is stored at `~/Library/Application Support/com.voiceover.app/config.json`, not inside the .app bundle.

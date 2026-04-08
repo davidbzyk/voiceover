@@ -4,6 +4,7 @@
  * no external Voicebox dependency.
  */
 
+import { invoke, Channel } from '@tauri-apps/api/core';
 import { tauriInvoke } from './tauri';
 
 export interface VoiceboxProfile {
@@ -62,8 +63,6 @@ export class VoiceboxClient {
 		modelName: string,
 		onProgress?: (progress: number, status: string) => void
 	): Promise<void> {
-		const { invoke, Channel } = await import('@tauri-apps/api/core');
-
 		type ModelDownloadEvent =
 			| { event: 'progress'; data: { progress: number; status: string } }
 			| { event: 'complete'; data: { model: string } }
@@ -150,3 +149,5 @@ export class VoiceboxClient {
 		return URL.createObjectURL(blob);
 	}
 }
+
+export const voicebox = new VoiceboxClient();

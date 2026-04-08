@@ -71,6 +71,25 @@ fn parse_sse_line(line: &str) -> Option<SseEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Validate that a model name contains only safe characters and no path traversal.
+fn validate_model_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/')
+    {
+        return Err(format!("Invalid model name: {}", name));
+    }
+    if name.contains("..") {
+        return Err(format!("Invalid model name: {}", name));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
 
@@ -83,6 +102,7 @@ pub async fn download_model(
     model: String,
     on_event: Channel<ModelDownloadEvent>,
 ) -> Result<(), String> {
+    validate_model_name(&model)?;
     let port = sidecar::ensure_running(&app).await?;
     let url = format!("http://127.0.0.1:{}/models/download", port);
 
@@ -157,6 +177,7 @@ pub async fn delete_model(
     app: tauri::AppHandle,
     model: String,
 ) -> Result<serde_json::Value, String> {
+    validate_model_name(&model)?;
     let port = sidecar::ensure_running(&app).await?;
     let url = format!("http://127.0.0.1:{}/models/{}", port, model);
 
@@ -286,6 +307,32 @@ mod tests {
     #[test]
     fn parse_sse_line_ignores_malformed_json() {
         assert_eq!(parse_sse_line("data: not-json"), None);
+    }
+
+    // validate_model_name tests
+
+    #[test]
+    fn validate_model_name_accepts_valid_names() {
+        assert!(validate_model_name("whisper-large-v3-turbo").is_ok());
+        assert!(validate_model_name("org/model-name").is_ok());
+        assert!(validate_model_name("model_v1.0").is_ok());
+    }
+
+    #[test]
+    fn validate_model_name_rejects_empty() {
+        assert!(validate_model_name("").is_err());
+    }
+
+    #[test]
+    fn validate_model_name_rejects_path_traversal() {
+        assert!(validate_model_name("../etc/passwd").is_err());
+        assert!(validate_model_name("model/../secret").is_err());
+    }
+
+    #[test]
+    fn validate_model_name_rejects_special_chars() {
+        assert!(validate_model_name("model; rm -rf /").is_err());
+        assert!(validate_model_name("model$(cmd)").is_err());
     }
 
     // dir_size tests (BUG-21)
