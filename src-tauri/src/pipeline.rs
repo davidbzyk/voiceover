@@ -37,6 +37,8 @@ pub async fn process_recording(
     voice_choice: Option<VoiceChoice>,
     on_event: Channel<PipelineEvent>,
 ) -> Result<String, String> {
+    // First, before any await: a Cancel at any later point of this run must count, never be erased by a late begin.
+    let token = app.state::<ConversionRuns>().begin();
     let recording = PathBuf::from(&recording_path);
     if !recording.exists() {
         return Err("Recording file not found".to_string());
@@ -70,8 +72,6 @@ pub async fn process_recording(
         return Ok(final_path.to_string_lossy().to_string());
     }
 
-    // Begun before any work, so a Cancel at any step of this run counts.
-    let token = app.state::<ConversionRuns>().begin();
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
 
@@ -133,13 +133,13 @@ pub async fn reconvert_recording(
     voice_choice: Option<VoiceChoice>,
     on_event: Channel<PipelineEvent>,
 ) -> Result<String, String> {
+    // First, before any await: a Cancel at any later point of this run must count, never be erased by a late begin.
+    let token = app.state::<ConversionRuns>().begin();
     let config = config::get_config(app.clone()).await?;
     let output_dir = library::resolve_output_dir(&config.output_dir);
     let mp4 = PathBuf::from(&path);
     library::validate_in_output_dir(&mp4, &output_dir)?;
 
-    // Begun before any work: a Cancel during the ffmpeg steps below would otherwise be erased by a later begin.
-    let token = app.state::<ConversionRuns>().begin();
     let original = original_voice_path(&mp4);
     if !original.exists() {
         if read_meta(&mp4).get("voiceReplacement").and_then(|v| v.as_bool()).unwrap_or(false) {

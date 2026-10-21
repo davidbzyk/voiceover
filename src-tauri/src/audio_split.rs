@@ -27,6 +27,9 @@ pub(crate) fn read_pcm16_mono(path: &Path) -> Result<PcmAudio, String> {
         let body = pos + 8;
         let end = (body + size).min(bytes.len());
         if id == b"fmt " && size >= 16 {
+            if body + 16 > bytes.len() {
+                return Err(format!("{:?} has a truncated fmt chunk", path));
+            }
             let format = u16::from_le_bytes([bytes[body], bytes[body + 1]]);
             let channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
             let bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
@@ -129,6 +132,17 @@ mod tests {
             samples,
             sample_rate: sr,
         }
+    }
+
+    #[test]
+    fn truncated_fmt_chunk_is_an_error_not_a_panic() {
+        let path = std::env::temp_dir().join("vo-test-truncated-fmt.wav");
+        let mut wav = b"RIFF\x00\x00\x00\x00WAVEfmt ".to_vec();
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1, 0, 1, 0]); // declares 16 bytes, holds 4
+        std::fs::write(&path, &wav).unwrap();
+        assert!(read_pcm16_mono(&path).is_err());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

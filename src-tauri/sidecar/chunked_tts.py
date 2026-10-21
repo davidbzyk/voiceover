@@ -190,6 +190,7 @@ def convert_in_overlapping_chunks(
         on_progress(0, n_chunks)
 
     pieces = []
+    produced = 0
     pos = 0
     for i in range(n_chunks):
         if should_cancel and should_cancel():
@@ -199,6 +200,8 @@ def convert_in_overlapping_chunks(
         piece = np.asarray(convert_chunk(source[pos:end]), dtype=np.float32)
         if len(piece) == 0:
             logger.warning(f"  Chunk {i + 1}/{n_chunks} produced empty audio; keeping its slot silent")
+        else:
+            produced += 1
         pieces.append(_fit_length(piece, end - pos))
         if on_progress:
             on_progress(i + 1, n_chunks)
@@ -206,6 +209,8 @@ def convert_in_overlapping_chunks(
         if pos >= total_samples:
             break
 
+    if produced == 0:
+        raise ValueError("Voice conversion produced no audio for any chunk")
     # Crossfade across the whole overlap: a shorter fade repeats the rest of it at every seam.
     return concatenate_audio_chunks(pieces, sample_rate, crossfade_ms=overlap_seconds * 1000)
 

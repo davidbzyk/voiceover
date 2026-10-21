@@ -22,7 +22,7 @@
 	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
 
 	let requiredModelsReady = $derived.by(() => {
-		const required = getRequiredModelNames(appState.config);
+		const required = getRequiredModelNames(appState.config, 'create-voice');
 		return required.every((name) =>
 			modelStatuses.some((m) => m.model_name === name && m.downloaded)
 		);

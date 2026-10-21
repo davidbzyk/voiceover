@@ -57,8 +57,8 @@ pub(crate) fn normalize_args(input: &str, output: &str) -> Vec<String> {
 /// Extract audio from a video file as 16kHz mono WAV (optimal for ElevenLabs S2S).
 pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
     let args = extract_audio_args(
-        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_wav.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input_video)?,
+        path_arg(output_wav)?,
     );
     run_ffmpeg(&args, "extract audio").await
 }
@@ -71,9 +71,9 @@ pub async fn replace_audio(
     output_mp4: &Path,
 ) -> Result<(), String> {
     let args = replace_audio_args(
-        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        new_audio.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input_video)?,
+        path_arg(new_audio)?,
+        path_arg(output_mp4)?,
     );
     run_ffmpeg(&args, "replace audio").await
 }
@@ -260,8 +260,8 @@ fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
 /// Normalize a recording to MP4 format (handles platform codec differences).
 pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let args = normalize_args(
-        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input)?,
+        path_arg(output_mp4)?,
     );
     run_ffmpeg(&args, "normalize").await
 }
@@ -277,8 +277,8 @@ pub(crate) fn thumbnail_args(input: &str, output: &str) -> Vec<String> {
 /// Extract a thumbnail JPEG from a video file.
 pub async fn extract_thumbnail(input: &Path, output: &Path) -> Result<(), String> {
     let args = thumbnail_args(
-        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input)?,
+        path_arg(output)?,
     );
     run_ffmpeg(&args, "thumbnail extraction").await
 }

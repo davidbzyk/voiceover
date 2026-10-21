@@ -274,6 +274,13 @@ class TestPadAudioToMatchTiming:
 class TestConvertInOverlappingChunks:
     """Voice conversion over long recordings must keep the recording's length and timing."""
 
+    def test_every_chunk_empty_is_a_failure_not_silence(self):
+        with pytest.raises(ValueError, match="no audio"):
+            convert_in_overlapping_chunks(
+                np.zeros(60 * 16000, dtype=np.float32), 16000,
+                lambda chunk: np.zeros(0, dtype=np.float32),
+            )
+
     def test_short_recording_honours_cancel_before_converting(self):
         calls = []
         with pytest.raises(ConversionCancelled):
