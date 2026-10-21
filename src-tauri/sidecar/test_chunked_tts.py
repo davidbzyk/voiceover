@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 
 from chunked_tts import (
+    ConversionCancelled,
     assemble_timed_segments,
     concatenate_audio_chunks,
+    convert_in_overlapping_chunks,
     pad_audio_to_match_timing,
     split_text_into_chunks,
 )
@@ -262,3 +264,92 @@ class TestPadAudioToMatchTiming:
         ]
         result = pad_audio_to_match_timing(audio, sr, timing)
         assert result.dtype == np.float32
+
+
+# ---------------------------------------------------------------------------
+# convert_in_overlapping_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestConvertInOverlappingChunks:
+    """Voice conversion over long recordings must keep the recording's length and timing."""
+
+    def test_every_chunk_empty_is_a_failure_not_silence(self):
+        with pytest.raises(ValueError, match="no audio"):
+            convert_in_overlapping_chunks(
+                np.zeros(60 * 16000, dtype=np.float32), 16000,
+                lambda chunk: np.zeros(0, dtype=np.float32),
+            )
+
+    def test_short_recording_honours_cancel_before_converting(self):
+        calls = []
+        with pytest.raises(ConversionCancelled):
+            convert_in_overlapping_chunks(
+                np.zeros(10 * 16000, dtype=np.float32), 16000,
+                lambda chunk: calls.append(chunk) or chunk,
+                should_cancel=lambda: True,
+            )
+        assert calls == []
+
+    def test_identity_conversion_preserves_length_of_long_recording(self):
+        # 410.3s matches the real 6m50s recording that drifted out of sync
+        source = np.random.default_rng(0).standard_normal(int(410.3 * SR)).astype(np.float32)
+        out = convert_in_overlapping_chunks(source, SR, lambda chunk: chunk)
+        assert abs(len(out) - len(source)) <= 1
+
+    def test_identity_conversion_keeps_late_audio_in_place(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+        out = convert_in_overlapping_chunks(source, SR, lambda chunk: chunk)
+        assert int(np.argmax(out)) == marker
+
+    def test_short_recording_is_one_call(self):
+        calls = []
+        source = np.ones(int(5 * SR), dtype=np.float32)
+        out = convert_in_overlapping_chunks(source, SR, lambda c: calls.append(len(c)) or c)
+        assert calls == [len(source)]
+        assert len(out) == len(source)
+
+    def test_reports_progress_per_chunk(self):
+        seen = []
+        source = np.zeros(int(60 * SR), dtype=np.float32)
+        convert_in_overlapping_chunks(source, SR, lambda c: c, on_progress=lambda d, t: seen.append((d, t)))
+        total = seen[0][1]
+        assert seen == [(i, total) for i in range(total + 1)]
+
+    def test_cancel_stops_before_next_chunk(self):
+        calls = []
+        source = np.zeros(int(100 * SR), dtype=np.float32)
+        with pytest.raises(ConversionCancelled):
+            convert_in_overlapping_chunks(
+                source, SR, lambda c: calls.append(1) or c, should_cancel=lambda: len(calls) >= 2
+            )
+        assert len(calls) == 2
+
+    def test_empty_chunk_keeps_its_slot_so_later_audio_stays_in_sync(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+        calls = []
+
+        def convert(chunk):
+            calls.append(1)
+            return np.array([], dtype=np.float32) if len(calls) == 2 else chunk
+
+        out = convert_in_overlapping_chunks(source, SR, convert)
+        assert abs(len(out) - len(source)) <= 1
+        assert int(np.argmax(out)) == marker
+
+    def test_chunk_that_comes_back_longer_does_not_push_later_audio_out_of_sync(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+
+        def convert(chunk):
+            # A model that returns 1% more audio than it was given
+            return np.concatenate([chunk, np.zeros(len(chunk) // 100, dtype=np.float32)])
+
+        out = convert_in_overlapping_chunks(source, SR, convert)
+        assert abs(len(out) - len(source)) <= 1
+        assert abs(int(np.argmax(out)) - marker) <= SR // 100

@@ -5,6 +5,9 @@
 	import { refreshDriveToken } from '$lib/drive';
 	import { libraryState, type RecordingInfo } from '$lib/library.svelte';
 	import { logger } from '$lib/logger';
+	import VoicePicker from '$lib/VoicePicker.svelte';
+	import { cancelConversion, runConversion, type VoiceChoice } from '$lib/conversion';
+	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 
 	let { recording }: { recording: RecordingInfo } = $props();
 
@@ -17,6 +20,33 @@
 	let editing = $state(false);
 	let editName = $state('');
 	let editInput = $state<HTMLInputElement | null>(null);
+	/** Read from the shared owner, so a card remounted mid-run still shows its run and Cancel. */
+	const converting = $derived(activeConversion.owner === recording.path);
+	let showConvert = $state(false);
+	let voiceChoice = $state<VoiceChoice | null>(null);
+	/** True while another card or the Preview is converting; the backend runs one at a time. */
+	const busyElsewhere = $derived(!!activeConversion.owner && !converting);
+	/** This recording's last conversion failure, from shared state so a remounted card still shows it. */
+	const conversionError = $derived(
+		activeConversion.failure?.owner === recording.path ? `Convert failed: ${activeConversion.failure.message}` : ''
+	);
+
+	/** Convert this recording again, from its original voice, into the picked voice. */
+	async function handleConvertAgain() {
+		if (!voiceChoice || activeConversion.owner) return;
+		errorMessage = '';
+		try {
+			await runExclusive(recording.path, (report) =>
+				runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) =>
+					report(`${stage} ${Math.round(percent)}%`)
+				)
+			);
+			showConvert = false;
+			await libraryState.load();
+		} catch (err) {
+			logger.error('library', 'Convert again failed', err);
+		}
+	}
 
 	const alreadyUploaded = $derived(!!recording.meta?.driveUrl);
 	const driveConnected = $derived(appState.config.google_drive.connected);
@@ -227,8 +257,22 @@
 				{/if}
 			</div>
 		{/if}
-		{#if errorMessage}
-			<div class="card-error">{errorMessage}</div>
+		<!-- Also shown for a run started before the card remounted, so Cancel is always reachable. -->
+		{#if showConvert || converting}
+			<div class="convert-row">
+				<VoicePicker bind:value={voiceChoice} disabled={converting} />
+				{#if converting}
+					<span class="convert-progress">{activeConversion.progress}</span>
+					<button class="text-btn" onclick={cancelConversion}>Cancel</button>
+				{:else}
+					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice || busyElsewhere}>
+						{busyElsewhere ? 'Busy…' : 'Convert'}
+					</button>
+				{/if}
+			</div>
+		{/if}
+		{#if errorMessage || conversionError}
+			<div class="card-error">{errorMessage || conversionError}</div>
 		{/if}
 	</div>
 
@@ -252,16 +296,25 @@
 				</button>
 			{/if}
 		{/if}
+		<button
+			class="action-btn"
+			onclick={() => (showConvert = !showConvert)}
+			disabled={converting}
+			title="Convert voice again"
+		>
+			🎙️
+		</button>
 		<button class="action-btn" onclick={handleReveal} title="Show in Finder">
 			📂
 		</button>
-		<button class="action-btn" onclick={startRename} disabled={editing} title="Rename">
+		<button class="action-btn" onclick={startRename} disabled={editing || converting} title="Rename">
 			✏️
 		</button>
 		<button
 			class="action-btn"
 			class:danger={confirmingDelete}
 			onclick={handleDelete}
+			disabled={converting}
 			onmouseleave={() => (confirmingDelete = false)}
 			title={confirmingDelete ? 'Click again to confirm' : 'Delete'}
 		>
@@ -271,6 +324,34 @@
 </div>
 
 <style>
+	.convert-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 6px;
+		min-width: 0;
+	}
+	.convert-progress {
+		font-size: 11px;
+		color: #94a3b8;
+		white-space: nowrap;
+	}
+	.text-btn {
+		background: none;
+		border: none;
+		color: #94a3b8;
+		font-size: 12px;
+		cursor: pointer;
+		padding: 0;
+	}
+	.text-btn.accent {
+		color: #f97316;
+		font-weight: 600;
+	}
+	.text-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
 	.recording-card {
 		display: flex;
 		gap: 14px;

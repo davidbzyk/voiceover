@@ -1,8 +1,7 @@
 use crate::config;
-use crate::elevenlabs;
+use crate::conversion::{self, ConversionRuns, VoiceChoice};
 use crate::ffmpeg;
-use crate::local_tts;
-use crate::sidecar;
+use crate::library;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
@@ -17,20 +16,34 @@ pub enum PipelineEvent {
     Error { message: String },
 }
 
+/// Send a progress event, ignoring a closed channel.
+fn progress(on_event: &Channel<PipelineEvent>, stage: &str, percent: f32) {
+    on_event
+        .send(PipelineEvent::Progress { stage: stage.to_string(), percent })
+        .ok();
+}
+
+/// Path of the original-voice track kept beside a recording so it can be converted again.
+pub(crate) fn original_voice_path(mp4: &Path) -> PathBuf {
+    mp4.with_extension("original.m4a")
+}
+
+/// Save a new recording as MP4, replacing its voice when `voice_replacement` is on.
 #[tauri::command]
 pub async fn process_recording(
     app: tauri::AppHandle,
     recording_path: String,
     voice_replacement: bool,
-    voice_id: Option<String>,
+    voice_choice: Option<VoiceChoice>,
     on_event: Channel<PipelineEvent>,
 ) -> Result<String, String> {
+    // First, before any await: a Cancel at any later point of this run must count, never be erased by a late begin.
+    let token = app.state::<ConversionRuns>().begin();
     let recording = PathBuf::from(&recording_path);
     if !recording.exists() {
         return Err("Recording file not found".to_string());
     }
 
-    // Log recording file details for debugging
     let rec_meta = std::fs::metadata(&recording);
     log::info!(
         "[pipeline] Starting: voice_replacement={}, input={}, file_size={}KB",
@@ -40,277 +53,256 @@ pub async fn process_recording(
     );
 
     let config = config::get_config(app.clone()).await?;
-    let output_dir = crate::library::resolve_output_dir(&config.output_dir);
+    let output_dir = library::resolve_output_dir(&config.output_dir);
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format!("Failed to create output directory {:?}: {}", output_dir, e))?;
 
     let timestamp = unix_timestamp();
-    let final_name = format!("voiceover-{timestamp}.mp4");
-    let final_path = output_dir.join(&final_name);
+    let final_path = output_dir.join(format!("voiceover-{timestamp}.mp4"));
     let pipeline_start = std::time::Instant::now();
 
     if !voice_replacement {
-        // Just normalize to MP4 and save
-        on_event
-            .send(PipelineEvent::Progress {
-                stage: "Saving".to_string(),
-                percent: 50.0,
-            })
-            .ok();
-
+        progress(&on_event, "Saving", 50.0);
         ffmpeg::normalize_to_mp4(&recording, &final_path).await?;
-        write_meta(&final_path, &config, false, None);
-
+        update_meta(&final_path, None, None);
         on_event
-            .send(PipelineEvent::Complete {
-                output_path: final_path.to_string_lossy().to_string(),
-            })
+            .send(PipelineEvent::Complete { output_path: final_path.to_string_lossy().to_string() })
             .ok();
-
         cleanup_temp(&recording);
         return Ok(final_path.to_string_lossy().to_string());
     }
 
-    // Voice replacement pipeline
-    let use_local = config.provider == crate::tts_provider::Provider::Local;
+    let choice = conversion::resolve_voice(&config, voice_choice)?;
+    let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
 
-    if !use_local {
-        let api_key = &config.elevenlabs_api_key;
-        if api_key.is_empty() {
-            return Err("ElevenLabs API key not set — configure in Settings".to_string());
+    // Kept first: the source recording is deleted on success, so a converted save without
+    // its original voice would lose that voice for good. Failing here leaves the recording.
+    let original = original_voice_path(&final_path);
+    ffmpeg::keep_original_voice(&recording, &original).await?;
+    let saved = async {
+        let transformed =
+            convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, token, &on_event).await?;
+        progress(&on_event, "Assembling video", 90.0);
+        log::info!("[pipeline] Splicing audio into video");
+        let assembled = ffmpeg::replace_audio(&recording, &transformed, &final_path).await;
+        cleanup_temp(&transformed);
+        assembled?;
+        if let Err(e) = ensure_current(&app, token) {
+            cleanup_temp(&final_path);
+            return Err(e);
         }
+        Ok(())
     }
-
-    let voice_id = voice_id
-        .filter(|id| !id.is_empty())
-        .or_else(|| {
-            config.voices.iter()
-                .find(|v| v.is_default)
-                .or_else(|| config.voices.first())
-                .map(|v| v.id.clone())
-        });
-
-    if !use_local && voice_id.is_none() {
-        return Err("No voice configured — add one in Settings".to_string());
+    .await;
+    if let Err(e) = saved {
+        cleanup_temp(&original);
+        return Err(e);
     }
-
-    if use_local && config.local_voice_profile_id.is_empty() {
-        return Err("No local voice profile configured — select one in Settings".to_string());
+    log_duration_drift(&recording, &final_path).await;
+    let name = conversion::voice_name(&app, &config, &choice).await;
+    // Last point a Cancel can still undo: past here the source recording is deleted.
+    if let Err(e) = ensure_current(&app, token) {
+        cleanup_temp(&final_path);
+        cleanup_temp(&original);
+        return Err(e);
     }
-
-    let temp_dir = recording.parent().unwrap_or(std::path::Path::new("/tmp"));
-    let extracted_wav = temp_dir.join(format!("extracted-{timestamp}.wav"));
-    // ElevenLabs outputs MP3; local TTS sidecar outputs WAV.
-    // ffmpeg's replace_audio handles both (transcodes to AAC).
-    let transformed_audio = if use_local {
-        temp_dir.join(format!("transformed-{timestamp}.wav"))
-    } else {
-        temp_dir.join(format!("transformed-{timestamp}.mp3"))
-    };
-
-    // Stage 1: Extract audio (0-10%)
-    on_event
-        .send(PipelineEvent::Progress {
-            stage: "Extracting audio".to_string(),
-            percent: 5.0,
-        })
-        .ok();
-
-    // Probe video duration before extraction — the video is the source of truth for timing.
-    // Audio tracks in WebM can be shorter than video (WebRTC records them independently).
-    let video_duration = match ffmpeg::probe_duration(&recording).await {
-        Ok(dur) => {
-            log::info!("[pipeline] Video duration: {:.1}s", dur);
-            Some(dur)
-        }
-        Err(e) => {
-            log::warn!("[pipeline] Could not probe video duration: {} (will use audio duration)", e);
-            None
-        }
-    };
-
-    log::info!("[pipeline] Extracting audio to {:?}", extracted_wav);
-    ffmpeg::extract_audio(&recording, &extracted_wav).await?;
-    let wav_size = std::fs::metadata(&extracted_wav).map(|m| m.len()).unwrap_or(0);
-    // 16kHz mono 16-bit = 32000 bytes/sec
-    let wav_duration_est = wav_size as f64 / 32000.0;
-    log::info!(
-        "[pipeline] Audio extracted: {}KB (~{:.1}s)",
-        wav_size / 1024,
-        wav_duration_est,
-    );
-
-    on_event
-        .send(PipelineEvent::Progress {
-            stage: "Extracting audio".to_string(),
-            percent: 10.0,
-        })
-        .ok();
-
-    // Stage 2: Voice transformation (10-85%)
-    // Track the resolved voice name for metadata (human-readable, not opaque ID)
-    let resolved_voice_name = if use_local {
-        on_event
-            .send(PipelineEvent::Progress {
-                stage: "Transforming voice (local)...".to_string(),
-                percent: 15.0,
-            })
-            .ok();
-
-        let port = sidecar::ensure_running(&app).await?;
-        let http = app.state::<local_tts::HttpClient>();
-        if config.local_tts_mode == config::LocalTtsMode::Vc {
-            log::info!("[pipeline] Using voice conversion (CosyVoice S2S)");
-            local_tts::voice_convert(
-                &http.client,
-                port,
-                &config.local_voice_profile_id,
-                &extracted_wav,
-                &transformed_audio,
-                video_duration,
-            ).await?;
-        } else {
-            log::info!("[pipeline] Using text-to-speech (Qwen TTS)");
-            local_tts::speech_to_speech(
-                &http.client,
-                port,
-                &config.local_voice_profile_id,
-                &extracted_wav,
-                &transformed_audio,
-                video_duration,
-                Some(&config.whisper_model),
-            ).await?;
-        }
-
-        // Resolve local voice profile ID → human-readable name from sidecar
-        match local_tts::list_local_voices(app.clone()).await {
-            Ok(voices) => voices.iter()
-                .find(|v| v.id == config.local_voice_profile_id)
-                .map(|v| v.name.clone()),
-            Err(e) => {
-                log::warn!("[pipeline] Could not resolve local voice name: {}", e);
-                None
-            }
-        }
-    } else {
-        on_event
-            .send(PipelineEvent::Progress {
-                stage: "Transforming voice (ElevenLabs)...".to_string(),
-                percent: 15.0,
-            })
-            .ok();
-
-        elevenlabs::speech_to_speech(
-            &app,
-            &config.elevenlabs_api_key,
-            voice_id.as_deref().ok_or_else(|| "ElevenLabs voice ID is required but not configured".to_string())?,
-            &extracted_wav,
-            &transformed_audio,
-        ).await?;
-
-        // Resolve ElevenLabs voice name from config
-        config.voices.iter()
-            .find(|v| v.is_default)
-            .or_else(|| config.voices.first())
-            .map(|v| v.name.clone())
-    };
-
-    on_event
-        .send(PipelineEvent::Progress {
-            stage: "Transforming voice".to_string(),
-            percent: 85.0,
-        })
-        .ok();
-
-    // Stage 3: Splice audio (85-100%)
-    on_event
-        .send(PipelineEvent::Progress {
-            stage: "Assembling video".to_string(),
-            percent: 90.0,
-        })
-        .ok();
-
-    log::info!("[pipeline] Splicing audio into video");
-    ffmpeg::replace_audio(&recording, &transformed_audio, &final_path).await?;
-
-    // Diagnostic: compare input vs output durations to detect A/V sync issues
-    match ffmpeg::probe_duration(&final_path).await {
-        Ok(output_dur) => {
-            log::info!(
-                "[pipeline] Output duration: {:.1}s (input video: {:.1}s)",
-                output_dur,
-                video_duration.unwrap_or(0.0),
-            );
-            if let Some(vid_dur) = video_duration {
-                let drift = (output_dur - vid_dur).abs();
-                if drift > 1.0 {
-                    log::warn!(
-                        "[pipeline] Duration drift: output={:.1}s vs input={:.1}s (drift={:.1}s) — possible A/V sync issue!",
-                        output_dur, vid_dur, drift,
-                    );
-                }
-            }
-        }
-        Err(e) => log::warn!("[pipeline] Could not probe output duration: {}", e),
-    }
-
-    // Copy transcript alongside the final video (if local TTS generated one)
-    if use_local {
-        let transcript_src = transformed_audio.with_extension("txt");
-        if transcript_src.exists() {
-            let transcript_dst = final_path.with_extension("txt");
-            match std::fs::copy(&transcript_src, &transcript_dst) {
-                Ok(_) => log::info!("[pipeline] Transcript saved: {:?}", transcript_dst),
-                Err(e) => log::warn!("[pipeline] Failed to copy transcript: {}", e),
-            }
-        }
-    }
-
-    write_meta(&final_path, &config, true, resolved_voice_name.as_deref());
+    update_meta(&final_path, Some(&choice), name.as_deref());
 
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
         final_path.display(),
         pipeline_start.elapsed().as_secs_f32()
     );
-
     on_event
-        .send(PipelineEvent::Complete {
-            output_path: final_path.to_string_lossy().to_string(),
-        })
+        .send(PipelineEvent::Complete { output_path: final_path.to_string_lossy().to_string() })
         .ok();
 
-    // Cleanup temp files from this pipeline run
     cleanup_temp(&recording);
-    cleanup_temp(&extracted_wav);
-    cleanup_temp(&transformed_audio);
-    cleanup_temp(&transformed_audio.with_extension("txt"));
-
-    // Sweep stale artifacts from previous runs (>1 hour old)
     tokio::task::spawn_blocking(|| {
-        crate::commands::recording::cleanup_stale_recordings(
-            std::time::Duration::from_secs(3600),
-        );
+        crate::commands::recording::cleanup_stale_recordings(std::time::Duration::from_secs(3600));
     });
 
     Ok(final_path.to_string_lossy().to_string())
+}
+
+/// Convert a saved recording again, from its original voice, into another voice; the mp4 is updated in place.
+#[tauri::command]
+pub async fn reconvert_recording(
+    app: tauri::AppHandle,
+    path: String,
+    voice_choice: Option<VoiceChoice>,
+    on_event: Channel<PipelineEvent>,
+) -> Result<String, String> {
+    // First, before any await: a Cancel at any later point of this run must count, never be erased by a late begin.
+    let token = app.state::<ConversionRuns>().begin();
+    let config = config::get_config(app.clone()).await?;
+    let output_dir = library::resolve_output_dir(&config.output_dir);
+    let mp4 = PathBuf::from(&path);
+    library::validate_in_output_dir(&mp4, &output_dir)?;
+
+    let original = original_voice_path(&mp4);
+    if !original.exists() {
+        if read_meta(&mp4).get("voiceReplacement").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Err(
+                "This recording was converted before original voices were kept, so there is no original to convert from"
+                    .to_string(),
+            );
+        }
+        // An unconverted recording's own audio is the original voice.
+        ffmpeg::keep_original_voice(&mp4, &original).await?;
+        ensure_current(&app, token)?;
+    }
+
+    let choice = conversion::resolve_voice(&config, voice_choice)?;
+    let temp_dir = crate::commands::recording::temp_recording_dir();
+    let stamp = unix_timestamp();
+    let transformed = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, token, &on_event).await?;
+
+    progress(&on_event, "Assembling video", 90.0);
+    // Staged beside the mp4 so the final rename is atomic: the saved video is never half-written.
+    let staged = staging_path(&mp4);
+    let swapped = ffmpeg::swap_audio(&mp4, &transformed, &staged).await;
+    cleanup_temp(&transformed);
+    // Looked up before the rename, so the Cancel check below is the last step that can still undo the run.
+    let name = conversion::voice_name(&app, &config, &choice).await;
+    if let Err(e) = swapped.and_then(|_| ensure_current(&app, token)) {
+        cleanup_temp(&staged);
+        return Err(e);
+    }
+    replace_file(&staged, &mp4)?;
+
+    update_meta(&mp4, Some(&choice), name.as_deref());
+    log::info!("[pipeline] Reconverted {} with {:?}", mp4.display(), choice);
+    on_event
+        .send(PipelineEvent::Complete { output_path: path.clone() })
+        .ok();
+    Ok(path)
+}
+
+/// Extract `audio_source`'s audio and convert it into `choice`'s voice, reporting progress 5-85%.
+///
+/// `video` is the file whose length the result must match; `token` is the caller's run. Returns the converted audio's path.
+#[allow(clippy::too_many_arguments)]
+async fn convert_voice(
+    app: &tauri::AppHandle,
+    config: &config::AppConfig,
+    choice: &VoiceChoice,
+    audio_source: &Path,
+    video: &Path,
+    temp_dir: &Path,
+    stamp: &str,
+    token: u64,
+    on_event: &Channel<PipelineEvent>,
+) -> Result<PathBuf, String> {
+    let runs = app.state::<ConversionRuns>();
+
+    progress(on_event, "Extracting audio", 5.0);
+    // The video is the source of truth for timing: WebM audio can end before the video does.
+    let duration = match ffmpeg::probe_duration(video).await {
+        Ok(d) => Some(d),
+        Err(e) => {
+            log::warn!("[pipeline] Could not probe video duration: {} (will use audio duration)", e);
+            None
+        }
+    };
+    let extracted = temp_dir.join(format!("extracted-{stamp}.wav"));
+    ffmpeg::extract_audio(audio_source, &extracted).await?;
+    if let Err(e) = ensure_current(app, token) {
+        cleanup_temp(&extracted);
+        return Err(e);
+    }
+
+    let stage = match choice.provider {
+        crate::tts_provider::Provider::Local => "Converting voice (local)",
+        crate::tts_provider::Provider::ElevenLabs => "Converting voice (ElevenLabs)",
+    };
+    progress(on_event, stage, 10.0);
+    log::info!("[pipeline] Converting with {:?}, duration={:?}", choice, duration);
+
+    let started = std::time::Instant::now();
+    let result = conversion::convert(
+        app,
+        config,
+        choice,
+        &extracted,
+        temp_dir,
+        stamp,
+        duration,
+        &|fraction| progress(on_event, stage, 10.0 + 75.0 * fraction),
+        &|| runs.is_stale(token),
+    )
+    .await;
+    cleanup_temp(&extracted);
+    log::info!("[pipeline] Conversion took {:.1}s", started.elapsed().as_secs_f32());
+    let converted = result?;
+    // A provider that cannot be interrupted mid-request may finish after Cancel; drop its result.
+    if let Err(e) = ensure_current(app, token) {
+        cleanup_temp(&converted);
+        return Err(e);
+    }
+    progress(on_event, stage, 85.0);
+    Ok(converted)
+}
+
+/// Fail with the cancelled error when `token`'s run was cancelled or superseded.
+fn ensure_current(app: &tauri::AppHandle, token: u64) -> Result<(), String> {
+    if app.state::<ConversionRuns>().is_stale(token) {
+        return Err(crate::tts_provider::CANCELLED.to_string());
+    }
+    Ok(())
+}
+
+/// Where a recording's replacement is written before it is renamed over the original.
+fn staging_path(mp4: &Path) -> PathBuf {
+    mp4.with_extension("mp4.part")
+}
+
+/// Move `staged` over `target` in one rename, so `target` is always either the old or the new file.
+///
+/// Refuses when `target` is gone: the recording was deleted while it converted, and must stay deleted.
+fn replace_file(staged: &Path, target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        cleanup_temp(staged);
+        return Err("The recording was deleted while it was converting".to_string());
+    }
+    std::fs::rename(staged, target).map_err(|e| {
+        cleanup_temp(staged);
+        format!("Failed to update recording: {e}")
+    })
+}
+
+/// Log a warning when the output's length drifts from the input video's.
+async fn log_duration_drift(input: &Path, output: &Path) {
+    if let (Ok(input_dur), Ok(output_dur)) = (ffmpeg::probe_duration(input).await, ffmpeg::probe_duration(output).await) {
+        log::info!("[pipeline] Output duration: {:.1}s (input video: {:.1}s)", output_dur, input_dur);
+        if (output_dur - input_dur).abs() > 1.0 {
+            log::warn!("[pipeline] Duration drift: output={:.1}s vs input={:.1}s — possible A/V sync issue", output_dur, input_dur);
+        }
+    }
 }
 
 fn cleanup_temp(path: &Path) {
     std::fs::remove_file(path).ok();
 }
 
-/// Write a .meta.json sidecar alongside the output MP4.
-/// `voice_name` should be the resolved human-readable name, not an opaque ID.
-fn write_meta(output_path: &Path, config: &config::AppConfig, voice_replacement: bool, voice_name: Option<&str>) {
-    let voice_profile = if voice_replacement { voice_name } else { None };
+/// Read a recording's .meta.json as a JSON object (empty when missing or unreadable).
+fn read_meta(output_path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(output_path.with_extension("meta.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
 
-    let meta = serde_json::json!({
-        "voiceProfile": voice_profile,
-        "provider": if voice_replacement { Some(&config.provider) } else { None },
-        "voiceReplacement": voice_replacement,
-        "createdAt": unix_timestamp().parse::<u64>().unwrap_or(0),
-    });
+/// Record which voice a recording now uses, keeping other fields (Drive link, creation time).
+/// `voice_name` should be the resolved human-readable name, not an opaque ID.
+fn update_meta(output_path: &Path, choice: Option<&VoiceChoice>, voice_name: Option<&str>) {
+    let mut meta = read_meta(output_path);
+    meta.insert("voiceProfile".into(), serde_json::json!(voice_name));
+    meta.insert("provider".into(), serde_json::json!(choice.map(|c| &c.provider)));
+    meta.insert("voiceReplacement".into(), serde_json::json!(choice.is_some()));
+    meta.entry("createdAt")
+        .or_insert_with(|| serde_json::json!(unix_timestamp().parse::<u64>().unwrap_or(0)));
 
     let meta_path = output_path.with_extension("meta.json");
     match serde_json::to_string_pretty(&meta) {
@@ -389,82 +381,89 @@ mod tests {
         assert_eq!(v["data"]["message"], "Something went wrong");
     }
 
-    #[test]
-    fn write_meta_creates_sidecar_file() {
-        let tmp = std::env::temp_dir().join("vo-test-write-meta");
-        std::fs::create_dir_all(&tmp).ok();
-        let mp4 = tmp.join("voiceover-1740000000.mp4");
+    fn temp_mp4(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vo-test-{name}"));
+        std::fs::create_dir_all(&dir).ok();
+        let mp4 = dir.join("voiceover-1740000000.mp4");
         std::fs::write(&mp4, b"fake").ok();
+        mp4
+    }
 
-        let config = config::AppConfig::default();
-        write_meta(&mp4, &config, false, None);
-
-        let meta_path = mp4.with_extension("meta.json");
-        assert!(meta_path.exists(), "meta.json should be created");
-
-        let content = std::fs::read_to_string(&meta_path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    #[test]
+    fn update_meta_records_unconverted_recording() {
+        let mp4 = temp_mp4("meta-raw");
+        update_meta(&mp4, None, None);
+        let v = serde_json::Value::Object(read_meta(&mp4));
         assert_eq!(v["voiceReplacement"], false);
         assert!(v["voiceProfile"].is_null());
-
-        // Cleanup
-        std::fs::remove_file(&mp4).ok();
-        std::fs::remove_file(&meta_path).ok();
-        std::fs::remove_dir(&tmp).ok();
+        assert!(v["createdAt"].as_u64().unwrap() > 0);
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
 
     #[test]
-    fn write_meta_includes_voice_profile_when_replacement() {
-        let tmp = std::env::temp_dir().join("vo-test-write-meta-vr");
-        std::fs::create_dir_all(&tmp).ok();
-        let mp4 = tmp.join("voiceover-1740000001.mp4");
-        std::fs::write(&mp4, b"fake").ok();
-
-        let mut config = config::AppConfig::default();
-        config.provider = crate::tts_provider::Provider::ElevenLabs;
-        config.voices = vec![config::Voice {
-            id: "voice123".to_string(),
-            name: "TestVoice".to_string(),
-            description: "".to_string(),
-            is_default: true,
-        }];
-        write_meta(&mp4, &config, true, Some("TestVoice"));
-
-        let meta_path = mp4.with_extension("meta.json");
-        let content = std::fs::read_to_string(&meta_path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v["voiceReplacement"], true);
-        assert_eq!(v["voiceProfile"], "TestVoice");
-        assert_eq!(v["provider"], "elevenlabs");
-
-        // Cleanup
-        std::fs::remove_file(&mp4).ok();
-        std::fs::remove_file(&meta_path).ok();
-        std::fs::remove_dir(&tmp).ok();
-    }
-
-    #[test]
-    fn write_meta_stores_local_voice_name_not_id() {
-        let tmp = std::env::temp_dir().join("vo-test-write-meta-local");
-        std::fs::create_dir_all(&tmp).ok();
-        let mp4 = tmp.join("voiceover-1740000002.mp4");
-        std::fs::write(&mp4, b"fake").ok();
-
-        let mut config = config::AppConfig::default();
-        config.provider = crate::tts_provider::Provider::Local;
-        config.local_voice_profile_id = "4ad88b19-3bfe-493d-8xxx".to_string();
-        // Pass the resolved name, not the ID
-        write_meta(&mp4, &config, true, Some("MJ"));
-
-        let meta_path = mp4.with_extension("meta.json");
-        let content = std::fs::read_to_string(&meta_path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    fn update_meta_stores_voice_name_and_provider() {
+        let mp4 = temp_mp4("meta-local");
+        let choice = VoiceChoice { provider: crate::tts_provider::Provider::Local, voice_id: "4ad88b19".into() };
+        update_meta(&mp4, Some(&choice), Some("MJ"));
+        let v = serde_json::Value::Object(read_meta(&mp4));
         assert_eq!(v["voiceReplacement"], true);
         assert_eq!(v["voiceProfile"], "MJ", "should store human-readable name, not UUID");
         assert_eq!(v["provider"], "local");
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
 
-        std::fs::remove_file(&mp4).ok();
-        std::fs::remove_file(&meta_path).ok();
-        std::fs::remove_dir(&tmp).ok();
+    #[test]
+    fn converting_again_keeps_drive_link_and_creation_time() {
+        let mp4 = temp_mp4("meta-reconvert");
+        std::fs::write(
+            mp4.with_extension("meta.json"),
+            r#"{"voiceProfile":"MJ","provider":"local","voiceReplacement":true,"createdAt":1740000000,"driveUrl":"https://drive/x","uploadedAt":1740000100}"#,
+        ).unwrap();
+        let choice = VoiceChoice { provider: crate::tts_provider::Provider::ElevenLabs, voice_id: "el".into() };
+        update_meta(&mp4, Some(&choice), Some("Rachel"));
+        let v = serde_json::Value::Object(read_meta(&mp4));
+        assert_eq!(v["voiceProfile"], "Rachel");
+        assert_eq!(v["provider"], "elevenlabs");
+        assert_eq!(v["driveUrl"], "https://drive/x");
+        assert_eq!(v["createdAt"], 1740000000);
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn staging_file_is_beside_the_mp4_and_not_listed_as_a_recording() {
+        let staged = staging_path(Path::new("/m/voiceover-1.mp4"));
+        assert_eq!(staged.parent(), Some(Path::new("/m")));
+        assert_ne!(staged.extension().and_then(|e| e.to_str()), Some("mp4"));
+    }
+
+    #[test]
+    fn replace_file_swaps_content_and_leaves_no_staging_file() {
+        let mp4 = temp_mp4("replace-file");
+        let staged = staging_path(&mp4);
+        std::fs::write(&staged, b"new video").unwrap();
+        replace_file(&staged, &mp4).unwrap();
+        assert_eq!(std::fs::read(&mp4).unwrap(), b"new video");
+        assert!(!staged.exists());
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn replace_file_refuses_when_the_recording_was_deleted_meanwhile() {
+        let mp4 = temp_mp4("replace-deleted");
+        let staged = staging_path(&mp4);
+        std::fs::write(&staged, b"new video").unwrap();
+        std::fs::remove_file(&mp4).unwrap();
+        assert!(replace_file(&staged, &mp4).is_err());
+        assert!(!mp4.exists(), "a deleted recording must not come back");
+        assert!(!staged.exists());
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn original_voice_sits_beside_the_mp4() {
+        assert_eq!(
+            original_voice_path(Path::new("/m/voiceover-1.mp4")),
+            PathBuf::from("/m/voiceover-1.original.m4a")
+        );
     }
 }

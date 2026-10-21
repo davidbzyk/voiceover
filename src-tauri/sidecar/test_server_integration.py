@@ -26,6 +26,10 @@ def client(temp_data_dir):
     original_data_dir = server.DATA_DIR
     server.DATA_DIR = Path(temp_data_dir)
     server.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Each TestClient runs its own event loop; a queue bound to an earlier loop cannot be awaited.
+    import asyncio
+
+    server._generation_queue = asyncio.Queue(maxsize=100)
 
     with TestClient(app) as c:
         yield c
@@ -437,3 +441,122 @@ class TestLegacyModelAliases:
         """Lowercase aliases for case-sensitive model names should exist."""
         assert "qwen-tts-1.7b" in _LEGACY_MODEL_ALIASES
         assert "cosyvoice3-0.5b" in _LEGACY_MODEL_ALIASES
+
+
+# ---------------------------------------------------------------------------
+# Generation progress and cancel
+# ---------------------------------------------------------------------------
+
+
+def _fake_voice_convert(chunk_delay: float, converted: list):
+    """Stand-in for _do_voice_convert that runs the real chunker over 100s of silence, without a model."""
+    import asyncio
+    import time as _time
+
+    import numpy as np
+
+    from chunked_tts import convert_in_overlapping_chunks
+
+    async def fake(*, set_status, set_progress, should_cancel, original_duration, **_):
+        set_status("generating")
+
+        def convert(chunk):
+            _time.sleep(chunk_delay)
+            converted.append(len(chunk))
+            return chunk
+
+        sr = 16000
+        audio = await asyncio.to_thread(
+            convert_in_overlapping_chunks,
+            np.zeros(int(100 * sr), dtype=np.float32),
+            sr,
+            convert,
+            on_progress=set_progress,
+            should_cancel=should_cancel,
+        )
+        return audio, sr, "Voice conversion"
+
+    return fake
+
+
+def _submit_convert(client, temp_data_dir):
+    """Queue a voice conversion for a stub source file and return its generation id."""
+    source = Path(temp_data_dir) / "source.wav"
+    source.write_bytes(b"RIFF")
+    response = client.post("/voice-convert", json={
+        "profile_id": "p1",
+        "source_audio_path": str(source),
+        "original_duration": 100.0,
+    })
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def _wait_for(client, gen_id, predicate, timeout=20.0):
+    """Poll a generation's status until predicate(status_json) holds."""
+    import time as _time
+
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        data = client.get(f"/generate/{gen_id}/status").json()
+        if predicate(data):
+            return data
+        _time.sleep(0.05)
+    raise AssertionError(f"generation {gen_id} never reached the expected state: {data}")
+
+
+class TestGenerationProgressAndCancel:
+    def test_status_reports_chunk_progress_to_completion(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        converted = []
+        monkeypatch.setattr(server, "_do_voice_convert", _fake_voice_convert(0.01, converted))
+        gen_id = _submit_convert(client, temp_data_dir)
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("completed", "error"))
+        assert data["status"] == "completed", data
+        assert data["progress"]["total"] == len(converted) > 1
+        assert data["progress"]["done"] == data["progress"]["total"]
+
+    def test_cancel_stops_a_running_conversion_between_chunks(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        converted = []
+        monkeypatch.setattr(server, "_do_voice_convert", _fake_voice_convert(0.2, converted))
+        gen_id = _submit_convert(client, temp_data_dir)
+        _wait_for(client, gen_id, lambda d: d["progress"]["done"] >= 1)
+        assert client.post(f"/generate/{gen_id}/cancel").status_code == 200
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
+        assert data["status"] == "cancelled"
+        assert len(converted) < data["progress"]["total"]
+
+    def test_cancel_drops_a_queued_conversion_before_it_runs(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        converted = []
+        monkeypatch.setattr(server, "_do_voice_convert", _fake_voice_convert(0.2, converted))
+        first = _submit_convert(client, temp_data_dir)
+        second = _submit_convert(client, temp_data_dir)
+        _wait_for(client, first, lambda d: d["progress"]["done"] >= 1)
+        client.post(f"/generate/{second}/cancel")
+        assert client.get(f"/generate/{second}/status").json()["status"] == "cancelled"
+        client.post(f"/generate/{first}/cancel")
+        _wait_for(client, first, lambda d: d["status"] == "cancelled")
+        assert client.get(f"/generate/{second}/status").json()["progress"]["done"] == 0
+
+    def test_worker_survives_a_queued_job_whose_record_aged_out(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        converted = []
+        monkeypatch.setattr(server, "_do_voice_convert", _fake_voice_convert(0.2, converted))
+        first = _submit_convert(client, temp_data_dir)
+        second = _submit_convert(client, temp_data_dir)
+        _wait_for(client, first, lambda d: d["progress"]["done"] >= 1)
+        client.post(f"/generate/{second}/cancel")
+        del server._generations[second]  # what the hourly cleanup does to a long-waiting cancelled job
+        client.post(f"/generate/{first}/cancel")
+        _wait_for(client, first, lambda d: d["status"] == "cancelled")
+        third = _submit_convert(client, temp_data_dir)
+        _wait_for(client, third, lambda d: d["status"] == "completed")
+
+    def test_cancel_unknown_generation_is_404(self, client):
+        assert client.post("/generate/does-not-exist/cancel").status_code == 404

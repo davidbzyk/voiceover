@@ -179,8 +179,28 @@ def _validate_path(path_str: str, allowed_parents: list) -> Path:
 
 # Generation queue: serial processing to prevent GPU contention
 _generation_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-_generations: dict = {}  # id -> {status, error, audio_path, completed_at}
+_generations: dict = {}  # id -> {status, error, audio_path, completed_at, progress, cancel}
 MAX_GENERATIONS = 1000
+_FINISHED_STATUSES = ("completed", "error", "cancelled")
+
+
+def _new_generation() -> str:
+    """Register a queued generation and return its id."""
+    gen_id = str(uuid.uuid4())
+    _generations[gen_id] = {
+        "status": "queued",
+        "error": None,
+        "audio_path": None,
+        "progress": {"done": 0, "total": 0},
+        "cancel": False,
+    }
+    return gen_id
+
+
+def _mark_cancelled(gen_id: str) -> None:
+    """Record that a generation stopped because it was cancelled."""
+    _generations[gen_id]["status"] = "cancelled"
+    _generations[gen_id]["completed_at"] = time.time()
 
 
 def _cleanup_generations():
@@ -188,7 +208,7 @@ def _cleanup_generations():
     now = time.time()
     expired = [gid for gid, gen in _generations.items()
                if gen.get("completed_at", now) < now - 3600
-               and gen.get("status") in ("completed", "error")]
+               and gen.get("status") in _FINISHED_STATUSES]
     for gid in expired:
         audio_path = _generations[gid].get("audio_path")
         if audio_path and Path(audio_path).exists():
@@ -310,6 +330,7 @@ async def _run_generation(gen_id: str, generate_fn):
     Handles saving the WAV, marking status as completed/error, and logging.
     """
     import soundfile as sf
+    from chunked_tts import ConversionCancelled
 
     try:
         audio, sample_rate, log_label = await generate_fn()
@@ -347,6 +368,9 @@ async def _run_generation(gen_id: str, generate_fn):
         _generations[gen_id]["status"] = "completed"
         _generations[gen_id]["completed_at"] = time.time()
         logger.info(f"{log_label} {gen_id}: saved {audio_path} ({len(audio)} samples, {len(audio)/sample_rate:.1f}s)")
+    except ConversionCancelled:
+        logger.info(f"Generation {gen_id} cancelled")
+        _mark_cancelled(gen_id)
     except Exception as e:
         logger.error(f"Generation {gen_id} failed: {e}", exc_info=True)
         _generations[gen_id]["status"] = "error"
@@ -359,12 +383,19 @@ async def _generation_worker():
     while True:
         gen_id, coro = await _generation_queue.get()
         try:
+            gen = _generations.get(gen_id)
+            # A missing record is a cancelled job the hourly cleanup removed while it waited in the queue.
+            if gen is None or gen.get("cancel"):
+                coro.close()
+                logger.info(f"Generation {gen_id} cancelled before it started")
+                continue
             await coro
         except Exception as e:
             logger.error(f"Generation {gen_id} failed (unhandled): {e}", exc_info=True)
-            _generations[gen_id]["status"] = "error"
-            _generations[gen_id]["error"] = str(e)
-            _generations[gen_id]["completed_at"] = time.time()
+            if gen_id in _generations:
+                _generations[gen_id]["status"] = "error"
+                _generations[gen_id]["error"] = str(e)
+                _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
             if len(_generations) > 20:
@@ -537,6 +568,8 @@ _vc_model_name = None
 async def _do_voice_convert(
     *,
     set_status,
+    set_progress=lambda done, total: None,
+    should_cancel=lambda: False,
     data_dir: Path,
     profile_id: str,
     source_audio_path: str,
@@ -553,6 +586,7 @@ async def _do_voice_convert(
     from mlx_audio.tts.utils import load_model
     from mlx_audio.tts.generate import load_audio
     from profiles import get_samples
+    from chunked_tts import convert_in_overlapping_chunks
 
     models_dir = str(data_dir / "models")
 
@@ -642,9 +676,6 @@ async def _do_voice_convert(
             f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
         )
 
-    chunk_duration = 25  # CosyVoice3 limit is 30s, use 25 for safety
-    chunk_samples = int(chunk_duration * model_sr)
-
     set_status("generating")
 
     def _convert_chunk(chunk_audio):
@@ -655,7 +686,7 @@ async def _do_voice_convert(
             text="",
             ref_audio=ref_audio,
             ref_text=ref_text,
-            source_audio=chunk_audio,
+            source_audio=mx.array(chunk_audio, dtype=mx.float32),
             stt_model=None if ref_text else "mlx-community/whisper-large-v3-turbo-4bit",
             verbose=False,
         )
@@ -666,43 +697,20 @@ async def _do_voice_convert(
             return np.array([], dtype=np.float32)
         return np.concatenate(audio_parts)
 
-    source_np = np.array(source_audio) if isinstance(source_audio, mx.array) else source_audio
-
-    if len(source_np) <= chunk_samples:
-        logger.info(f"Voice conversion: single chunk ({len(source_np)/model_sr:.1f}s)")
-        audio = await asyncio.to_thread(_convert_chunk, source_audio)
-        if len(audio) == 0:
-            raise ValueError("Voice conversion produced empty audio for single chunk")
-        sample_rate = model_sr
-    else:
-        # Chunk and stitch for long recordings
-        total_samples = len(source_np)
-        overlap_samples = int(1.0 * model_sr)
-        step = chunk_samples - overlap_samples
-        n_chunks = max(1, (total_samples - overlap_samples + step - 1) // step)
-        logger.info(f"Voice conversion: {n_chunks} chunks ({total_samples/model_sr:.1f}s total)")
-
-        converted_pieces = []
-        pos = 0
-        for i in range(n_chunks):
-            end = min(pos + chunk_samples, total_samples)
-            chunk = mx.array(source_np[pos:end], dtype=mx.float32)
-            logger.info(f"  Converting chunk {i+1}/{n_chunks} ({(end-pos)/model_sr:.1f}s)")
-            piece = await asyncio.to_thread(_convert_chunk, chunk)
-            if len(piece) > 0:
-                converted_pieces.append(piece)
-            else:
-                logger.warning(f"  Chunk {i+1}/{n_chunks} produced empty audio")
-            pos += step
-            if pos >= total_samples:
-                break
-
-        if not converted_pieces:
-            raise ValueError("Voice conversion produced no audio")
-
-        from chunked_tts import concatenate_audio_chunks
-        audio = concatenate_audio_chunks(converted_pieces, model_sr, crossfade_ms=500)
-        sample_rate = model_sr
+    # CosyVoice3 accepts at most 30s of source audio per call, so 25s windows leave headroom.
+    audio = await asyncio.to_thread(
+        convert_in_overlapping_chunks,
+        np.array(source_audio),
+        model_sr,
+        _convert_chunk,
+        chunk_seconds=25.0,
+        overlap_seconds=1.0,
+        on_progress=set_progress,
+        should_cancel=should_cancel,
+    )
+    if len(audio) == 0:
+        raise ValueError("Voice conversion produced no audio")
+    sample_rate = model_sr
 
     # Diagnostic: log raw output before pad/truncate
     raw_duration = len(audio) / sample_rate if sample_rate else 0
@@ -879,8 +887,7 @@ async def generate(request: dict):
         if len(_generations) >= MAX_GENERATIONS:
             return error_response(429, "Too many pending generations")
 
-    gen_id = str(uuid.uuid4())
-    _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
+    gen_id = _new_generation()
 
     generate_fn = functools.partial(
         _do_generate,
@@ -902,7 +909,21 @@ async def generation_status(gen_id: str):
     gen = _generations.get(gen_id)
     if gen is None:
         return error_response(404, "Generation not found")
-    return {"status": gen["status"], "error": gen["error"]}
+    return {"status": gen["status"], "error": gen["error"], "progress": gen["progress"]}
+
+
+@app.post("/generate/{gen_id}/cancel")
+async def cancel_generation(gen_id: str):
+    """Ask a queued or running generation to stop; a running one stops at its next chunk."""
+    gen = _generations.get(gen_id)
+    if gen is None:
+        return error_response(404, "Generation not found")
+    if gen["status"] in _FINISHED_STATUSES:
+        return {"status": gen["status"]}
+    gen["cancel"] = True
+    if gen["status"] == "queued":
+        _mark_cancelled(gen_id)
+    return {"status": gen["status"]}
 
 
 @app.get("/audio/{gen_id}")
@@ -953,12 +974,15 @@ async def voice_convert(request: dict):
     if not Path(source_audio_path).exists():
         return error_response(400, f"Source audio file not found: {source_audio_path}")
 
-    gen_id = str(uuid.uuid4())
-    _generations[gen_id] = {"status": "queued", "error": None, "audio_path": None}
+    gen_id = _new_generation()
 
     convert_fn = functools.partial(
         _do_voice_convert,
         set_status=lambda s: _generations[gen_id].__setitem__("status", s),
+        set_progress=lambda done, total: _generations[gen_id].__setitem__(
+            "progress", {"done": done, "total": total}
+        ),
+        should_cancel=lambda: _generations[gen_id]["cancel"],
         data_dir=DATA_DIR,
         profile_id=profile_id,
         source_audio_path=source_audio_path,

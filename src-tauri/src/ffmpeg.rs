@@ -57,20 +57,10 @@ pub(crate) fn normalize_args(input: &str, output: &str) -> Vec<String> {
 /// Extract audio from a video file as 16kHz mono WAV (optimal for ElevenLabs S2S).
 pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), String> {
     let args = extract_audio_args(
-        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_wav.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input_video)?,
+        path_arg(output_wav)?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg extract audio failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "extract audio").await
 }
 
 /// Replace the audio track in a video file with new audio.
@@ -81,21 +71,81 @@ pub async fn replace_audio(
     output_mp4: &Path,
 ) -> Result<(), String> {
     let args = replace_audio_args(
-        input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        new_audio.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input_video)?,
+        path_arg(new_audio)?,
+        path_arg(output_mp4)?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
+    run_ffmpeg(&args, "replace audio").await
+}
+
+/// Run ffmpeg with `args`, returning stderr in the error when it fails.
+async fn run_ffmpeg(args: &[String], context: &str) -> Result<(), String> {
+    let output = Command::new(resolve_ffmpeg_path())
+        .args(args)
         .output()
         .await
         .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg replace audio failed: {stderr}"));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg {context} failed: {stderr}"));
     }
     Ok(())
+}
+
+/// Convert a path to &str for ffmpeg arguments.
+fn path_arg(path: &Path) -> Result<&str, String> {
+    path.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())
+}
+
+/// Build ffmpeg arguments that keep a recording's own voice as AAC, for converting it again later.
+pub(crate) fn keep_original_voice_args(input: &str, output: &str) -> Vec<String> {
+    ["-y", "-i", input, "-vn", "-c:a", "aac", "-b:a", "128k", output]
+        .iter().map(|s| s.to_string()).collect()
+}
+
+/// Save the audio track of `input` as `output` (.m4a).
+pub async fn keep_original_voice(input: &Path, output: &Path) -> Result<(), String> {
+    run_ffmpeg(&keep_original_voice_args(path_arg(input)?, path_arg(output)?), "keep original voice").await
+}
+
+/// Build ffmpeg arguments that swap an mp4's audio without re-encoding its video.
+pub(crate) fn swap_audio_args(video: &str, new_audio: &str, output: &str) -> Vec<String> {
+    // The output is staged under a non-.mp4 name, so the format cannot be inferred from it.
+    ["-y", "-i", video, "-i", new_audio, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-f", "mp4", output]
+        .iter().map(|s| s.to_string()).collect()
+}
+
+/// Replace the audio of an existing mp4, copying its video stream as is.
+pub async fn swap_audio(video: &Path, new_audio: &Path, output_mp4: &Path) -> Result<(), String> {
+    run_ffmpeg(&swap_audio_args(path_arg(video)?, path_arg(new_audio)?, path_arg(output_mp4)?), "swap audio").await
+}
+
+/// Build ffmpeg arguments that join audio pieces, padding or trimming each to its exact source length.
+pub(crate) fn concat_exact_args(pieces: &[(String, f64)], output: &str) -> Vec<String> {
+    let mut args = vec!["-y".to_string()];
+    for (path, _) in pieces {
+        args.push("-i".to_string());
+        args.push(path.clone());
+    }
+    let mut filter = String::new();
+    for (i, (_, secs)) in pieces.iter().enumerate() {
+        filter.push_str(&format!("[{i}:a]aresample=44100,apad,atrim=end={secs:.6}[a{i}];"));
+    }
+    for i in 0..pieces.len() {
+        filter.push_str(&format!("[a{i}]"));
+    }
+    filter.push_str(&format!("concat=n={}:v=0:a=1[out]", pieces.len()));
+    args.extend(["-filter_complex".to_string(), filter, "-map".to_string(), "[out]".to_string(), output.to_string()]);
+    args
+}
+
+/// Join converted pieces into one track whose length equals the sum of the source pieces.
+pub async fn concat_exact(pieces: &[(std::path::PathBuf, f64)], output: &Path) -> Result<(), String> {
+    let pieces = pieces
+        .iter()
+        .map(|(p, secs)| Ok((path_arg(p)?.to_string(), *secs)))
+        .collect::<Result<Vec<_>, String>>()?;
+    run_ffmpeg(&concat_exact_args(&pieces, path_arg(output)?), "concat").await
 }
 
 /// Probe the duration of a media file using ffprobe (falls back to ffmpeg -i).
@@ -210,20 +260,10 @@ fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
 /// Normalize a recording to MP4 format (handles platform codec differences).
 pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), String> {
     let args = normalize_args(
-        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input)?,
+        path_arg(output_mp4)?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg normalize failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "normalize").await
 }
 
 /// Build ffmpeg arguments for thumbnail extraction (first frame at 1s, 320px wide JPEG).
@@ -237,25 +277,84 @@ pub(crate) fn thumbnail_args(input: &str, output: &str) -> Vec<String> {
 /// Extract a thumbnail JPEG from a video file.
 pub async fn extract_thumbnail(input: &Path, output: &Path) -> Result<(), String> {
     let args = thumbnail_args(
-        input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
-        output.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
+        path_arg(input)?,
+        path_arg(output)?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg thumbnail extraction failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "thumbnail extraction").await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swap_audio_args_copy_video_and_map_new_audio() {
+        let args = swap_audio_args("in.mp4", "voice.wav", "out.mp4");
+        let joined = args.join(" ");
+        assert!(joined.contains("-map 0:v -map 1:a -c:v copy -c:a aac -f mp4"), "{joined}");
+    }
+
+    /// Make a 1s test video and a 1s tone with the real ffmpeg; None when ffmpeg is not installed.
+    fn real_media(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+        let video = dir.join("in.mp4");
+        let audio = dir.join("voice.wav");
+        let ok = |args: &[&str]| std::process::Command::new(resolve_ffmpeg_path()).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+        let made = ok(&["-y", "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1", "-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", video.to_str()?])
+            && ok(&["-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=1", audio.to_str()?]);
+        made.then_some((video, audio))
+    }
+
+    #[tokio::test]
+    async fn swap_audio_writes_an_mp4_to_a_staging_name_without_an_mp4_extension() {
+        let dir = std::env::temp_dir().join("vo-test-swap-audio");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some((video, audio)) = real_media(&dir) else {
+            eprintln!("skipped: ffmpeg with lavfi/libx264 not available");
+            return;
+        };
+        // Same shape as pipeline::staging_path: the reconvert stages to "<name>.mp4.part"
+        let staged = dir.join("voiceover-1.mp4.part");
+        let result = swap_audio(&video, &audio, &staged).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(std::fs::metadata(&staged).map(|m| m.len() > 0).unwrap_or(false));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn keep_original_voice_and_concat_exact_produce_files_with_real_ffmpeg() {
+        let dir = std::env::temp_dir().join("vo-test-real-ffmpeg");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some((video, audio)) = real_media(&dir) else {
+            eprintln!("skipped: ffmpeg with lavfi/libx264 not available");
+            return;
+        };
+        let original = dir.join("voiceover-1.original.m4a");
+        keep_original_voice(&video, &original).await.unwrap();
+        assert!(std::fs::metadata(&original).map(|m| m.len() > 0).unwrap_or(false));
+
+        let joined = dir.join("joined.wav");
+        concat_exact(&[(audio.clone(), 0.75), (audio, 0.5)], &joined).await.unwrap();
+        let secs = probe_duration(&joined).await.unwrap();
+        assert!((secs - 1.25).abs() < 0.02, "joined length {secs}s, expected 1.25s");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concat_exact_args_trim_each_piece_to_its_source_length() {
+        let args = concat_exact_args(&[("a.mp3".into(), 280.25), ("b.mp3".into(), 130.08)], "out.wav");
+        let filter = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(filter.contains("[0:a]aresample=44100,apad,atrim=end=280.250000[a0]"), "{filter}");
+        assert!(filter.contains("[1:a]aresample=44100,apad,atrim=end=130.080000[a1]"), "{filter}");
+        assert!(filter.ends_with("[a0][a1]concat=n=2:v=0:a=1[out]"), "{filter}");
+    }
+
+    #[test]
+    fn keep_original_voice_args_drop_video_and_encode_aac() {
+        let args = keep_original_voice_args("rec.webm", "rec.original.m4a").join(" ");
+        assert!(args.contains("-vn -c:a aac"), "{args}");
+    }
 
     #[test]
     fn extract_audio_args_use_16khz_mono_pcm() {

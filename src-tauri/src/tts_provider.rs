@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// The error every provider and the pipeline return when a run is cancelled or superseded.
+pub(crate) const CANCELLED: &str = "Conversion cancelled";
+
 /// Which TTS provider to use for voice transformation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Provider {

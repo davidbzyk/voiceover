@@ -144,6 +144,77 @@ def concatenate_audio_chunks(
     return result
 
 
+def _fit_length(audio: np.ndarray, length: int) -> np.ndarray:
+    """Trim or zero-pad audio to exactly `length` samples, so each chunk keeps its place in time."""
+    if len(audio) >= length:
+        return audio[:length]
+    return np.concatenate([audio, np.zeros(length - len(audio), dtype=np.float32)])
+
+
+class ConversionCancelled(Exception):
+    """Raised between chunks when the caller asks a running conversion to stop."""
+
+
+def convert_in_overlapping_chunks(
+    source: np.ndarray,
+    sample_rate: int,
+    convert_chunk,
+    *,
+    chunk_seconds: float = 25.0,
+    overlap_seconds: float = 1.0,
+    on_progress=None,
+    should_cancel=None,
+) -> np.ndarray:
+    """Convert long audio in overlapping windows and stitch the pieces back together.
+
+    Calls on_progress(done, total) after each chunk and stops with ConversionCancelled when should_cancel() is true.
+    """
+    source = np.asarray(source, dtype=np.float32)
+    chunk_samples = int(chunk_seconds * sample_rate)
+    total_samples = len(source)
+    if total_samples <= chunk_samples:
+        if on_progress:
+            on_progress(0, 1)
+        if should_cancel and should_cancel():
+            raise ConversionCancelled()
+        audio = np.asarray(convert_chunk(source), dtype=np.float32)
+        if on_progress:
+            on_progress(1, 1)
+        return audio
+
+    overlap_samples = int(overlap_seconds * sample_rate)
+    step = chunk_samples - overlap_samples
+    n_chunks = max(1, (total_samples - overlap_samples + step - 1) // step)
+    logger.info(f"Voice conversion: {n_chunks} chunks ({total_samples / sample_rate:.1f}s total)")
+    if on_progress:
+        on_progress(0, n_chunks)
+
+    pieces = []
+    produced = 0
+    pos = 0
+    for i in range(n_chunks):
+        if should_cancel and should_cancel():
+            raise ConversionCancelled()
+        end = min(pos + chunk_samples, total_samples)
+        logger.info(f"  Converting chunk {i + 1}/{n_chunks} ({(end - pos) / sample_rate:.1f}s)")
+        piece = np.asarray(convert_chunk(source[pos:end]), dtype=np.float32)
+        if len(piece) == 0:
+            logger.warning(f"  Chunk {i + 1}/{n_chunks} produced empty audio; keeping its slot silent")
+        else:
+            produced += 1
+        pieces.append(_fit_length(piece, end - pos))
+        if on_progress:
+            on_progress(i + 1, n_chunks)
+        pos += step
+        if pos >= total_samples:
+            break
+
+    if produced == 0:
+        raise ValueError("Voice conversion produced no audio for any chunk")
+    # Crossfade across the whole overlap: a shorter fade repeats the rest of it at every seam.
+    return concatenate_audio_chunks(pieces, sample_rate, crossfade_ms=overlap_seconds * 1000)
+
+
 # ---------------------------------------------------------------------------
 # Proportional silence insertion
 # ---------------------------------------------------------------------------
