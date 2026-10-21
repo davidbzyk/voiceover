@@ -5,7 +5,7 @@ description = "Screen recorder with ElevenLabs voice replacement"
 authors = ["dave"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 # Exclude the Python sidecar from cargo's file watcher so __pycache__
 # writes don't trigger tauri dev to rebuild+restart the app.
 exclude = ["sidecar/"]
