@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Answer key",
+  "description": "Known bugs per case. The hash is computed by key_hash, not stored.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Key version."
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable entry id."
+          },
+          "case": {
+            "type": "string",
+            "description": "Case slug."
+          },
+          "tier": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3
+            ],
+            "description": "1 proven, 2 confirmed by reading, 3 opinion."
+          },
+          "tag": {
+            "type": "string",
+            "enum": [
+              "visible_in_diff",
+              "needs_other_files"
+            ],
+            "description": "Whether the diff alone shows the bug."
+          },
+          "description": {
+            "type": "string",
+            "description": "What the bug is."
+          },
+          "sites": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Sites at the reviewed head; any one satisfies the entry.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "Repository-relative path."
+                },
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "old"
+                  ],
+                  "description": "new = head file, old = base file."
+                },
+                "line_start": {
+                  "type": "integer",
+                  "description": "First line, 1-based."
+                },
+                "line_end": {
+                  "type": "integer",
+                  "description": "Last line."
+                },
+                "anchor": {
+                  "type": "string",
+                  "description": "Exact text on the pinned lines."
+                }
+              },
+              "required": [
+                "file",
+                "side",
+                "line_start",
+                "line_end",
+                "anchor"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fixed_sites": {
+            "type": "array",
+            "description": "Same fields pinned in the fixed tree; may be empty.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "description": "Repository-relative path."
+                },
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "old"
+                  ],
+                  "description": "new = head file, old = base file."
+                },
+                "line_start": {
+                  "type": "integer",
+                  "description": "First line, 1-based."
+                },
+                "line_end": {
+                  "type": "integer",
+                  "description": "Last line."
+                },
+                "anchor": {
+                  "type": "string",
+                  "description": "Exact text on the pinned lines."
+                }
+              },
+              "required": [
+                "file",
+                "side",
+                "line_start",
+                "line_end",
+                "anchor"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "case",
+          "tier",
+          "tag",
+          "description",
+          "sites",
+          "fixed_sites"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Key entries."
+    }
+  },
+  "required": [
+    "version",
+    "entries"
+  ],
+  "additionalProperties": false
+}

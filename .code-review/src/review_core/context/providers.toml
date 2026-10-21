@@ -1,0 +1,60 @@
+# Context providers. One table per arm of the benchmark; a new provider is a new table plus its
+# functions, not a code edit. Callables are "module:function" strings, loaded when first used.
+#   build(spec)                      makes the store at spec.out (see providers.BuildSpec)
+#   search(store_dir, text, settings)    and    related(store_dir, path, settings)
+#   each returns {"items": [{id, title, path, start, end, text}], "degraded": bool, "reason": str|None}
+# Keys other than the standard ones are passed to the functions as `settings`.
+
+[defaults]
+# No cap on what a search returns: an answer is printed whole, and the agent judges what to ask
+# for (it may pass `--budget N` to ctx when it wants less).
+
+[none]
+command = false               # the arm with no store and no command
+method = """
+Read the change first, every changed line. Then read the code around it in the repository: the whole
+function or class each change sits in, the code that calls what changed and the code it calls
+(search the repository's text for the names), and the tests that cover it. Judge only after that.
+An empty result is acceptable only once you have done this for every changed file.
+"""
+
+[vector]
+command = true
+# The reviewers are given the search command and search the database themselves.
+agent_search = true
+method = """
+Read the change first, every changed line. Then search the vector database of the codebase with the
+command you were given: `search "<words>"` for a question, `related <path>` for a file. Look for how
+the code that changed is used elsewhere, for code that resembles it, and for the conventions the
+codebase follows. Search as often as it helps. Open the files the results name and read around them.
+Findings come from the code. An empty result is acceptable only once you have done this for every
+changed file.
+"""
+store_dir = "vector"
+build = "review_core.context.vector_provider:build"
+search = "review_core.context.vector_provider:search"
+related = "review_core.context.vector_provider:related"
+models = ["text-embedding-3-small", "text-embedding-3-large", "fake"]  # the only models a store may name
+
+[okf]
+command = true
+# No command for the reviewers: the notes are plain files in the `okf/` folder of the repository
+# under review, and they read them with their ordinary file tools.
+agent_search = false
+method = """
+Read the change first, every changed line. The folder `okf/` at the top of the repository holds
+knowledge notes. They are a map of the codebase: what each part does, who calls it, and the flows
+and contracts it is part of. Start at its `README.md`, find the notes that cover the changed files,
+and follow them to the code they name. Open that code and read it. Findings come from the code,
+never from a note alone, and a note that disagrees with the code is not a finding. An empty result
+is acceptable only once you have done this for every changed file.
+"""
+store_dir = "okf"
+build = "review_core.context.okf_search:build"
+search = "review_core.context.okf_search:search"
+related = "review_core.context.okf_search:related"
+direct_hits = 3               # notes that match the query by keyword, before their neighbours
+bm25_k1 = 1.2
+bm25_b = 0.75
+title_weight = 3              # a title term counts this many times
+meta_weight = 2               # a tag or description term counts this many times

@@ -1,0 +1,214 @@
+# Runner registry. One table per agent CLI; replacing Codex is a new table, not a code edit.
+# Placeholders: {prompt} {workdir} {out_dir} {model} {effort} {last_message} {home} {codex_home}
+# {sandbox}. Every entry must carry a [permissions] table or the launcher refuses it.
+# An entry whose agent runs on a key names it in a [<entry>.secrets] table: the variable the
+# agent reads, mapped to the name the key is looked up by (the caller's environment, then the
+# run's env file). The value reaches the agent's environment and nothing else.
+
+[codex]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  # Codex runs six agents at once by default and refuses the rest. The team is seven reviewers
+  # and a validator under one main agent.
+  "-c", "agents.max_threads=12",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+# Variables the agent may inherit from the caller. Everything else is withheld.
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+
+[codex.env]
+HOME = "{home}"
+CODEX_HOME = "{codex_home}"
+
+[codex.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = false
+
+# The same agent, with network for the commands it runs. For runs on a developer's machine, where
+# the vector arm's search command must reach the embedding service. Every arm of a comparison
+# uses the same row, so the arms differ in their store and nothing else. Container runs do not
+# use this: there the task's allowlist decides what is reachable.
+[codex-net]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  # Codex runs six agents at once by default and refuses the rest. The team is seven reviewers
+  # and a validator under one main agent.
+  "-c", "agents.max_threads=12",
+  "-c", "sandbox_workspace_write.network_access=true",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+# Variables the agent may inherit from the caller. Everything else is withheld.
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+
+[codex-net.env]
+HOME = "{home}"
+CODEX_HOME = "{codex_home}"
+
+[codex-net.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex-net.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = true
+
+# The same as codex-net, with the host's own skills switched off: the plugins installed in the
+# owner's Codex home and the skills Codex ships with. Without the two switches every agent of a
+# run is shown those as well (82 skills listed against our 9, measured 2026-10-06), though the
+# run's own home holds only ours. The account's connected apps, computer use, browser use and
+# memories are off too: signed in with a subscription, Codex otherwise hands every reviewer the
+# account's apps (CI run 37839209776 reached for Desktop Commander on the owner's Mac). Flags
+# probed on 0.161.0 with `codex --disable <feature> features list`.
+[codex-clean]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "--disable", "plugins", "-c", "skills.bundled.enabled=false",
+  "--disable", "apps", "--disable", "remote_plugin", "--disable", "computer_use",
+  "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "memories",
+  "--disable", "image_generation",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  "-c", "agents.max_threads=12",
+  "-c", "sandbox_workspace_write.network_access=true",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+
+[codex-clean.env]
+HOME = "{home}"
+CODEX_HOME = "{codex_home}"
+
+[codex-clean.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex-clean.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = true
+
+
+# Codex on an OpenAI API key, so each run is billed to the key and its cost can be watched.
+# The Codex home is the run's own and starts empty: no login file and no installed plugins.
+# Codex reads the key from CODEX_API_KEY (probed 2026-10-06 on 0.160.0). By default every
+# command the model runs inherits that variable; the two shell_environment_policy settings
+# take it out again (probed the same day: `env` inside the sandbox then lists no key).
+# That closes one path, not all: on a host, a command the model runs can still read the env
+# file the key came from (probed: a sandboxed `grep` of it succeeds), and this entry has
+# network access. A container that mounts no key file, or an entry with no network, closes it.
+[codex-key]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "--disable", "plugins", "-c", "skills.bundled.enabled=false",
+  "--disable", "apps", "--disable", "remote_plugin", "--disable", "computer_use",
+  "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "memories",
+  "--disable", "image_generation",
+  "-c", 'shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]',
+  "-c", "shell_environment_policy.ignore_default_excludes=false",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  "-c", "agents.max_threads=12",
+  "-c", "sandbox_workspace_write.network_access=true",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+# Codex refuses a CODEX_HOME that does not exist, so the launcher makes it.
+make_dirs = ["{home}/.codex"]
+
+[codex-key.env]
+HOME = "{home}"
+CODEX_HOME = "{home}/.codex"
+
+[codex-key.secrets]
+CODEX_API_KEY = "OPENAI_API_KEY"
+
+[codex-key.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex-key.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = true
+
+
+# The review rows for CI runners: codex-clean and codex-key with no network for the reviewers'
+# commands. On a runner the reviewers can read the Codex login or key (the sandbox limits writes,
+# not reads); without network a misled reviewer cannot send it anywhere. Codex's own calls to the
+# model are made by Codex, outside the sandbox, so the review still runs.
+[codex-ci]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "--disable", "plugins", "-c", "skills.bundled.enabled=false",
+  "--disable", "apps", "--disable", "remote_plugin", "--disable", "computer_use",
+  "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "memories",
+  "--disable", "image_generation",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  "-c", "agents.max_threads=12",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+
+[codex-ci.env]
+HOME = "{home}"
+CODEX_HOME = "{codex_home}"
+
+[codex-ci.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex-ci.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = false
+
+[codex-ci-key]
+argv = [
+  "codex", "exec", "--json", "--ignore-user-config", "--skip-git-repo-check",
+  "--disable", "plugins", "-c", "skills.bundled.enabled=false",
+  "--disable", "apps", "--disable", "remote_plugin", "--disable", "computer_use",
+  "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "memories",
+  "--disable", "image_generation",
+  "-c", 'shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]',
+  "-c", "shell_environment_policy.ignore_default_excludes=false",
+  "-s", "{sandbox}", "-C", "{workdir}", "-m", "{model}",
+  "-c", "model_reasoning_effort={effort}",
+  "-c", "agents.max_threads=12",
+  "-o", "{last_message}", "{prompt}",
+]
+stdin = "closed"
+metadata = "codex_rollout"
+pass_env = ["PATH", "LANG", "LC_ALL", "TERM", "TZ", "SSL_CERT_FILE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]
+# Codex refuses a CODEX_HOME that does not exist, so the launcher makes it.
+make_dirs = ["{home}/.codex"]
+
+[codex-ci-key.env]
+HOME = "{home}"
+CODEX_HOME = "{home}/.codex"
+
+[codex-ci-key.secrets]
+CODEX_API_KEY = "OPENAI_API_KEY"
+
+[codex-ci-key.skills]
+copy_to = "{home}/.agents/skills"
+
+[codex-ci-key.permissions]
+sandbox = "workspace-write"
+writable_roots = ["{workdir}"]
+network = false

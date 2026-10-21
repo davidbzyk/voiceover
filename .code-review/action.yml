@@ -1,0 +1,79 @@
+name: code-review
+description: Review a pull request with a team of Codex review agents and post the findings.
+inputs:
+  auth:
+    description: "How Codex signs in: subscription (a ChatGPT login) or api-key."
+    default: subscription
+  model:
+    description: Codex model for every agent of the review.
+    default: gpt-6-luna
+  effort:
+    description: Reasoning effort.
+    default: high
+  codex-version:
+    description: The Codex CLI version to install.
+    default: "0.161.0"
+  codex-auth-json-b64:
+    description: base64 of a signed-in ~/.codex/auth.json (auth subscription).
+    default: ""
+  openai-api-key:
+    description: An OpenAI API key (auth api-key).
+    default: ""
+  github-token:
+    description: Token that may write pull request reviews and comments.
+    required: true
+  dry-run:
+    description: Write the review payloads to this folder instead of posting them.
+    default: ""
+  title:
+    description: Heading of the review and the summary comment.
+    default: Custom Code Review
+  bot-login:
+    description: The login reviews are posted as; only its markers count as already posted.
+    default: github-actions[bot]
+  keep-run:
+    description: >-
+      Upload the run folder as an artifact. It holds every command the agents ran and its
+      output, so anyone who can read the repository can read it; off by default.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install Codex
+      shell: bash
+      env:
+        CODEX_VERSION: ${{ inputs.codex-version }}
+      run: npm install -g "@openai/codex@${CODEX_VERSION}" && codex --version
+    - name: Let Codex sandbox its commands
+      if: runner.os == 'Linux'
+      shell: bash
+      # Ubuntu 24.04 blocks the unprivileged user namespaces bubblewrap needs ("bwrap: setting up
+      # uid map: Permission denied"), so no reviewer could run a command; allow them on this VM.
+      run: |
+        if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+          sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+    - name: Review and post
+      shell: bash
+      env:
+        CR_AUTH: ${{ inputs.auth }}
+        CR_MODEL: ${{ inputs.model }}
+        CR_EFFORT: ${{ inputs.effort }}
+        CR_BASE: ${{ github.event.pull_request.base.sha }}
+        CR_HEAD: ${{ github.event.pull_request.head.sha }}
+        CR_REPO: ${{ github.repository }}
+        CR_PR: ${{ github.event.pull_request.number }}
+        CR_DRY_RUN: ${{ inputs.dry-run }}
+        CR_TITLE: ${{ inputs.title }}
+        CR_BOT: ${{ inputs.bot-login }}
+        CODEX_AUTH_JSON_B64: ${{ inputs.codex-auth-json-b64 }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/run-review.sh"
+    - name: Keep the run folder
+      if: always() && inputs.keep-run == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: code-review-run
+        path: ${{ runner.temp }}/code-review/runs
+        if-no-files-found: ignore
