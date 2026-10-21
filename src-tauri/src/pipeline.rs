@@ -99,8 +99,13 @@ pub async fn process_recording(
         return Err(e);
     }
     log_duration_drift(&recording, &final_path).await;
-
     let name = conversion::voice_name(&app, &config, &choice).await;
+    // Last point a Cancel can still undo: past here the source recording is deleted.
+    if let Err(e) = ensure_current(&app, token) {
+        cleanup_temp(&final_path);
+        cleanup_temp(&original);
+        return Err(e);
+    }
     update_meta(&final_path, Some(&choice), name.as_deref());
 
     log::info!(
@@ -158,13 +163,14 @@ pub async fn reconvert_recording(
     let staged = staging_path(&mp4);
     let swapped = ffmpeg::swap_audio(&mp4, &transformed, &staged).await;
     cleanup_temp(&transformed);
+    // Looked up before the rename, so the Cancel check below is the last step that can still undo the run.
+    let name = conversion::voice_name(&app, &config, &choice).await;
     if let Err(e) = swapped.and_then(|_| ensure_current(&app, token)) {
         cleanup_temp(&staged);
         return Err(e);
     }
     replace_file(&staged, &mp4)?;
 
-    let name = conversion::voice_name(&app, &config, &choice).await;
     update_meta(&mp4, Some(&choice), name.as_deref());
     log::info!("[pipeline] Reconverted {} with {:?}", mp4.display(), choice);
     on_event
@@ -241,7 +247,7 @@ async fn convert_voice(
 /// Fail with the cancelled error when `token`'s run was cancelled or superseded.
 fn ensure_current(app: &tauri::AppHandle, token: u64) -> Result<(), String> {
     if app.state::<ConversionRuns>().is_stale(token) {
-        return Err(conversion::CANCELLED.to_string());
+        return Err(crate::tts_provider::CANCELLED.to_string());
     }
     Ok(())
 }

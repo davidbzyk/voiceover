@@ -74,10 +74,16 @@ type PipelineEvent =
 	| { event: 'complete'; data: { outputPath: string } }
 	| { event: 'error'; data: { message: string } };
 
+/** Each conversion command's arguments, matching its Rust signature. */
+export interface ConversionArgs {
+	process_recording: { recordingPath: string; voiceReplacement: boolean; voiceChoice: VoiceChoice | null };
+	reconvert_recording: { path: string; voiceChoice: VoiceChoice | null };
+}
+
 /** Run `process_recording` or `reconvert_recording`, reporting progress; resolves to the output path. */
-export async function runConversion(
-	command: 'process_recording' | 'reconvert_recording',
-	args: Record<string, unknown>,
+export async function runConversion<C extends keyof ConversionArgs>(
+	command: C,
+	args: ConversionArgs[C],
 	onProgress: (stage: string, percent: number) => void
 ): Promise<string> {
 	const { invoke, Channel } = await import('@tauri-apps/api/core');

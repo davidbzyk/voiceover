@@ -307,7 +307,7 @@
 		<button class="action-btn" onclick={handleReveal} title="Show in Finder">
 			📂
 		</button>
-		<button class="action-btn" onclick={startRename} disabled={editing} title="Rename">
+		<button class="action-btn" onclick={startRename} disabled={editing || converting} title="Rename">
 			✏️
 		</button>
 		<button

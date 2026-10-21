@@ -22,8 +22,6 @@
 	let voiceChoice = $state<VoiceChoice | null>(null);
 	/** Voice the saved file currently has; null for an unconverted recording. */
 	let savedVoice = $state<VoiceChoice | null>(null);
-	/** Whether this run converts a voice; only those runs stop on Cancel. */
-	let cancellable = $state(false);
 	/** True while a conversion this page is not showing runs (a Library card's, or one started before a revisit). */
 	const busyElsewhere = $derived(!!activeConversion.owner && !isProcessing);
 
@@ -93,7 +91,6 @@
 			logger.pipelineError(msg);
 		}
 		isProcessing = false;
-		cancellable = false;
 	}
 
 	function onProgress(stage: string, percent: number) {
@@ -104,13 +101,16 @@
 
 	async function processViaTauri() {
 		const replace = appState.config.preferences.voice_replacement_enabled;
-		cancellable = replace;
-		const result = await runExclusive('preview', () =>
-			runConversion(
-				'process_recording',
-				{ recordingPath: appState.recordingPath, voiceReplacement: replace, voiceChoice },
-				onProgress
-			)
+		// A plain save has nothing to stop, so only a voice conversion offers Cancel.
+		const result = await runExclusive(
+			'preview',
+			() =>
+				runConversion(
+					'process_recording',
+					{ recordingPath: appState.recordingPath, voiceReplacement: replace, voiceChoice },
+					onProgress
+				),
+			replace
 		);
 		appState.outputPath = result;
 		appState.recordingState = 'saved';
@@ -123,7 +123,6 @@
 	/** Convert the saved recording again, from its original voice, into the picked voice. */
 	async function convertAgain() {
 		isProcessing = true;
-		cancellable = true;
 		processingError = '';
 		appState.processingProgress = 0;
 		appState.processingStage = 'Starting...';
@@ -139,7 +138,6 @@
 			logger.pipelineError(processingError);
 		}
 		isProcessing = false;
-		cancellable = false;
 	}
 
 	async function processViaBrowser() {
@@ -475,7 +473,8 @@
 	{/if}
 
 	<!-- Processing progress -->
-	{#if isProcessing}
+	<!-- Also shown for a run started before this page remounted, so its Cancel stays reachable. -->
+	{#if isProcessing || activeConversion.owner === 'preview'}
 		<div class="progress-section">
 			<div class="progress-header">
 				<span>{appState.processingStage}</span>
@@ -484,7 +483,7 @@
 			<div class="progress-bar">
 				<div class="progress-fill" style="width: {appState.processingProgress}%"></div>
 			</div>
-			{#if isTauri() && cancellable}
+			{#if isTauri() && activeConversion.owner === 'preview' && activeConversion.cancellable}
 				<button class="link-btn cancel" onclick={cancelConversion}>Cancel</button>
 			{/if}
 		</div>

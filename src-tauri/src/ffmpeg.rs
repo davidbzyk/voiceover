@@ -60,17 +60,7 @@ pub async fn extract_audio(input_video: &Path, output_wav: &Path) -> Result<(), 
         input_video.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
         output_wav.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg extract audio failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "extract audio").await
 }
 
 /// Replace the audio track in a video file with new audio.
@@ -85,17 +75,7 @@ pub async fn replace_audio(
         new_audio.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
         output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg replace audio failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "replace audio").await
 }
 
 /// Run ffmpeg with `args`, returning stderr in the error when it fails.
@@ -283,17 +263,7 @@ pub async fn normalize_to_mp4(input: &Path, output_mp4: &Path) -> Result<(), Str
         input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
         output_mp4.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg normalize failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "normalize").await
 }
 
 /// Build ffmpeg arguments for thumbnail extraction (first frame at 1s, 320px wide JPEG).
@@ -310,17 +280,7 @@ pub async fn extract_thumbnail(input: &Path, output: &Path) -> Result<(), String
         input.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
         output.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())?,
     );
-    let status = Command::new(resolve_ffmpeg_path())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
-
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(format!("ffmpeg thumbnail extraction failed: {stderr}"));
-    }
-    Ok(())
+    run_ffmpeg(&args, "thumbnail extraction").await
 }
 
 #[cfg(test)]

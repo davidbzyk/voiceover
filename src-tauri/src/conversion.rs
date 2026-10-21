@@ -7,7 +7,7 @@ use crate::elevenlabs;
 use crate::ffmpeg;
 use crate::local_tts;
 use crate::sidecar;
-use crate::tts_provider::Provider;
+use crate::tts_provider::{Provider, CANCELLED};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -163,9 +163,6 @@ pub async fn convert(
         }
     }
 }
-
-/// The error every provider returns when a run is cancelled or superseded.
-pub(crate) const CANCELLED: &str = "Conversion cancelled";
 
 /// Await `work`, giving up with the cancelled error as soon as `is_cancelled` turns true.
 async fn until_cancelled<T>(

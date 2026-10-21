@@ -5,6 +5,8 @@ import {
 	defaultVoiceChoice,
 	parseChoiceKey,
 	releaseObjectUrl,
+	runConversion,
+	type VoiceChoice,
 	shouldLoadLocalVoices
 } from './conversion';
 import { activeConversion, runExclusive } from './activeConversion.svelte';
@@ -119,3 +121,26 @@ describe('releaseObjectUrl', () => {
 		revoke.mockRestore();
 	});
 });
+
+describe('runExclusive cancellable flag', () => {
+	it('records whether the running conversion can be cancelled, for a page that remounts mid-run', async () => {
+		let seen: boolean | undefined;
+		await runExclusive('preview', async () => {
+			seen = activeConversion.cancellable;
+		}, false);
+		expect(seen).toBe(false);
+		await runExclusive('/r/b.mp4', async () => {
+			seen = activeConversion.cancellable;
+		});
+		expect(seen).toBe(true);
+		expect(activeConversion.owner).toBeNull();
+	});
+});
+
+// Compile-time only (checked by `pnpm check`): each command accepts only its own arguments.
+export function _conversionArgsAreTyped(choice: VoiceChoice | null) {
+	// @ts-expect-error process_recording has no `path`
+	void runConversion('process_recording', { path: '/a.mp4', voiceChoice: choice }, () => {});
+	// @ts-expect-error reconvert_recording has no `recordingPath`
+	void runConversion('reconvert_recording', { recordingPath: '/a.webm', voiceChoice: choice }, () => {});
+}

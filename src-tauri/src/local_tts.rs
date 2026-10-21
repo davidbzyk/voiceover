@@ -117,12 +117,25 @@ impl Default for PollTiming {
     }
 }
 
-/// Ask the sidecar to stop a job; failures are logged, since the caller is already giving up.
+/// Ask the sidecar to stop a job, retrying a refused request; failures are logged, since the caller is giving up.
+///
+/// A 404 counts as done: the sidecar no longer has the job.
 async fn cancel_generation(client: &reqwest::Client, base_url: &str, generation_id: &str) {
+    const ATTEMPTS: u32 = 3;
     let url = format!("{}/generate/{}/cancel", base_url, generation_id);
-    match send_with_timeout(client.post(&url).send(), 10, "Cancel request failed").await {
-        Ok(_) => log::info!("[local_tts] Cancelled generation {}", generation_id),
-        Err(e) => log::warn!("[local_tts] Could not cancel generation {}: {}", generation_id, e),
+    for attempt in 1..=ATTEMPTS {
+        let failure = match send_with_timeout(client.post(&url).send(), 10, "Cancel request failed").await {
+            Ok(resp) if resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                log::info!("[local_tts] Cancelled generation {}", generation_id);
+                return;
+            }
+            Ok(resp) => format!("HTTP {}", resp.status()),
+            Err(e) => e,
+        };
+        log::warn!("[local_tts] Cancel attempt {attempt} for {} failed: {}", generation_id, failure);
+        if attempt < ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 }
 
@@ -248,7 +261,7 @@ pub(crate) async fn poll_and_download(
 }
 
 /// Error text for a conversion the user (or a newer conversion) cancelled.
-use crate::conversion::CANCELLED;
+use crate::tts_provider::CANCELLED;
 
 // ---------------------------------------------------------------------------
 // Voice conversion (speech-to-speech, same contract as ElevenLabs)
@@ -701,6 +714,11 @@ mod tests {
     }
 
     async fn fake_sidecar(statuses: Vec<&'static str>) -> FakeSidecar {
+        fake_sidecar_with(statuses, 0).await
+    }
+
+    /// Like `fake_sidecar`, but the first `failing_cancels` cancel requests answer HTTP 500.
+    async fn fake_sidecar_with(statuses: Vec<&'static str>, failing_cancels: usize) -> FakeSidecar {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -721,7 +739,9 @@ mod tests {
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let mut code = "200 OK";
                     let (ctype, body): (&str, Vec<u8>) = if req.contains("/cancel") {
-                        cancels.fetch_add(1, Ordering::SeqCst);
+                        if cancels.fetch_add(1, Ordering::SeqCst) < failing_cancels {
+                            code = "500 Internal Server Error";
+                        }
                         ("application/json", br#"{"status":"generating"}"#.to_vec())
                     } else if req.contains("/status") {
                         let i = polls.fetch_add(1, Ordering::SeqCst).min(statuses.len() - 1);
@@ -824,6 +844,17 @@ mod tests {
         ).await;
         assert!(result.is_ok(), "{result:?}");
         std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn a_refused_cancel_is_retried_until_the_sidecar_accepts_it() {
+        let fake = fake_sidecar_with(vec![generating(1)], 1).await;
+        let out = std::env::temp_dir().join("vo-test-poll-cancel-retry.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(5_000), &|_| {}, &|| true,
+        ).await;
+        assert_eq!(result.unwrap_err(), CANCELLED);
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 2, "a 500 is not a cancel");
     }
 
     #[tokio::test]
