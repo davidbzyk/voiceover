@@ -111,8 +111,7 @@ fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
                 .unwrap_or(0);
 
             // Check for cached thumbnail
-            let thumb_dir = output_dir.join(".thumbnails");
-            let thumb_path = thumb_dir.join(format!("{}.jpg", path.file_stem().unwrap_or_default().to_string_lossy()));
+            let thumb_path = thumbnail_path(&path, output_dir);
             let thumbnail_path = if thumb_path.exists() {
                 Some(thumb_path.to_string_lossy().to_string())
             } else {
@@ -193,14 +192,14 @@ pub async fn generate_thumbnail(
 
     validate_in_output_dir(&input, &output_dir)?;
 
-    let thumb_dir = output_dir.join(".thumbnails");
-    std::fs::create_dir_all(&thumb_dir)
-        .map_err(|e| format!("Failed to create thumbnails directory: {e}"))?;
-
-    let stem = input.file_stem()
-        .ok_or_else(|| "File has no stem".to_string())?
-        .to_string_lossy();
-    let thumb_path = thumb_dir.join(format!("{stem}.jpg"));
+    if input.file_stem().is_none() {
+        return Err("File has no stem".to_string());
+    }
+    let thumb_path = thumbnail_path(&input, &output_dir);
+    if let Some(thumb_dir) = thumb_path.parent() {
+        std::fs::create_dir_all(thumb_dir)
+            .map_err(|e| format!("Failed to create thumbnails directory: {e}"))?;
+    }
 
     // Return cached thumbnail if it exists
     if thumb_path.exists() {
@@ -212,7 +211,7 @@ pub async fn generate_thumbnail(
     Ok(thumb_path.to_string_lossy().to_string())
 }
 
-/// Delete a recording and its associated files (.meta.json, .txt, cached thumbnail).
+/// Delete a recording and its companion files (.meta.json, .txt, .original.m4a, cached thumbnail).
 #[tauri::command]
 pub async fn delete_recording(
     app: tauri::AppHandle,

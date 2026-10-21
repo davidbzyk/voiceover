@@ -257,7 +257,8 @@
 				{/if}
 			</div>
 		{/if}
-		{#if showConvert}
+		<!-- Also shown for a run started before the card remounted, so Cancel is always reachable. -->
+		{#if showConvert || converting}
 			<div class="convert-row">
 				<VoicePicker bind:value={voiceChoice} disabled={converting} />
 				{#if converting}
@@ -313,6 +314,7 @@
 			class="action-btn"
 			class:danger={confirmingDelete}
 			onclick={handleDelete}
+			disabled={converting}
 			onmouseleave={() => (confirmingDelete = false)}
 			title={confirmingDelete ? 'Click again to confirm' : 'Delete'}
 		>

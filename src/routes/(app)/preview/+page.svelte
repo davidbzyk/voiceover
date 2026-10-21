@@ -27,13 +27,23 @@
 	/** True while a conversion this page is not showing runs (a Library card's, or one started before a revisit). */
 	const busyElsewhere = $derived(!!activeConversion.owner && !isProcessing);
 
+	/** Set once the page closes; a conversion that outlives it must not hand it a new video. */
+	let destroyed = false;
+
 	/** Swap the player to another video, releasing the old object URL. */
 	function showVideo(url: string) {
+		if (destroyed) {
+			releaseObjectUrl(url, appState.recordingPath);
+			return;
+		}
 		releaseObjectUrl(videoSrc, appState.recordingPath);
 		videoSrc = url;
 	}
 
-	onDestroy(() => releaseObjectUrl(videoSrc, appState.recordingPath));
+	onDestroy(() => {
+		destroyed = true;
+		releaseObjectUrl(videoSrc, appState.recordingPath);
+	});
 
 	/** Load the saved mp4 into the player so the new voice can be heard. */
 	async function showSavedOutput() {

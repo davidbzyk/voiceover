@@ -164,6 +164,9 @@ pub async fn convert(
     }
 }
 
+/// The error every provider returns when a run is cancelled or superseded.
+pub(crate) const CANCELLED: &str = "Conversion cancelled";
+
 /// Await `work`, giving up with the cancelled error as soon as `is_cancelled` turns true.
 async fn until_cancelled<T>(
     work: impl std::future::Future<Output = Result<T, String>>,
@@ -176,7 +179,7 @@ async fn until_cancelled<T>(
     };
     tokio::select! {
         result = work => result,
-        _ = watch => Err(local_tts::CANCELLED.to_string()),
+        _ = watch => Err(CANCELLED.to_string()),
     }
 }
 
@@ -219,7 +222,7 @@ async fn convert_elevenlabs(
     let result: Result<PathBuf, String> = async {
         for (i, pair) in bounds.windows(2).enumerate() {
             if is_cancelled() {
-                return Err(local_tts::CANCELLED.to_string());
+                return Err(CANCELLED.to_string());
             }
             let piece_wav = work_dir.join(format!("piece-{stamp}-{i}.wav"));
             let piece_mp3 = work_dir.join(format!("piece-{stamp}-{i}.mp3"));
@@ -358,7 +361,7 @@ mod tests {
         let started = std::time::Instant::now();
         let is_cancelled = || flag.load(std::sync::atomic::Ordering::SeqCst);
         let (result, _) = tokio::join!(until_cancelled(work, &is_cancelled), cancel_soon);
-        assert_eq!(result.unwrap_err(), local_tts::CANCELLED);
+        assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 

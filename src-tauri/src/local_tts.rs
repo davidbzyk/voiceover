@@ -248,7 +248,7 @@ pub(crate) async fn poll_and_download(
 }
 
 /// Error text for a conversion the user (or a newer conversion) cancelled.
-pub(crate) const CANCELLED: &str = "Conversion cancelled";
+use crate::conversion::CANCELLED;
 
 // ---------------------------------------------------------------------------
 // Voice conversion (speech-to-speech, same contract as ElevenLabs)

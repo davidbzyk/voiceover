@@ -74,23 +74,31 @@ pub async fn process_recording(
     let token = app.state::<ConversionRuns>().begin();
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
-    let transformed = convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, token, &on_event).await?;
 
-    progress(&on_event, "Assembling video", 90.0);
-    log::info!("[pipeline] Splicing audio into video");
-    let assembled = ffmpeg::replace_audio(&recording, &transformed, &final_path).await;
-    cleanup_temp(&transformed);
-    assembled?;
-    if let Err(e) = ensure_current(&app, token) {
-        cleanup_temp(&final_path);
+    // Kept first: the source recording is deleted on success, so a converted save without
+    // its original voice would lose that voice for good. Failing here leaves the recording.
+    let original = original_voice_path(&final_path);
+    ffmpeg::keep_original_voice(&recording, &original).await?;
+    let saved = async {
+        let transformed =
+            convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, token, &on_event).await?;
+        progress(&on_event, "Assembling video", 90.0);
+        log::info!("[pipeline] Splicing audio into video");
+        let assembled = ffmpeg::replace_audio(&recording, &transformed, &final_path).await;
+        cleanup_temp(&transformed);
+        assembled?;
+        if let Err(e) = ensure_current(&app, token) {
+            cleanup_temp(&final_path);
+            return Err(e);
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = saved {
+        cleanup_temp(&original);
         return Err(e);
     }
     log_duration_drift(&recording, &final_path).await;
-
-    // Keep the speaker's own voice beside the video so it can be converted again later.
-    if let Err(e) = ffmpeg::keep_original_voice(&recording, &original_voice_path(&final_path)).await {
-        log::warn!("[pipeline] Could not keep original voice: {}", e);
-    }
 
     let name = conversion::voice_name(&app, &config, &choice).await;
     update_meta(&final_path, Some(&choice), name.as_deref());
@@ -233,7 +241,7 @@ async fn convert_voice(
 /// Fail with the cancelled error when `token`'s run was cancelled or superseded.
 fn ensure_current(app: &tauri::AppHandle, token: u64) -> Result<(), String> {
     if app.state::<ConversionRuns>().is_stale(token) {
-        return Err(crate::local_tts::CANCELLED.to_string());
+        return Err(conversion::CANCELLED.to_string());
     }
     Ok(())
 }
@@ -244,7 +252,13 @@ fn staging_path(mp4: &Path) -> PathBuf {
 }
 
 /// Move `staged` over `target` in one rename, so `target` is always either the old or the new file.
+///
+/// Refuses when `target` is gone: the recording was deleted while it converted, and must stay deleted.
 fn replace_file(staged: &Path, target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        cleanup_temp(staged);
+        return Err("The recording was deleted while it was converting".to_string());
+    }
     std::fs::rename(staged, target).map_err(|e| {
         cleanup_temp(staged);
         format!("Failed to update recording: {e}")
@@ -423,6 +437,18 @@ mod tests {
         std::fs::write(&staged, b"new video").unwrap();
         replace_file(&staged, &mp4).unwrap();
         assert_eq!(std::fs::read(&mp4).unwrap(), b"new video");
+        assert!(!staged.exists());
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn replace_file_refuses_when_the_recording_was_deleted_meanwhile() {
+        let mp4 = temp_mp4("replace-deleted");
+        let staged = staging_path(&mp4);
+        std::fs::write(&staged, b"new video").unwrap();
+        std::fs::remove_file(&mp4).unwrap();
+        assert!(replace_file(&staged, &mp4).is_err());
+        assert!(!mp4.exists(), "a deleted recording must not come back");
         assert!(!staged.exists());
         std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
