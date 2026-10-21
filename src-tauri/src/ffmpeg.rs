@@ -130,7 +130,8 @@ pub async fn keep_original_voice(input: &Path, output: &Path) -> Result<(), Stri
 
 /// Build ffmpeg arguments that swap an mp4's audio without re-encoding its video.
 pub(crate) fn swap_audio_args(video: &str, new_audio: &str, output: &str) -> Vec<String> {
-    ["-y", "-i", video, "-i", new_audio, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", output]
+    // The output is staged under a non-.mp4 name, so the format cannot be inferred from it.
+    ["-y", "-i", video, "-i", new_audio, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-f", "mp4", output]
         .iter().map(|s| s.to_string()).collect()
 }
 
@@ -330,7 +331,54 @@ mod tests {
     fn swap_audio_args_copy_video_and_map_new_audio() {
         let args = swap_audio_args("in.mp4", "voice.wav", "out.mp4");
         let joined = args.join(" ");
-        assert!(joined.contains("-map 0:v -map 1:a -c:v copy -c:a aac"), "{joined}");
+        assert!(joined.contains("-map 0:v -map 1:a -c:v copy -c:a aac -f mp4"), "{joined}");
+    }
+
+    /// Make a 1s test video and a 1s tone with the real ffmpeg; None when ffmpeg is not installed.
+    fn real_media(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+        let video = dir.join("in.mp4");
+        let audio = dir.join("voice.wav");
+        let ok = |args: &[&str]| std::process::Command::new(resolve_ffmpeg_path()).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+        let made = ok(&["-y", "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1", "-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", video.to_str()?])
+            && ok(&["-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=1", audio.to_str()?]);
+        made.then_some((video, audio))
+    }
+
+    #[tokio::test]
+    async fn swap_audio_writes_an_mp4_to_a_staging_name_without_an_mp4_extension() {
+        let dir = std::env::temp_dir().join("vo-test-swap-audio");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some((video, audio)) = real_media(&dir) else {
+            eprintln!("skipped: ffmpeg with lavfi/libx264 not available");
+            return;
+        };
+        // Same shape as pipeline::staging_path: the reconvert stages to "<name>.mp4.part"
+        let staged = dir.join("voiceover-1.mp4.part");
+        let result = swap_audio(&video, &audio, &staged).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(std::fs::metadata(&staged).map(|m| m.len() > 0).unwrap_or(false));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn keep_original_voice_and_concat_exact_produce_files_with_real_ffmpeg() {
+        let dir = std::env::temp_dir().join("vo-test-real-ffmpeg");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some((video, audio)) = real_media(&dir) else {
+            eprintln!("skipped: ffmpeg with lavfi/libx264 not available");
+            return;
+        };
+        let original = dir.join("voiceover-1.original.m4a");
+        keep_original_voice(&video, &original).await.unwrap();
+        assert!(std::fs::metadata(&original).map(|m| m.len() > 0).unwrap_or(false));
+
+        let joined = dir.join("joined.wav");
+        concat_exact(&[(audio.clone(), 0.75), (audio, 0.5)], &joined).await.unwrap();
+        let secs = probe_duration(&joined).await.unwrap();
+        assert!((secs - 1.25).abs() < 0.02, "joined length {secs}s, expected 1.25s");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
