@@ -41,10 +41,8 @@ pub(crate) fn read_pcm16_mono(path: &Path) -> Result<PcmAudio, String> {
             ));
         } else if id == b"data" {
             let sample_rate = sample_rate.ok_or("WAV data chunk appears before fmt chunk")?;
-            let samples = bytes[body..end]
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]]))
-                .collect();
+            let (pairs, _) = bytes[body..end].as_chunks::<2>();
+            let samples = pairs.iter().map(|b| i16::from_le_bytes(*b)).collect();
             return Ok(PcmAudio {
                 samples,
                 sample_rate,
