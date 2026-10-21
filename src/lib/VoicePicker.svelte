@@ -7,6 +7,7 @@
 		defaultVoiceChoice,
 		loadLocalVoices,
 		parseChoiceKey,
+		shouldLoadLocalVoices,
 		type VoiceChoice
 	} from '$lib/conversion';
 
@@ -21,8 +22,8 @@
 	const local = $derived(options.filter((o) => o.provider === 'local'));
 
 	onMount(async () => {
-		localVoices = await loadLocalVoices();
 		value ??= defaultVoiceChoice(appState.config);
+		if (shouldLoadLocalVoices(appState.config)) localVoices = await loadLocalVoices();
 	});
 </script>
 

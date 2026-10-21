@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildVoiceOptions, choiceKey, defaultVoiceChoice, parseChoiceKey } from './conversion';
+import {
+	buildVoiceOptions,
+	choiceKey,
+	defaultVoiceChoice,
+	parseChoiceKey,
+	shouldLoadLocalVoices
+} from './conversion';
+import { activeConversion, runExclusive } from './activeConversion.svelte';
 
 const voices = [
 	{ id: 'el-1', name: 'Rachel', description: '', is_default: false },
@@ -46,5 +53,40 @@ describe('choiceKey', () => {
 	it('round-trips ids that contain colons', () => {
 		const choice = { provider: 'local' as const, voiceId: 'a:b-c' };
 		expect(parseChoiceKey(choiceKey(choice))).toEqual(choice);
+	});
+});
+
+describe('shouldLoadLocalVoices', () => {
+	it('skips the local engine for ElevenLabs-only setups', () => {
+		expect(shouldLoadLocalVoices({ provider: 'elevenlabs', local_voice_profile_id: '' })).toBe(false);
+	});
+
+	it('loads local voices when local is the provider or a local profile is set', () => {
+		expect(shouldLoadLocalVoices({ provider: 'local', local_voice_profile_id: '' })).toBe(true);
+		expect(shouldLoadLocalVoices({ provider: 'elevenlabs', local_voice_profile_id: 'p1' })).toBe(true);
+	});
+});
+
+describe('runExclusive', () => {
+	it('marks the owner while its conversion runs and clears it after', async () => {
+		let during: string | null = null;
+		await runExclusive('card-a', async () => {
+			during = activeConversion.owner;
+		});
+		expect(during).toBe('card-a');
+		expect(activeConversion.owner).toBeNull();
+	});
+
+	it('clears the owner when the conversion fails', async () => {
+		await expect(runExclusive('card-a', () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+		expect(activeConversion.owner).toBeNull();
+	});
+
+	it('does not start a second conversion while another owner is running', async () => {
+		let release!: () => void;
+		const first = runExclusive('card-a', () => new Promise<void>((r) => (release = r)));
+		await expect(runExclusive('card-b', async () => 'ran')).rejects.toThrow(/another conversion/i);
+		release();
+		await first;
 	});
 });

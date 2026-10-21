@@ -164,6 +164,22 @@ pub async fn convert(
     }
 }
 
+/// Await `work`, giving up with the cancelled error as soon as `is_cancelled` turns true.
+async fn until_cancelled<T>(
+    work: impl std::future::Future<Output = Result<T, String>>,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<T, String> {
+    let watch = async {
+        while !is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    };
+    tokio::select! {
+        result = work => result,
+        _ = watch => Err(local_tts::CANCELLED.to_string()),
+    }
+}
+
 /// Run ElevenLabs speech-to-speech, splitting at pauses when the source is over its per-request limit.
 #[allow(clippy::too_many_arguments)]
 async fn convert_elevenlabs(
@@ -180,7 +196,11 @@ async fn convert_elevenlabs(
     let cuts = audio_split::quiet_cut_points(&audio, ELEVENLABS_MAX_PIECE_SECS, CUT_SEARCH_SECS);
     if cuts.is_empty() {
         let output = work_dir.join(format!("transformed-{stamp}.mp3"));
-        elevenlabs::speech_to_speech(app, api_key, voice_id, source_wav, &output).await?;
+        until_cancelled(
+            elevenlabs::speech_to_speech(app, api_key, voice_id, source_wav, &output),
+            is_cancelled,
+        )
+        .await?;
         on_progress(1.0);
         return Ok(output);
     }
@@ -210,7 +230,11 @@ async fn convert_elevenlabs(
                 &audio.samples[pair[0]..pair[1]],
                 audio.sample_rate,
             )?;
-            elevenlabs::speech_to_speech(app, api_key, voice_id, &piece_wav, &piece_mp3).await?;
+            until_cancelled(
+                elevenlabs::speech_to_speech(app, api_key, voice_id, &piece_wav, &piece_mp3),
+                is_cancelled,
+            )
+            .await?;
             converted.push((
                 piece_mp3,
                 (pair[1] - pair[0]) as f64 / audio.sample_rate as f64,
@@ -318,6 +342,30 @@ mod tests {
                 voice_id: "p1".into()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_waiting_on_a_request_in_flight() {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let work = async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok::<_, String>(())
+        };
+        let cancel_soon = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        let started = std::time::Instant::now();
+        let is_cancelled = || flag.load(std::sync::atomic::Ordering::SeqCst);
+        let (result, _) = tokio::join!(until_cancelled(work, &is_cancelled), cancel_soon);
+        assert_eq!(result.unwrap_err(), local_tts::CANCELLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn finished_work_is_returned_when_not_cancelled() {
+        let result = until_cancelled(async { Ok::<_, String>(7) }, &|| false).await;
+        assert_eq!(result, Ok(7));
     }
 
     #[test]

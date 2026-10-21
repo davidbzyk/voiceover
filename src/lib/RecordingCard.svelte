@@ -7,6 +7,7 @@
 	import { logger } from '$lib/logger';
 	import VoicePicker from '$lib/VoicePicker.svelte';
 	import { cancelConversion, runConversion, type VoiceChoice } from '$lib/conversion';
+	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 
 	let { recording }: { recording: RecordingInfo } = $props();
 
@@ -23,6 +24,8 @@
 	let showConvert = $state(false);
 	let convertProgress = $state('');
 	let voiceChoice = $state<VoiceChoice | null>(null);
+	/** True while another card or the Preview is converting; the backend runs one at a time. */
+	const busyElsewhere = $derived(!!activeConversion.owner && activeConversion.owner !== recording.path);
 
 	/** Convert this recording again, from its original voice, into the picked voice. */
 	async function handleConvertAgain() {
@@ -30,9 +33,11 @@
 		converting = true;
 		errorMessage = '';
 		try {
-			await runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) => {
-				convertProgress = `${stage} ${Math.round(percent)}%`;
-			});
+			await runExclusive(recording.path, () =>
+				runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) => {
+					convertProgress = `${stage} ${Math.round(percent)}%`;
+				})
+			);
 			showConvert = false;
 			await libraryState.load();
 		} catch (err) {
@@ -260,7 +265,9 @@
 					<span class="convert-progress">{convertProgress}</span>
 					<button class="text-btn" onclick={cancelConversion}>Cancel</button>
 				{:else}
-					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice}>Convert</button>
+					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice || busyElsewhere}>
+						{busyElsewhere ? 'Busy…' : 'Convert'}
+					</button>
 				{/if}
 			</div>
 		{/if}

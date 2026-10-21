@@ -72,13 +72,17 @@ pub async fn process_recording(
 
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
-    let transformed = convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, &on_event).await?;
+    let (transformed, token) = convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, &on_event).await?;
 
     progress(&on_event, "Assembling video", 90.0);
     log::info!("[pipeline] Splicing audio into video");
     let assembled = ffmpeg::replace_audio(&recording, &transformed, &final_path).await;
     cleanup_temp(&transformed);
     assembled?;
+    if let Err(e) = ensure_current(&app, token) {
+        cleanup_temp(&final_path);
+        return Err(e);
+    }
     log_duration_drift(&recording, &final_path).await;
 
     // Keep the speaker's own voice beside the video so it can be converted again later.
@@ -134,18 +138,18 @@ pub async fn reconvert_recording(
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = crate::commands::recording::temp_recording_dir();
     let stamp = unix_timestamp();
-    let transformed = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, &on_event).await?;
+    let (transformed, token) = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, &on_event).await?;
 
     progress(&on_event, "Assembling video", 90.0);
-    let staged = temp_dir.join(format!("reconvert-{stamp}.mp4"));
+    // Staged beside the mp4 so the final rename is atomic: the saved video is never half-written.
+    let staged = staging_path(&mp4);
     let swapped = ffmpeg::swap_audio(&mp4, &transformed, &staged).await;
     cleanup_temp(&transformed);
-    if let Err(e) = swapped {
+    if let Err(e) = swapped.and_then(|_| ensure_current(&app, token)) {
         cleanup_temp(&staged);
         return Err(e);
     }
-    std::fs::copy(&staged, &mp4).map_err(|e| format!("Failed to update recording: {e}"))?;
-    cleanup_temp(&staged);
+    replace_file(&staged, &mp4)?;
 
     let name = conversion::voice_name(&app, &config, &choice).await;
     update_meta(&mp4, Some(&choice), name.as_deref());
@@ -158,7 +162,7 @@ pub async fn reconvert_recording(
 
 /// Extract `audio_source`'s audio and convert it into `choice`'s voice, reporting progress 5-85%.
 ///
-/// `video` is the file whose length the result must match. Returns the converted audio's path.
+/// `video` is the file whose length the result must match. Returns the converted audio's path and the run's token.
 #[allow(clippy::too_many_arguments)]
 async fn convert_voice(
     app: &tauri::AppHandle,
@@ -169,7 +173,7 @@ async fn convert_voice(
     temp_dir: &Path,
     stamp: &str,
     on_event: &Channel<PipelineEvent>,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, u64), String> {
     let runs = app.state::<ConversionRuns>();
     let token = runs.begin();
 
@@ -208,8 +212,34 @@ async fn convert_voice(
     cleanup_temp(&extracted);
     log::info!("[pipeline] Conversion took {:.1}s", started.elapsed().as_secs_f32());
     let converted = result?;
+    // A provider that cannot be interrupted mid-request may finish after Cancel; drop its result.
+    if let Err(e) = ensure_current(app, token) {
+        cleanup_temp(&converted);
+        return Err(e);
+    }
     progress(on_event, stage, 85.0);
-    Ok(converted)
+    Ok((converted, token))
+}
+
+/// Fail with the cancelled error when `token`'s run was cancelled or superseded.
+fn ensure_current(app: &tauri::AppHandle, token: u64) -> Result<(), String> {
+    if app.state::<ConversionRuns>().is_stale(token) {
+        return Err(crate::local_tts::CANCELLED.to_string());
+    }
+    Ok(())
+}
+
+/// Where a recording's replacement is written before it is renamed over the original.
+fn staging_path(mp4: &Path) -> PathBuf {
+    mp4.with_extension("mp4.part")
+}
+
+/// Move `staged` over `target` in one rename, so `target` is always either the old or the new file.
+fn replace_file(staged: &Path, target: &Path) -> Result<(), String> {
+    std::fs::rename(staged, target).map_err(|e| {
+        cleanup_temp(staged);
+        format!("Failed to update recording: {e}")
+    })
 }
 
 /// Log a warning when the output's length drifts from the input video's.
@@ -367,6 +397,24 @@ mod tests {
         assert_eq!(v["provider"], "elevenlabs");
         assert_eq!(v["driveUrl"], "https://drive/x");
         assert_eq!(v["createdAt"], 1740000000);
+        std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn staging_file_is_beside_the_mp4_and_not_listed_as_a_recording() {
+        let staged = staging_path(Path::new("/m/voiceover-1.mp4"));
+        assert_eq!(staged.parent(), Some(Path::new("/m")));
+        assert_ne!(staged.extension().and_then(|e| e.to_str()), Some("mp4"));
+    }
+
+    #[test]
+    fn replace_file_swaps_content_and_leaves_no_staging_file() {
+        let mp4 = temp_mp4("replace-file");
+        let staged = staging_path(&mp4);
+        std::fs::write(&staged, b"new video").unwrap();
+        replace_file(&staged, &mp4).unwrap();
+        assert_eq!(std::fs::read(&mp4).unwrap(), b"new video");
+        assert!(!staged.exists());
         std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
 

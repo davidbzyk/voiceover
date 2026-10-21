@@ -309,3 +309,30 @@ class TestConvertInOverlappingChunks:
                 source, SR, lambda c: calls.append(1) or c, should_cancel=lambda: len(calls) >= 2
             )
         assert len(calls) == 2
+
+    def test_empty_chunk_keeps_its_slot_so_later_audio_stays_in_sync(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+        calls = []
+
+        def convert(chunk):
+            calls.append(1)
+            return np.array([], dtype=np.float32) if len(calls) == 2 else chunk
+
+        out = convert_in_overlapping_chunks(source, SR, convert)
+        assert abs(len(out) - len(source)) <= 1
+        assert int(np.argmax(out)) == marker
+
+    def test_chunk_that_comes_back_longer_does_not_push_later_audio_out_of_sync(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+
+        def convert(chunk):
+            # A model that returns 1% more audio than it was given
+            return np.concatenate([chunk, np.zeros(len(chunk) // 100, dtype=np.float32)])
+
+        out = convert_in_overlapping_chunks(source, SR, convert)
+        assert abs(len(out) - len(source)) <= 1
+        assert abs(int(np.argmax(out)) - marker) <= SR // 100

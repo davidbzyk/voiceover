@@ -144,6 +144,13 @@ def concatenate_audio_chunks(
     return result
 
 
+def _fit_length(audio: np.ndarray, length: int) -> np.ndarray:
+    """Trim or zero-pad audio to exactly `length` samples, so each chunk keeps its place in time."""
+    if len(audio) >= length:
+        return audio[:length]
+    return np.concatenate([audio, np.zeros(length - len(audio), dtype=np.float32)])
+
+
 class ConversionCancelled(Exception):
     """Raised between chunks when the caller asks a running conversion to stop."""
 
@@ -188,10 +195,9 @@ def convert_in_overlapping_chunks(
         end = min(pos + chunk_samples, total_samples)
         logger.info(f"  Converting chunk {i + 1}/{n_chunks} ({(end - pos) / sample_rate:.1f}s)")
         piece = np.asarray(convert_chunk(source[pos:end]), dtype=np.float32)
-        if len(piece) > 0:
-            pieces.append(piece)
-        else:
-            logger.warning(f"  Chunk {i + 1}/{n_chunks} produced empty audio")
+        if len(piece) == 0:
+            logger.warning(f"  Chunk {i + 1}/{n_chunks} produced empty audio; keeping its slot silent")
+        pieces.append(_fit_length(piece, end - pos))
         if on_progress:
             on_progress(i + 1, n_chunks)
         pos += step

@@ -52,6 +52,13 @@ export function defaultVoiceChoice(
 	return voice ? { provider: 'elevenlabs', voiceId: voice.id } : null;
 }
 
+/** Whether to ask the local engine for voices; asking starts it, so ElevenLabs-only setups skip it. */
+export function shouldLoadLocalVoices(
+	config: Pick<AppConfig, 'provider' | 'local_voice_profile_id'>
+): boolean {
+	return config.provider === 'local' || !!config.local_voice_profile_id;
+}
+
 /** Local voice profiles from the sidecar; empty when it is not reachable. */
 export async function loadLocalVoices(): Promise<{ id: string; name: string }[]> {
 	try {

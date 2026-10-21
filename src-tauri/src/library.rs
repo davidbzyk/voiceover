@@ -46,7 +46,6 @@ pub(crate) fn validate_in_output_dir(file_path: &Path, output_dir: &Path) -> Res
     Ok(())
 }
 
-/// Scan the output directory for recordings and return metadata for each.
 /// Files that live beside each recording's .mp4 and share its name.
 const COMPANION_EXTENSIONS: &[&str] = &["meta.json", "txt", "original.m4a"];
 
@@ -78,6 +77,7 @@ fn move_companions(old: &Path, new: &Path, output_dir: &Path) {
     }
 }
 
+/// Scan the output directory for recordings and return metadata for each.
 /// Scan a directory for .mp4 recordings and return metadata.
 fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
     if !output_dir.exists() {

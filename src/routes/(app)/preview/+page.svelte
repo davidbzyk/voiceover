@@ -7,6 +7,7 @@
 
 	import { onMount } from 'svelte';
 	import VoicePicker from '$lib/VoicePicker.svelte';
+	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 	import {
 		cancelConversion,
 		fileObjectUrl,
@@ -20,6 +21,8 @@
 	let voiceChoice = $state<VoiceChoice | null>(null);
 	/** Voice the saved file currently has; null for an unconverted recording. */
 	let savedVoice = $state<VoiceChoice | null>(null);
+	/** True while a Library card's conversion is running; the backend runs one at a time. */
+	const busyElsewhere = $derived(!!activeConversion.owner && activeConversion.owner !== 'preview');
 
 	/** Swap the player to another video, releasing the old object URL. */
 	function showVideo(url: string) {
@@ -85,10 +88,12 @@
 
 	async function processViaTauri() {
 		const replace = appState.config.preferences.voice_replacement_enabled;
-		const result = await runConversion(
-			'process_recording',
-			{ recordingPath: appState.recordingPath, voiceReplacement: replace, voiceChoice },
-			onProgress
+		const result = await runExclusive('preview', () =>
+			runConversion(
+				'process_recording',
+				{ recordingPath: appState.recordingPath, voiceReplacement: replace, voiceChoice },
+				onProgress
+			)
 		);
 		appState.outputPath = result;
 		appState.recordingState = 'saved';
@@ -105,7 +110,9 @@
 		appState.processingProgress = 0;
 		appState.processingStage = 'Starting...';
 		try {
-			await runConversion('reconvert_recording', { path: appState.outputPath, voiceChoice }, onProgress);
+			await runExclusive('preview', () =>
+				runConversion('reconvert_recording', { path: appState.outputPath, voiceChoice }, onProgress)
+			);
 			savedVoice = voiceChoice;
 			appState.libraryStale = true;
 			await showSavedOutput();
@@ -487,7 +494,7 @@
 				</div>
 				<div class="convert-again">
 					<VoicePicker bind:value={voiceChoice} disabled={isProcessing} />
-					<button class="btn primary small" onclick={convertAgain} disabled={isProcessing || !voiceChoice}>
+					<button class="btn primary small" onclick={convertAgain} disabled={isProcessing || busyElsewhere || !voiceChoice}>
 						{isProcessing ? 'Converting...' : 'Convert'}
 					</button>
 				</div>
@@ -516,7 +523,7 @@
 	{:else}
 		<!-- Action buttons -->
 		<div class="actions">
-			<button class="btn primary" onclick={processAndSave} disabled={isProcessing}>
+			<button class="btn primary" onclick={processAndSave} disabled={isProcessing || busyElsewhere}>
 				{isProcessing ? 'Processing...' : '💾 Save MP4'}
 			</button>
 			<button class="btn secondary" onclick={discard} disabled={isProcessing}>🗑️ Discard</button>

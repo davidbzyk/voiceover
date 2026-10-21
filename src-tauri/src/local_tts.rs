@@ -4,9 +4,9 @@ use tauri::Manager;
 
 /// Polling interval while waiting for a sidecar job to finish.
 const POLL_INTERVAL_MS: u64 = 500;
-/// A job that reports no new chunk for this long is treated as hung and cancelled.
-/// Measured 2026-10-21 on the 410s recording (M5 Max): slowest step 11.4s (first chunk), others ~2.2s.
-/// 60s leaves room for Macs several times slower; model loading is exempt, it reports no chunks.
+/// After its first chunk, a job that reports no new chunk for this long is treated as hung and cancelled.
+/// Measured 2026-10-21 on the 410s recording (M5 Max): chunks after the first take ~2.2s (max 2.5s).
+/// 60s leaves room for Macs many times slower; loading and the first chunk wait for the user's Cancel.
 const STALL_AFTER_SECS: u64 = 60;
 
 /// Shared HTTP client for all sidecar communication.
@@ -141,63 +141,84 @@ pub(crate) async fn poll_and_download(
     let status_url = format!("{}/generate/{}/status", base_url, generation_id);
     let mut last_seen: Option<(String, JobProgress)> = None;
     let mut last_change = std::time::Instant::now();
+    // Set once the sidecar job has ended or been told to stop; any other early exit cancels it,
+    // so a job nobody is waiting for never keeps the serial queue busy.
+    let mut job_settled = false;
 
-    loop {
-        tokio::time::sleep(timing.interval).await;
+    let waited: Result<(), String> = async {
+        loop {
+            tokio::time::sleep(timing.interval).await;
 
-        if is_cancelled() {
-            cancel_generation(client, base_url, generation_id).await;
-            return Err(CANCELLED.to_string());
-        }
-
-        let poll_resp = send_with_timeout(
-            client.get(&status_url).send(),
-            120,
-            "Failed to poll generation status",
-        )
-        .await?;
-
-        if !poll_resp.status().is_success() {
-            let body = poll_resp.text().await.unwrap_or_default();
-            return Err(format!("Generation status check failed: {body}"));
-        }
-
-        let gen_status: GenerationStatus = poll_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse generation status: {e}"))?;
-
-        let seen = (gen_status.status.clone(), gen_status.progress);
-        if last_seen.as_ref() != Some(&seen) {
-            if gen_status.progress.total > 0 {
-                on_progress(gen_status.progress);
-            }
-            last_seen = Some(seen);
-            last_change = std::time::Instant::now();
-        }
-
-        match gen_status.status.as_str() {
-            "completed" => {
-                log::info!("[local_tts] Generation completed: id={}", generation_id);
-                break;
-            }
-            "error" => {
-                let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
-                log::error!("[local_tts] Generation failed: id={}, error={}", generation_id, err_msg);
-                return Err(format!("Local voice conversion failed: {err_msg}"));
-            }
-            "cancelled" => return Err(CANCELLED.to_string()),
-            "generating" if last_change.elapsed() > timing.stall_after => {
+            if is_cancelled() {
                 cancel_generation(client, base_url, generation_id).await;
-                return Err(format!(
-                    "Local voice conversion stopped making progress ({} of {} chunks done, nothing new for {}s)",
-                    gen_status.progress.done,
-                    gen_status.progress.total,
-                    timing.stall_after.as_secs(),
-                ));
+                job_settled = true;
+                return Err(CANCELLED.to_string());
             }
-            other => log::debug!("[local_tts] Generation status: {} ({})", other, generation_id),
+
+            let poll_resp = send_with_timeout(
+                client.get(&status_url).send(),
+                120,
+                "Failed to poll generation status",
+            )
+            .await?;
+
+            if !poll_resp.status().is_success() {
+                let body = poll_resp.text().await.unwrap_or_default();
+                return Err(format!("Generation status check failed: {body}"));
+            }
+
+            let gen_status: GenerationStatus = poll_resp
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse generation status: {e}"))?;
+
+            let seen = (gen_status.status.clone(), gen_status.progress);
+            if last_seen.as_ref() != Some(&seen) {
+                if gen_status.progress.total > 0 {
+                    on_progress(gen_status.progress);
+                }
+                last_seen = Some(seen);
+                last_change = std::time::Instant::now();
+            }
+
+            match gen_status.status.as_str() {
+                "completed" => {
+                    job_settled = true;
+                    log::info!("[local_tts] Generation completed: id={}", generation_id);
+                    return Ok(());
+                }
+                "error" => {
+                    job_settled = true;
+                    let err_msg = gen_status.error.unwrap_or_else(|| "unknown error".to_string());
+                    log::error!("[local_tts] Generation failed: id={}, error={}", generation_id, err_msg);
+                    return Err(format!("Local voice conversion failed: {err_msg}"));
+                }
+                "cancelled" => {
+                    job_settled = true;
+                    return Err(CANCELLED.to_string());
+                }
+                // Before the first chunk the model may still be downloading; only a stop after progress is a stall.
+                "generating"
+                    if gen_status.progress.done > 0 && last_change.elapsed() > timing.stall_after =>
+                {
+                    return Err(format!(
+                        "Local voice conversion stopped making progress ({} of {} chunks done, nothing new for {}s)",
+                        gen_status.progress.done,
+                        gen_status.progress.total,
+                        timing.stall_after.as_secs(),
+                    ));
+                }
+                other => log::debug!("[local_tts] Generation status: {} ({})", other, generation_id),
+            }
         }
+    }
+    .await;
+
+    if let Err(e) = waited {
+        if !job_settled {
+            cancel_generation(client, base_url, generation_id).await;
+        }
+        return Err(e);
     }
 
     let audio_url = format!("{}/audio/{}", base_url, generation_id);
@@ -698,17 +719,21 @@ mod tests {
                     let mut buf = vec![0u8; 4096];
                     let n = sock.read(&mut buf).await.unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let mut code = "200 OK";
                     let (ctype, body): (&str, Vec<u8>) = if req.contains("/cancel") {
                         cancels.fetch_add(1, Ordering::SeqCst);
                         ("application/json", br#"{"status":"generating"}"#.to_vec())
                     } else if req.contains("/status") {
                         let i = polls.fetch_add(1, Ordering::SeqCst).min(statuses.len() - 1);
+                        if statuses[i] == "HTTP 500" {
+                            code = "500 Internal Server Error";
+                        }
                         ("application/json", statuses[i].as_bytes().to_vec())
                     } else {
                         ("audio/wav", b"RIFFfake".to_vec())
                     };
                     let head = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     sock.write_all(head.as_bytes()).await.ok();
@@ -760,6 +785,31 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("stopped making progress"), "{err}");
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_status_poll_cancels_the_sidecar_job() {
+        let fake = fake_sidecar(vec![generating(1), "HTTP 500"]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-500.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-5", &out, fast_timing(10_000),
+            &|_| {}, &|| false,
+        ).await;
+        assert!(result.is_err());
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1, "job must not keep blocking the queue");
+    }
+
+    #[tokio::test]
+    async fn waiting_on_the_first_chunk_is_not_a_stall() {
+        // The first chunk may download a model on first use; only a stop after progress counts as a stall
+        let fake = fake_sidecar(vec![generating(0)]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-first.wav");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-6", &out, fast_timing(20),
+            &|_| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 40,
+        ).await;
+        assert_eq!(result.unwrap_err(), CANCELLED, "should wait for the user, not report a stall");
     }
 
     #[tokio::test]
