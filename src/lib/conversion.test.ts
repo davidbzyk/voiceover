@@ -144,3 +144,25 @@ export function _conversionArgsAreTyped(choice: VoiceChoice | null) {
 	// @ts-expect-error reconvert_recording has no `recordingPath`
 	void runConversion('reconvert_recording', { recordingPath: '/a.webm', voiceChoice: choice }, () => {});
 }
+
+describe('runExclusive shared progress and failure', () => {
+	it('keeps progress and the failure in shared state, so a remounted card can show them', async () => {
+		let during = '';
+		await runExclusive('/r/c.mp4', async (report) => {
+			report('Converting voice 40%');
+			during = activeConversion.progress;
+		});
+		expect(during).toBe('Converting voice 40%');
+		expect(activeConversion.progress).toBe('');
+
+		await expect(
+			runExclusive('/r/c.mp4', async () => {
+				throw new Error('ffmpeg failed');
+			})
+		).rejects.toThrow('ffmpeg failed');
+		expect(activeConversion.failure).toEqual({ owner: '/r/c.mp4', message: 'ffmpeg failed' });
+
+		await runExclusive('/r/d.mp4', async () => {});
+		expect(activeConversion.failure).toBeNull();
+	});
+});

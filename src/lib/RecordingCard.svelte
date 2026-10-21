@@ -23,28 +23,28 @@
 	/** Read from the shared owner, so a card remounted mid-run still shows its run and Cancel. */
 	const converting = $derived(activeConversion.owner === recording.path);
 	let showConvert = $state(false);
-	let convertProgress = $state('');
 	let voiceChoice = $state<VoiceChoice | null>(null);
 	/** True while another card or the Preview is converting; the backend runs one at a time. */
 	const busyElsewhere = $derived(!!activeConversion.owner && !converting);
+	/** This recording's last conversion failure, from shared state so a remounted card still shows it. */
+	const conversionError = $derived(
+		activeConversion.failure?.owner === recording.path ? `Convert failed: ${activeConversion.failure.message}` : ''
+	);
 
 	/** Convert this recording again, from its original voice, into the picked voice. */
 	async function handleConvertAgain() {
 		if (!voiceChoice || activeConversion.owner) return;
 		errorMessage = '';
 		try {
-			await runExclusive(recording.path, () =>
-				runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) => {
-					convertProgress = `${stage} ${Math.round(percent)}%`;
-				})
+			await runExclusive(recording.path, (report) =>
+				runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) =>
+					report(`${stage} ${Math.round(percent)}%`)
+				)
 			);
 			showConvert = false;
 			await libraryState.load();
 		} catch (err) {
-			errorMessage = `Convert failed: ${err}`;
 			logger.error('library', 'Convert again failed', err);
-		} finally {
-			convertProgress = '';
 		}
 	}
 
@@ -262,7 +262,7 @@
 			<div class="convert-row">
 				<VoicePicker bind:value={voiceChoice} disabled={converting} />
 				{#if converting}
-					<span class="convert-progress">{convertProgress}</span>
+					<span class="convert-progress">{activeConversion.progress}</span>
 					<button class="text-btn" onclick={cancelConversion}>Cancel</button>
 				{:else}
 					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice || busyElsewhere}>
@@ -271,8 +271,8 @@
 				{/if}
 			</div>
 		{/if}
-		{#if errorMessage}
-			<div class="card-error">{errorMessage}</div>
+		{#if errorMessage || conversionError}
+			<div class="card-error">{errorMessage || conversionError}</div>
 		{/if}
 	</div>
 
