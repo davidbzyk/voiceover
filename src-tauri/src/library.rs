@@ -111,7 +111,7 @@ fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
     }
 
     // Sort by created_at descending (newest first)
-    recordings.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    recordings.sort_by_key(|r| std::cmp::Reverse(r.created_at));
 
     Ok(recordings)
 }

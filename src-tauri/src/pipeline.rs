@@ -149,9 +149,7 @@ pub async fn process_recording(
 
     // Stage 2: Voice transformation (10-85%)
     // Track the resolved voice name for metadata (human-readable, not opaque ID)
-    let resolved_voice_name: Option<String>;
-
-    if use_local {
+    let resolved_voice_name = if use_local {
         on_event
             .send(PipelineEvent::Progress {
                 stage: "Transforming voice (local)...".to_string(),
@@ -185,7 +183,7 @@ pub async fn process_recording(
         }
 
         // Resolve local voice profile ID → human-readable name from sidecar
-        resolved_voice_name = match local_tts::list_local_voices(app.clone()).await {
+        match local_tts::list_local_voices(app.clone()).await {
             Ok(voices) => voices.iter()
                 .find(|v| v.id == config.local_voice_profile_id)
                 .map(|v| v.name.clone()),
@@ -193,7 +191,7 @@ pub async fn process_recording(
                 log::warn!("[pipeline] Could not resolve local voice name: {}", e);
                 None
             }
-        };
+        }
     } else {
         on_event
             .send(PipelineEvent::Progress {
@@ -211,11 +209,11 @@ pub async fn process_recording(
         ).await?;
 
         // Resolve ElevenLabs voice name from config
-        resolved_voice_name = config.voices.iter()
+        config.voices.iter()
             .find(|v| v.is_default)
             .or_else(|| config.voices.first())
-            .map(|v| v.name.clone());
-    }
+            .map(|v| v.name.clone())
+    };
 
     on_event
         .send(PipelineEvent::Progress {
