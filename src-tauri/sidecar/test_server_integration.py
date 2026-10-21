@@ -543,5 +543,20 @@ class TestGenerationProgressAndCancel:
         _wait_for(client, first, lambda d: d["status"] == "cancelled")
         assert client.get(f"/generate/{second}/status").json()["progress"]["done"] == 0
 
+    def test_worker_survives_a_queued_job_whose_record_aged_out(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        converted = []
+        monkeypatch.setattr(server, "_do_voice_convert", _fake_voice_convert(0.2, converted))
+        first = _submit_convert(client, temp_data_dir)
+        second = _submit_convert(client, temp_data_dir)
+        _wait_for(client, first, lambda d: d["progress"]["done"] >= 1)
+        client.post(f"/generate/{second}/cancel")
+        del server._generations[second]  # what the hourly cleanup does to a long-waiting cancelled job
+        client.post(f"/generate/{first}/cancel")
+        _wait_for(client, first, lambda d: d["status"] == "cancelled")
+        third = _submit_convert(client, temp_data_dir)
+        _wait_for(client, third, lambda d: d["status"] == "completed")
+
     def test_cancel_unknown_generation_is_404(self, client):
         assert client.post("/generate/does-not-exist/cancel").status_code == 404

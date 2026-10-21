@@ -383,16 +383,19 @@ async def _generation_worker():
     while True:
         gen_id, coro = await _generation_queue.get()
         try:
-            if _generations.get(gen_id, {}).get("cancel"):
+            gen = _generations.get(gen_id)
+            # A missing record is a cancelled job the hourly cleanup removed while it waited in the queue.
+            if gen is None or gen.get("cancel"):
                 coro.close()
                 logger.info(f"Generation {gen_id} cancelled before it started")
                 continue
             await coro
         except Exception as e:
             logger.error(f"Generation {gen_id} failed (unhandled): {e}", exc_info=True)
-            _generations[gen_id]["status"] = "error"
-            _generations[gen_id]["error"] = str(e)
-            _generations[gen_id]["completed_at"] = time.time()
+            if gen_id in _generations:
+                _generations[gen_id]["status"] = "error"
+                _generations[gen_id]["error"] = str(e)
+                _generations[gen_id]["completed_at"] = time.time()
         finally:
             _generation_queue.task_done()
             if len(_generations) > 20:
