@@ -4,14 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LocalTtsMode {
-    #[default]
-    Tts,
-    Vc,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Voice {
     pub id: String,
@@ -108,9 +100,6 @@ pub struct AppConfig {
     /// Voice profile ID to use with the local TTS sidecar
     #[serde(default)]
     pub local_voice_profile_id: String,
-    /// Local TTS mode: "tts" (text-to-speech via Qwen) or "vc" (voice conversion via CosyVoice)
-    #[serde(default)]
-    pub local_tts_mode: LocalTtsMode,
     /// Whisper model to use for transcription
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
@@ -143,7 +132,6 @@ impl Default for AppConfig {
             provider: Provider::default(),
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
-            local_tts_mode: LocalTtsMode::default(),
             whisper_model: default_whisper_model(),
         }
     }
@@ -410,7 +398,6 @@ mod tests {
             provider: Provider::ElevenLabs,
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
-            local_tts_mode: LocalTtsMode::Tts,
             whisper_model: "whisper-large-v3-turbo".to_string(),
         };
 

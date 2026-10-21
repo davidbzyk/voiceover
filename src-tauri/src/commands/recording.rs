@@ -14,7 +14,8 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn temp_recording_dir() -> PathBuf {
+/// Scratch folder for in-progress recordings and conversion files.
+pub(crate) fn temp_recording_dir() -> PathBuf {
     let dir = std::env::temp_dir().join("voiceover-recordings");
     fs::create_dir_all(&dir).ok();
     dir

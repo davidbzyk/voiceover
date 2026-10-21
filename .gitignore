@@ -48,3 +48,5 @@ src-tauri/sidecar/data/
 .hex-skills/
 Plans/
 docs/
+# Local git worktrees
+.worktrees/

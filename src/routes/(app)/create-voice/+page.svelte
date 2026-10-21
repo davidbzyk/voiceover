@@ -83,7 +83,7 @@
 			models = await client.getModelStatus();
 
 			// Only check models required for the current mode
-			const requiredModels = getRequiredModelNames(appState.config);
+			const requiredModels = getRequiredModelNames(appState.config, 'create-voice');
 			const allDownloaded = requiredModels.every((reqName) =>
 				models.some((m) => m.model_name === reqName && m.downloaded)
 			);
@@ -105,7 +105,7 @@
 		const client = voicebox;
 
 		// Only download models required for the current mode
-		const requiredModels = getRequiredModelNames(appState.config);
+		const requiredModels = getRequiredModelNames(appState.config, 'create-voice');
 		const missing = models.filter(
 			(m) => !m.downloaded && requiredModels.includes(m.model_name)
 		);
@@ -320,10 +320,7 @@
 					</div>
 
 					<!-- Show status of required models only -->
-					{@const requiredModelNames = [
-						appState.config.whisper_model,
-						...(appState.config.local_tts_mode === 'vc' ? ['cosyvoice3-0.5B'] : ['qwen-tts-1.7B'])
-					]}
+					{@const requiredModelNames = getRequiredModelNames(appState.config, 'create-voice')}
 					{#each models.filter((m) => requiredModelNames.includes(m.model_name)) as model}
 						<div class="status-row">
 							<span class="status-dot" class:connected={model.downloaded}></span>

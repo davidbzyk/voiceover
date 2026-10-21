@@ -5,6 +5,8 @@
 	import { refreshDriveToken } from '$lib/drive';
 	import { libraryState, type RecordingInfo } from '$lib/library.svelte';
 	import { logger } from '$lib/logger';
+	import VoicePicker from '$lib/VoicePicker.svelte';
+	import { cancelConversion, runConversion, type VoiceChoice } from '$lib/conversion';
 
 	let { recording }: { recording: RecordingInfo } = $props();
 
@@ -17,6 +19,30 @@
 	let editing = $state(false);
 	let editName = $state('');
 	let editInput = $state<HTMLInputElement | null>(null);
+	let converting = $state(false);
+	let showConvert = $state(false);
+	let convertProgress = $state('');
+	let voiceChoice = $state<VoiceChoice | null>(null);
+
+	/** Convert this recording again, from its original voice, into the picked voice. */
+	async function handleConvertAgain() {
+		if (!voiceChoice || converting) return;
+		converting = true;
+		errorMessage = '';
+		try {
+			await runConversion('reconvert_recording', { path: recording.path, voiceChoice }, (stage, percent) => {
+				convertProgress = `${stage} ${Math.round(percent)}%`;
+			});
+			showConvert = false;
+			await libraryState.load();
+		} catch (err) {
+			errorMessage = `Convert failed: ${err}`;
+			logger.error('library', 'Convert again failed', err);
+		} finally {
+			converting = false;
+			convertProgress = '';
+		}
+	}
 
 	const alreadyUploaded = $derived(!!recording.meta?.driveUrl);
 	const driveConnected = $derived(appState.config.google_drive.connected);
@@ -227,6 +253,17 @@
 				{/if}
 			</div>
 		{/if}
+		{#if showConvert}
+			<div class="convert-row">
+				<VoicePicker bind:value={voiceChoice} disabled={converting} />
+				{#if converting}
+					<span class="convert-progress">{convertProgress}</span>
+					<button class="text-btn" onclick={cancelConversion}>Cancel</button>
+				{:else}
+					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice}>Convert</button>
+				{/if}
+			</div>
+		{/if}
 		{#if errorMessage}
 			<div class="card-error">{errorMessage}</div>
 		{/if}
@@ -252,6 +289,14 @@
 				</button>
 			{/if}
 		{/if}
+		<button
+			class="action-btn"
+			onclick={() => (showConvert = !showConvert)}
+			disabled={converting}
+			title="Convert voice again"
+		>
+			🎙️
+		</button>
 		<button class="action-btn" onclick={handleReveal} title="Show in Finder">
 			📂
 		</button>
@@ -271,6 +316,34 @@
 </div>
 
 <style>
+	.convert-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 6px;
+		min-width: 0;
+	}
+	.convert-progress {
+		font-size: 11px;
+		color: #94a3b8;
+		white-space: nowrap;
+	}
+	.text-btn {
+		background: none;
+		border: none;
+		color: #94a3b8;
+		font-size: 12px;
+		cursor: pointer;
+		padding: 0;
+	}
+	.text-btn.accent {
+		color: #f97316;
+		font-weight: 600;
+	}
+	.text-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
 	.recording-card {
 		display: flex;
 		gap: 14px;

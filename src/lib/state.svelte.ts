@@ -28,7 +28,6 @@ export function isTauri(): boolean {
 }
 
 export type TtsProvider = 'elevenlabs' | 'local';
-export type LocalTtsMode = 'tts' | 'vc';
 
 export type Voice = {
 	id: string;
@@ -62,7 +61,6 @@ export type AppConfig = {
 	/** @deprecated Kept for backward compatibility with old config files. Not used — sidecar runs on managed port. */
 	local_endpoint?: string;
 	local_voice_profile_id: string;
-	local_tts_mode: LocalTtsMode;
 	whisper_model: string;
 };
 
@@ -99,7 +97,6 @@ class AppState {
 		},
 		provider: 'elevenlabs',
 		local_voice_profile_id: '',
-		local_tts_mode: 'tts',
 		whisper_model: 'whisper-large-v3-turbo'
 	});
 

@@ -6,25 +6,37 @@
 	import { refreshDriveToken, driveUploadWithToken, DriveUploadError } from '$lib/drive';
 
 	import { onMount } from 'svelte';
-	import { tauriInvoke } from '$lib/tauri';
+	import VoicePicker from '$lib/VoicePicker.svelte';
+	import {
+		cancelConversion,
+		fileObjectUrl,
+		runConversion,
+		type VoiceChoice
+	} from '$lib/conversion';
 
 	let isProcessing = $state(false);
 	let processingError = $state('');
-	let transformedAudioUrl = $state('');
 	let videoSrc = $state('');
-	let localVoiceName = $state('');
+	let voiceChoice = $state<VoiceChoice | null>(null);
+	/** Voice the saved file currently has; null for an unconverted recording. */
+	let savedVoice = $state<VoiceChoice | null>(null);
+
+	/** Swap the player to another video, releasing the old object URL. */
+	function showVideo(url: string) {
+		if (videoSrc.startsWith('blob:') && videoSrc !== appState.recordingPath) URL.revokeObjectURL(videoSrc);
+		videoSrc = url;
+	}
+
+	/** Load the saved mp4 into the player so the new voice can be heard. */
+	async function showSavedOutput() {
+		try {
+			showVideo(await fileObjectUrl(appState.outputPath, 'video/mp4'));
+		} catch (e) {
+			logger.error('preview', 'Failed to load saved video', e);
+		}
+	}
 
 	onMount(async () => {
-		// Resolve local voice name if using local provider
-		if (appState.config.provider === 'local' && appState.config.local_voice_profile_id && isTauri()) {
-			try {
-				const voices = await tauriInvoke<{ id: string; name: string }[]>('list_local_voices');
-				localVoiceName = voices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? '';
-			} catch (err) {
-				logger.error('preview', 'Failed to load local voice names', err);
-			}
-		}
-
 		if (!appState.recordingPath) return;
 		if (appState.recordingPath.startsWith('blob:')) {
 			videoSrc = appState.recordingPath;
@@ -65,42 +77,43 @@
 		isProcessing = false;
 	}
 
+	function onProgress(stage: string, percent: number) {
+		appState.processingProgress = percent;
+		appState.processingStage = stage;
+		logger.pipelineStage(stage, percent);
+	}
+
 	async function processViaTauri() {
-		const { invoke, Channel } = await import('@tauri-apps/api/core');
-
-		type PipelineEvent =
-			| { event: 'progress'; data: { stage: string; percent: number } }
-			| { event: 'complete'; data: { outputPath: string } }
-			| { event: 'error'; data: { message: string } };
-
-		const onEvent = new Channel<PipelineEvent>();
-		onEvent.onmessage = (msg) => {
-			if (msg.event === 'progress') {
-				appState.processingProgress = msg.data.percent;
-				appState.processingStage = msg.data.stage;
-				logger.pipelineStage(msg.data.stage, msg.data.percent);
-			} else if (msg.event === 'complete') {
-				appState.outputPath = msg.data.outputPath;
-				appState.recordingState = 'saved';
-				appState.libraryStale = true;
-				logger.pipelineComplete(msg.data.outputPath);
-				isProcessing = false;
-			} else if (msg.event === 'error') {
-				processingError = msg.data.message;
-				logger.pipelineError(msg.data.message);
-				isProcessing = false;
-			}
-		};
-
-		const result = await invoke<string>('process_recording', {
-			recordingPath: appState.recordingPath,
-			voiceReplacement: appState.config.preferences.voice_replacement_enabled,
-			voiceId: appState.selectedVoice?.id ?? null,
-			onEvent
-		});
+		const replace = appState.config.preferences.voice_replacement_enabled;
+		const result = await runConversion(
+			'process_recording',
+			{ recordingPath: appState.recordingPath, voiceReplacement: replace, voiceChoice },
+			onProgress
+		);
 		appState.outputPath = result;
 		appState.recordingState = 'saved';
 		appState.libraryStale = true;
+		savedVoice = replace ? voiceChoice : null;
+		logger.pipelineComplete(result);
+		await showSavedOutput();
+	}
+
+	/** Convert the saved recording again, from its original voice, into the picked voice. */
+	async function convertAgain() {
+		isProcessing = true;
+		processingError = '';
+		appState.processingProgress = 0;
+		appState.processingStage = 'Starting...';
+		try {
+			await runConversion('reconvert_recording', { path: appState.outputPath, voiceChoice }, onProgress);
+			savedVoice = voiceChoice;
+			appState.libraryStale = true;
+			await showSavedOutput();
+		} catch (err) {
+			processingError = err instanceof Error ? err.message : String(err);
+			logger.pipelineError(processingError);
+		}
+		isProcessing = false;
 	}
 
 	async function processViaBrowser() {
@@ -413,12 +426,13 @@
 				<div class="toggle-hint">
 					{#if !appState.config.preferences.voice_replacement_enabled}
 						Save raw recording
-					{:else if appState.config.provider === 'local'}
-						Using: {localVoiceName || appState.config.local_voice_profile_id || 'None'}
-					{:else}
+					{:else if !isTauri()}
 						Using: {appState.selectedVoice?.name ?? 'None'}
 					{/if}
 				</div>
+				{#if appState.config.preferences.voice_replacement_enabled && isTauri()}
+					<VoicePicker bind:value={voiceChoice} disabled={isProcessing} />
+				{/if}
 			</div>
 			<button
 				class="toggle"
@@ -444,6 +458,9 @@
 			<div class="progress-bar">
 				<div class="progress-fill" style="width: {appState.processingProgress}%"></div>
 			</div>
+			{#if isTauri()}
+				<button class="link-btn cancel" onclick={cancelConversion}>Cancel</button>
+			{/if}
 		</div>
 	{/if}
 
@@ -461,6 +478,21 @@
 			<div class="saved-label">Saved to:</div>
 			<div class="saved-path">{appState.outputPath}</div>
 		</div>
+
+		{#if isTauri()}
+			<div class="toggle-row">
+				<div>
+					<div class="toggle-label">🎙️ {savedVoice ? 'Convert again' : 'Replace voice'}</div>
+					<div class="toggle-hint">From your original voice; the saved file is updated</div>
+				</div>
+				<div class="convert-again">
+					<VoicePicker bind:value={voiceChoice} disabled={isProcessing} />
+					<button class="btn primary small" onclick={convertAgain} disabled={isProcessing || !voiceChoice}>
+						{isProcessing ? 'Converting...' : 'Convert'}
+					</button>
+				</div>
+			</div>
+		{/if}
 
 		{#if driveLink}
 			<div class="drive-link">
@@ -516,6 +548,7 @@
 		display: block;
 	}
 	.toggle-row {
+		gap: 12px;
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
@@ -592,6 +625,21 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+	}
+	.link-btn.cancel {
+		margin-top: 8px;
+		padding: 0;
+	}
+	.convert-again {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		min-width: 0;
+	}
+	.btn.small {
+		flex: none;
+		padding: 6px 12px;
+		font-size: 12px;
 	}
 	.link-btn {
 		background: none;

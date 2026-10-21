@@ -34,7 +34,7 @@ fn parse_timestamp_from_filename(filename: &str) -> Option<u64> {
 }
 
 /// Validate that a path is within the allowed output directory.
-fn validate_in_output_dir(file_path: &Path, output_dir: &Path) -> Result<(), String> {
+pub(crate) fn validate_in_output_dir(file_path: &Path, output_dir: &Path) -> Result<(), String> {
     let canonical = std::fs::canonicalize(file_path)
         .map_err(|e| format!("Invalid path: {e}"))?;
     let canonical_dir = std::fs::canonicalize(output_dir)
@@ -47,6 +47,37 @@ fn validate_in_output_dir(file_path: &Path, output_dir: &Path) -> Result<(), Str
 }
 
 /// Scan the output directory for recordings and return metadata for each.
+/// Files that live beside each recording's .mp4 and share its name.
+const COMPANION_EXTENSIONS: &[&str] = &["meta.json", "txt", "original.m4a"];
+
+/// Path of the cached thumbnail for a recording.
+fn thumbnail_path(recording: &Path, output_dir: &Path) -> PathBuf {
+    let stem = recording.file_stem().unwrap_or_default().to_string_lossy();
+    output_dir.join(".thumbnails").join(format!("{stem}.jpg"))
+}
+
+/// Delete a recording's companion files and thumbnail; missing ones are skipped.
+pub(crate) fn remove_companions(recording: &Path, output_dir: &Path) {
+    for ext in COMPANION_EXTENSIONS {
+        std::fs::remove_file(recording.with_extension(ext)).ok();
+    }
+    std::fs::remove_file(thumbnail_path(recording, output_dir)).ok();
+}
+
+/// Move a recording's companion files and thumbnail to follow a renamed .mp4.
+fn move_companions(old: &Path, new: &Path, output_dir: &Path) {
+    for ext in COMPANION_EXTENSIONS {
+        let from = old.with_extension(ext);
+        if from.exists() {
+            std::fs::rename(&from, new.with_extension(ext)).ok();
+        }
+    }
+    let old_thumb = thumbnail_path(old, output_dir);
+    if old_thumb.exists() {
+        std::fs::rename(&old_thumb, thumbnail_path(new, output_dir)).ok();
+    }
+}
+
 /// Scan a directory for .mp4 recordings and return metadata.
 fn scan_recordings(output_dir: &Path) -> Result<Vec<RecordingInfo>, String> {
     if !output_dir.exists() {
@@ -197,18 +228,7 @@ pub async fn delete_recording(
     std::fs::remove_file(&path)
         .map_err(|e| format!("Failed to delete recording: {e}"))?;
 
-    // Delete companion files (ignore errors — they may not exist)
-    let meta_path = path.with_extension("meta.json");
-    std::fs::remove_file(&meta_path).ok();
-
-    let transcript_path = path.with_extension("txt");
-    std::fs::remove_file(&transcript_path).ok();
-
-    // Delete cached thumbnail
-    let thumb_dir = output_dir.join(".thumbnails");
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let thumb_path = thumb_dir.join(format!("{stem}.jpg"));
-    std::fs::remove_file(&thumb_path).ok();
+    remove_companions(&path, &output_dir);
 
     log::info!("[library] Deleted recording: {}", file_path);
     Ok(())
@@ -300,29 +320,7 @@ pub async fn rename_recording(
     std::fs::rename(&old_path, &new_path)
         .map_err(|e| format!("Failed to rename recording: {e}"))?;
 
-    // Rename companion .meta.json
-    let old_meta = old_path.with_extension("meta.json");
-    if old_meta.exists() {
-        let new_meta = new_path.with_extension("meta.json");
-        std::fs::rename(&old_meta, &new_meta).ok();
-    }
-
-    // Rename companion .txt
-    let old_txt = old_path.with_extension("txt");
-    if old_txt.exists() {
-        let new_txt = new_path.with_extension("txt");
-        std::fs::rename(&old_txt, &new_txt).ok();
-    }
-
-    // Rename cached thumbnail
-    let thumb_dir = output_dir.join(".thumbnails");
-    let old_stem = old_path.file_stem().unwrap_or_default().to_string_lossy();
-    let new_stem = new_path.file_stem().unwrap_or_default().to_string_lossy();
-    let old_thumb = thumb_dir.join(format!("{old_stem}.jpg"));
-    if old_thumb.exists() {
-        let new_thumb = thumb_dir.join(format!("{new_stem}.jpg"));
-        std::fs::rename(&old_thumb, &new_thumb).ok();
-    }
+    move_companions(&old_path, &new_path, &output_dir);
 
     log::info!("[library] Renamed recording: {} -> {}", file_path, new_path.display());
 
@@ -343,8 +341,8 @@ pub async fn rename_recording(
         })
         .unwrap_or(0);
 
-    let thumb_path = thumb_dir.join(format!("{new_stem}.jpg"));
-    let thumbnail_path = if thumb_path.exists() {
+    let thumb_path = thumbnail_path(&new_path, &output_dir);
+    let thumbnail = if thumb_path.exists() {
         Some(thumb_path.to_string_lossy().to_string())
     } else {
         None
@@ -365,7 +363,7 @@ pub async fn rename_recording(
         size_bytes,
         created_at,
         duration_secs: None,
-        thumbnail_path,
+        thumbnail_path: thumbnail,
         meta,
     })
 }
@@ -582,22 +580,7 @@ mod tests {
         std::fs::rename(&old_path, &new_path)
             .map_err(|e| format!("Failed to rename: {e}"))?;
 
-        // Rename companions
-        let old_meta = old_path.with_extension("meta.json");
-        if old_meta.exists() {
-            std::fs::rename(&old_meta, new_path.with_extension("meta.json")).ok();
-        }
-        let old_txt = old_path.with_extension("txt");
-        if old_txt.exists() {
-            std::fs::rename(&old_txt, new_path.with_extension("txt")).ok();
-        }
-        let thumb_dir = output_dir.join(".thumbnails");
-        let old_stem = old_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        let old_thumb = thumb_dir.join(format!("{old_stem}.jpg"));
-        if old_thumb.exists() {
-            let new_stem = new_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            std::fs::rename(&old_thumb, thumb_dir.join(format!("{new_stem}.jpg"))).ok();
-        }
+        move_companions(&old_path, &new_path, output_dir);
 
         Ok(new_path.to_string_lossy().to_string())
     }
@@ -605,12 +588,14 @@ mod tests {
     #[test]
     fn rename_recording_renames_mp4_and_companions() {
         let tmp = std::env::temp_dir().join("vo-test-rename");
+        std::fs::remove_dir_all(&tmp).ok();
         std::fs::create_dir_all(&tmp).ok();
         std::fs::create_dir_all(tmp.join(".thumbnails")).ok();
 
         std::fs::write(tmp.join("voiceover-100.mp4"), b"video").ok();
         std::fs::write(tmp.join("voiceover-100.meta.json"), b"{}").ok();
         std::fs::write(tmp.join("voiceover-100.txt"), b"transcript").ok();
+        std::fs::write(tmp.join("voiceover-100.original.m4a"), b"voice").ok();
         std::fs::write(tmp.join(".thumbnails/voiceover-100.jpg"), b"thumb").ok();
 
         let result = rename_recording_sync(&tmp, tmp.join("voiceover-100.mp4").to_str().unwrap(), "my-demo");
@@ -626,8 +611,26 @@ mod tests {
         assert!(tmp.join("my-demo.mp4").exists());
         assert!(tmp.join("my-demo.meta.json").exists());
         assert!(tmp.join("my-demo.txt").exists());
+        assert!(tmp.join("my-demo.original.m4a").exists(), "original voice must follow a rename");
+        assert!(!tmp.join("voiceover-100.original.m4a").exists());
         assert!(tmp.join(".thumbnails/my-demo.jpg").exists());
 
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn remove_companions_deletes_original_voice_meta_transcript_and_thumbnail() {
+        let tmp = std::env::temp_dir().join("vo-test-remove-companions");
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(tmp.join(".thumbnails")).ok();
+        let mp4 = tmp.join("voiceover-200.mp4");
+        for name in ["voiceover-200.meta.json", "voiceover-200.txt", "voiceover-200.original.m4a", ".thumbnails/voiceover-200.jpg"] {
+            std::fs::write(tmp.join(name), b"x").ok();
+        }
+        remove_companions(&mp4, &tmp);
+        for name in ["voiceover-200.meta.json", "voiceover-200.txt", "voiceover-200.original.m4a", ".thumbnails/voiceover-200.jpg"] {
+            assert!(!tmp.join(name).exists(), "{name} should be deleted");
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -1,5 +1,7 @@
+mod audio_split;
 mod commands;
 mod config;
+mod conversion;
 mod elevenlabs;
 mod ffmpeg;
 mod google_drive;
@@ -39,6 +41,7 @@ pub fn run() {
             // Initialize config cache, sidecar state, and shared HTTP client
             app.manage(config::ConfigCache::new());
             app.manage(sidecar::SidecarState::default());
+            app.manage(conversion::ConversionRuns::default());
             app.manage(local_tts::HttpClient {
                 client: reqwest::Client::builder()
                     .pool_max_idle_per_host(5)
@@ -66,6 +69,8 @@ pub fn run() {
             window::create_widget_window,
             window::close_widget_window,
             pipeline::process_recording,
+            pipeline::reconvert_recording,
+            conversion::cancel_conversion,
             elevenlabs::test_api_key,
             local_tts::test_local_connection,
             local_tts::list_local_voices,

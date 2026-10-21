@@ -98,6 +98,75 @@ pub async fn replace_audio(
     Ok(())
 }
 
+/// Run ffmpeg with `args`, returning stderr in the error when it fails.
+async fn run_ffmpeg(args: &[String], context: &str) -> Result<(), String> {
+    let output = Command::new(resolve_ffmpeg_path())
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg {context} failed: {stderr}"));
+    }
+    Ok(())
+}
+
+/// Convert a path to &str for ffmpeg arguments.
+fn path_arg(path: &Path) -> Result<&str, String> {
+    path.to_str().ok_or_else(|| "Path contains non-UTF8 characters".to_string())
+}
+
+/// Build ffmpeg arguments that keep a recording's own voice as AAC, for converting it again later.
+pub(crate) fn keep_original_voice_args(input: &str, output: &str) -> Vec<String> {
+    ["-y", "-i", input, "-vn", "-c:a", "aac", "-b:a", "128k", output]
+        .iter().map(|s| s.to_string()).collect()
+}
+
+/// Save the audio track of `input` as `output` (.m4a).
+pub async fn keep_original_voice(input: &Path, output: &Path) -> Result<(), String> {
+    run_ffmpeg(&keep_original_voice_args(path_arg(input)?, path_arg(output)?), "keep original voice").await
+}
+
+/// Build ffmpeg arguments that swap an mp4's audio without re-encoding its video.
+pub(crate) fn swap_audio_args(video: &str, new_audio: &str, output: &str) -> Vec<String> {
+    ["-y", "-i", video, "-i", new_audio, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", output]
+        .iter().map(|s| s.to_string()).collect()
+}
+
+/// Replace the audio of an existing mp4, copying its video stream as is.
+pub async fn swap_audio(video: &Path, new_audio: &Path, output_mp4: &Path) -> Result<(), String> {
+    run_ffmpeg(&swap_audio_args(path_arg(video)?, path_arg(new_audio)?, path_arg(output_mp4)?), "swap audio").await
+}
+
+/// Build ffmpeg arguments that join audio pieces, padding or trimming each to its exact source length.
+pub(crate) fn concat_exact_args(pieces: &[(String, f64)], output: &str) -> Vec<String> {
+    let mut args = vec!["-y".to_string()];
+    for (path, _) in pieces {
+        args.push("-i".to_string());
+        args.push(path.clone());
+    }
+    let mut filter = String::new();
+    for (i, (_, secs)) in pieces.iter().enumerate() {
+        filter.push_str(&format!("[{i}:a]aresample=44100,apad,atrim=end={secs:.6}[a{i}];"));
+    }
+    for i in 0..pieces.len() {
+        filter.push_str(&format!("[a{i}]"));
+    }
+    filter.push_str(&format!("concat=n={}:v=0:a=1[out]", pieces.len()));
+    args.extend(["-filter_complex".to_string(), filter, "-map".to_string(), "[out]".to_string(), output.to_string()]);
+    args
+}
+
+/// Join converted pieces into one track whose length equals the sum of the source pieces.
+pub async fn concat_exact(pieces: &[(std::path::PathBuf, f64)], output: &Path) -> Result<(), String> {
+    let pieces = pieces
+        .iter()
+        .map(|(p, secs)| Ok((path_arg(p)?.to_string(), *secs)))
+        .collect::<Result<Vec<_>, String>>()?;
+    run_ffmpeg(&concat_exact_args(&pieces, path_arg(output)?), "concat").await
+}
+
 /// Probe the duration of a media file using ffprobe (falls back to ffmpeg -i).
 /// Returns duration in seconds, or an error if it can't be determined.
 pub async fn probe_duration(input: &Path) -> Result<f64, String> {
@@ -256,6 +325,28 @@ pub async fn extract_thumbnail(input: &Path, output: &Path) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swap_audio_args_copy_video_and_map_new_audio() {
+        let args = swap_audio_args("in.mp4", "voice.wav", "out.mp4");
+        let joined = args.join(" ");
+        assert!(joined.contains("-map 0:v -map 1:a -c:v copy -c:a aac"), "{joined}");
+    }
+
+    #[test]
+    fn concat_exact_args_trim_each_piece_to_its_source_length() {
+        let args = concat_exact_args(&[("a.mp3".into(), 280.25), ("b.mp3".into(), 130.08)], "out.wav");
+        let filter = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(filter.contains("[0:a]aresample=44100,apad,atrim=end=280.250000[a0]"), "{filter}");
+        assert!(filter.contains("[1:a]aresample=44100,apad,atrim=end=130.080000[a1]"), "{filter}");
+        assert!(filter.ends_with("[a0][a1]concat=n=2:v=0:a=1[out]"), "{filter}");
+    }
+
+    #[test]
+    fn keep_original_voice_args_drop_video_and_encode_aac() {
+        let args = keep_original_voice_args("rec.webm", "rec.original.m4a").join(" ");
+        assert!(args.contains("-vn -c:a aac"), "{args}");
+    }
 
     #[test]
     fn extract_audio_args_use_16khz_mono_pcm() {

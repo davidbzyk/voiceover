@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 
 from chunked_tts import (
+    ConversionCancelled,
     assemble_timed_segments,
     concatenate_audio_chunks,
+    convert_in_overlapping_chunks,
     pad_audio_to_match_timing,
     split_text_into_chunks,
 )
@@ -262,3 +264,48 @@ class TestPadAudioToMatchTiming:
         ]
         result = pad_audio_to_match_timing(audio, sr, timing)
         assert result.dtype == np.float32
+
+
+# ---------------------------------------------------------------------------
+# convert_in_overlapping_chunks
+# ---------------------------------------------------------------------------
+
+
+class TestConvertInOverlappingChunks:
+    """Voice conversion over long recordings must keep the recording's length and timing."""
+
+    def test_identity_conversion_preserves_length_of_long_recording(self):
+        # 410.3s matches the real 6m50s recording that drifted out of sync
+        source = np.random.default_rng(0).standard_normal(int(410.3 * SR)).astype(np.float32)
+        out = convert_in_overlapping_chunks(source, SR, lambda chunk: chunk)
+        assert abs(len(out) - len(source)) <= 1
+
+    def test_identity_conversion_keeps_late_audio_in_place(self):
+        source = np.zeros(int(120 * SR), dtype=np.float32)
+        marker = int(110 * SR)
+        source[marker : marker + 100] = 1.0
+        out = convert_in_overlapping_chunks(source, SR, lambda chunk: chunk)
+        assert int(np.argmax(out)) == marker
+
+    def test_short_recording_is_one_call(self):
+        calls = []
+        source = np.ones(int(5 * SR), dtype=np.float32)
+        out = convert_in_overlapping_chunks(source, SR, lambda c: calls.append(len(c)) or c)
+        assert calls == [len(source)]
+        assert len(out) == len(source)
+
+    def test_reports_progress_per_chunk(self):
+        seen = []
+        source = np.zeros(int(60 * SR), dtype=np.float32)
+        convert_in_overlapping_chunks(source, SR, lambda c: c, on_progress=lambda d, t: seen.append((d, t)))
+        total = seen[0][1]
+        assert seen == [(i, total) for i in range(total + 1)]
+
+    def test_cancel_stops_before_next_chunk(self):
+        calls = []
+        source = np.zeros(int(100 * SR), dtype=np.float32)
+        with pytest.raises(ConversionCancelled):
+            convert_in_overlapping_chunks(
+                source, SR, lambda c: calls.append(1) or c, should_cancel=lambda: len(calls) >= 2
+            )
+        assert len(calls) == 2
