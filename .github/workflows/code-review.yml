@@ -39,9 +39,10 @@ jobs:
       - uses: ./.code-review
         with:
           auth: ${{ vars.CODE_REVIEW_AUTH || 'subscription' }}
-          # Max, as in general-environments: its benchmark-chosen model at Codex's top effort.
+          # Max: general-environments' benchmark-chosen model at Codex's `max` effort
+          # (accepted by the pinned Codex 0.161.0, checked 2026-10-21).
           model: ${{ vars.CODE_REVIEW_MODEL || 'gpt-6-luna' }}
-          effort: ${{ vars.CODE_REVIEW_EFFORT || 'xhigh' }}
+          effort: ${{ vars.CODE_REVIEW_EFFORT || 'max' }}
           codex-auth-json-b64: ${{ secrets.CODEX_AUTH_JSON_B64 }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           github-token: ${{ github.token }}
