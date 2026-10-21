@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Run manifest",
+  "description": "Describes one stored run.",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Run id."
+    },
+    "case": {
+      "type": "string",
+      "description": "Case slug."
+    },
+    "arm": {
+      "type": "string",
+      "enum": [
+        "plain",
+        "vector",
+        "okf",
+        "control"
+      ],
+      "description": "Context arm."
+    },
+    "repeat": {
+      "type": "integer",
+      "description": "Repeat index."
+    },
+    "runner": {
+      "type": "string",
+      "description": "Runner entry."
+    },
+    "model": {
+      "type": "string",
+      "description": "Model."
+    },
+    "effort": {
+      "type": "string",
+      "description": "Effort."
+    },
+    "cli_version": {
+      "type": "string",
+      "description": "Agent CLI version."
+    },
+    "key_version": {
+      "type": "string",
+      "description": "Key version scored against."
+    },
+    "store_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Hash of the context store, null for arms without one."
+    },
+    "skills_hash": {
+      "type": "string",
+      "description": "Hash of the skills folder."
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "description": "Hash of the case snapshot."
+    },
+    "started_at": {
+      "type": "string",
+      "description": "UTC start time, ISO 8601."
+    },
+    "finished_at": {
+      "type": "string",
+      "description": "UTC finish time, ISO 8601."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ],
+      "description": "Run status."
+    },
+    "pipeline_digest": {
+      "type": "string",
+      "description": "Digest of every pipeline file at run time (review_core.pipeline_digest); absent on runs made before 2026-10-08."
+    }
+  },
+  "required": [
+    "run_id",
+    "case",
+    "arm",
+    "repeat",
+    "runner",
+    "model",
+    "effort",
+    "cli_version",
+    "key_version",
+    "store_hash",
+    "skills_hash",
+    "snapshot_hash",
+    "started_at",
+    "finished_at",
+    "status"
+  ],
+  "additionalProperties": false
+}

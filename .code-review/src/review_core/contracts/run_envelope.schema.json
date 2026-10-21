@@ -1,0 +1,308 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Review run envelope",
+  "description": "The final findings.json a review run writes.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "description": "Contract version."
+    },
+    "envelope": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ],
+          "description": "complete: every planned reviewer is ok or empty."
+        },
+        "reviewers_planned": {
+          "type": "array",
+          "description": "Reviewers the run set out to start.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "security",
+              "tests",
+              "correctness",
+              "architecture",
+              "code_quality",
+              "compliance",
+              "language"
+            ],
+            "description": "Reviewer name."
+          }
+        },
+        "reviewers": {
+          "type": "array",
+          "description": "One row per reviewer, including those that never ran.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "reviewer": {
+                "type": "string",
+                "enum": [
+                  "security",
+                  "tests",
+                  "correctness",
+                  "architecture",
+                  "code_quality",
+                  "compliance",
+                  "language"
+                ],
+                "description": "Reviewer name."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "empty",
+                  "timeout",
+                  "malformed",
+                  "rate_limited",
+                  "auth",
+                  "spawn_declined",
+                  "not_run"
+                ],
+                "description": "ok and empty are the only successes."
+              },
+              "retries": {
+                "type": "integer",
+                "description": "Retries used."
+              },
+              "findings_count": {
+                "type": "integer",
+                "description": "Findings the reviewer wrote."
+              }
+            },
+            "required": [
+              "reviewer",
+              "outcome",
+              "retries",
+              "findings_count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "runner": {
+          "type": "string",
+          "description": "Runner registry entry used."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model read from the rollout."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Reasoning effort read from the rollout."
+        },
+        "cli_version": {
+          "type": "string",
+          "description": "Agent CLI version read from the rollout."
+        },
+        "sandbox_mode": {
+          "type": "string",
+          "description": "Sandbox mode the agent ran under."
+        },
+        "dropped": {
+          "type": "object",
+          "properties": {
+            "quote_gate": {
+              "type": "integer",
+              "description": "Findings dropped: quote_gate."
+            },
+            "confidence_floor": {
+              "type": "integer",
+              "description": "Findings dropped: confidence_floor."
+            },
+            "duplicate": {
+              "type": "integer",
+              "description": "Findings dropped: duplicate."
+            },
+            "validator_declined": {
+              "type": "integer",
+              "description": "Findings dropped: validator_declined."
+            },
+            "out_of_snapshot": {
+              "type": "integer",
+              "description": "Findings dropped: out_of_snapshot."
+            },
+            "malformed": {
+              "type": "integer",
+              "description": "Findings dropped: malformed."
+            }
+          },
+          "required": [
+            "quote_gate",
+            "confidence_floor",
+            "duplicate",
+            "validator_declined",
+            "out_of_snapshot",
+            "malformed"
+          ],
+          "additionalProperties": false,
+          "description": "Count of dropped findings by reason."
+        }
+      },
+      "required": [
+        "status",
+        "reviewers_planned",
+        "reviewers",
+        "runner",
+        "model",
+        "effort",
+        "cli_version",
+        "sandbox_mode",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "description": "Merged findings, fingerprints set.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Repository-relative path of the file the finding is about."
+          },
+          "line_start": {
+            "type": "integer",
+            "description": "First line of the offending code, 1-based, in the file on the stated side."
+          },
+          "line_end": {
+            "type": "integer",
+            "description": "Last line of the offending code. Not before line_start."
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "new",
+              "old"
+            ],
+            "description": "new = the head file, old = the base file."
+          },
+          "quote": {
+            "type": "string",
+            "description": "Verbatim text of the offending lines, copied from the file."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short, specific issue title."
+          },
+          "description": {
+            "type": "string",
+            "description": "What breaks and why, not only what is wrong."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ],
+            "description": "P0 is most severe, P3 least."
+          },
+          "confidence": {
+            "type": "integer",
+            "enum": [
+              0,
+              25,
+              50,
+              75,
+              100
+            ],
+            "description": "Anchored confidence: 0, 25, 50, 75 or 100."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "security",
+              "tests",
+              "correctness",
+              "architecture",
+              "code_quality",
+              "compliance",
+              "language"
+            ],
+            "description": "Kind of issue."
+          },
+          "reviewer": {
+            "type": "string",
+            "enum": [
+              "security",
+              "tests",
+              "correctness",
+              "architecture",
+              "code_quality",
+              "compliance",
+              "language"
+            ],
+            "description": "Reviewer specialty that raised the finding."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "in_diff",
+              "pre_existing",
+              "out_of_slice"
+            ],
+            "description": "Where the problem lives relative to the reviewed change."
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "Stable hash of the finding, set by the aggregator."
+          },
+          "also_raised_by": {
+            "description": "Other reviewers whose findings were merged into this one.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "security",
+                "tests",
+                "correctness",
+                "architecture",
+                "code_quality",
+                "compliance",
+                "language"
+              ]
+            }
+          }
+        },
+        "required": [
+          "file",
+          "line_start",
+          "line_end",
+          "side",
+          "quote",
+          "title",
+          "description",
+          "severity",
+          "confidence",
+          "category",
+          "reviewer",
+          "scope",
+          "fingerprint",
+          "also_raised_by"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "envelope",
+    "findings"
+  ],
+  "additionalProperties": false
+}

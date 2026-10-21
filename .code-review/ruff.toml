@@ -1,0 +1,8 @@
+# The vendored review tool's own lint settings, so a host repository's ruff, which reads the
+# nearest config, checks this folder the way the tool's home repository does.
+line-length = 100
+target-version = "py312"
+extend-exclude = ["src/review_core/context/okf_tool", "*.md"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]

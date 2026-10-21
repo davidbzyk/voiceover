@@ -1,0 +1,154 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Reviewer findings",
+  "description": "One reviewer's output document. Strict: valid as a Codex --output-schema input.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [
+        1
+      ],
+      "description": "Contract version."
+    },
+    "reviewer": {
+      "type": "string",
+      "enum": [
+        "security",
+        "tests",
+        "correctness",
+        "architecture",
+        "code_quality",
+        "compliance",
+        "language"
+      ],
+      "description": "Reviewer that wrote this file."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Empty when the reviewer found nothing.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Repository-relative path of the file the finding is about."
+          },
+          "line_start": {
+            "type": "integer",
+            "description": "First line of the offending code, 1-based, in the file on the stated side."
+          },
+          "line_end": {
+            "type": "integer",
+            "description": "Last line of the offending code. Not before line_start."
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "new",
+              "old"
+            ],
+            "description": "new = the head file, old = the base file."
+          },
+          "quote": {
+            "type": "string",
+            "description": "Verbatim text of the offending lines, copied from the file."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short, specific issue title."
+          },
+          "description": {
+            "type": "string",
+            "description": "What breaks and why, not only what is wrong."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ],
+            "description": "P0 is most severe, P3 least."
+          },
+          "confidence": {
+            "type": "integer",
+            "enum": [
+              0,
+              25,
+              50,
+              75,
+              100
+            ],
+            "description": "Anchored confidence: 0, 25, 50, 75 or 100."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "security",
+              "tests",
+              "correctness",
+              "architecture",
+              "code_quality",
+              "compliance",
+              "language"
+            ],
+            "description": "Kind of issue."
+          },
+          "reviewer": {
+            "type": "string",
+            "enum": [
+              "security",
+              "tests",
+              "correctness",
+              "architecture",
+              "code_quality",
+              "compliance",
+              "language"
+            ],
+            "description": "Reviewer specialty that raised the finding."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "in_diff",
+              "pre_existing",
+              "out_of_slice"
+            ],
+            "description": "Where the problem lives relative to the reviewed change."
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reviewers emit null; the aggregator fills a stable hash."
+          }
+        },
+        "required": [
+          "file",
+          "line_start",
+          "line_end",
+          "side",
+          "quote",
+          "title",
+          "description",
+          "severity",
+          "confidence",
+          "category",
+          "reviewer",
+          "scope",
+          "fingerprint"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "reviewer",
+    "findings"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Golden comments of one pull request",
+  "description": "The findings of a pull request's first review, as the answer key an LLM judge compares a reviewer's findings with. The shape follows the golden-comment files of the Martian Code Review Bench (pr_title, comments[].comment, severity, category), with where each finding is and who raised it added.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pr",
+    "pr_title",
+    "commit",
+    "comments",
+    "not_accepted"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pr_title": {
+      "type": "string"
+    },
+    "commit": {
+      "type": "string",
+      "description": "The first reviewed commit: the state every reviewer is given."
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/golden"
+      },
+      "description": "Findings the owner's reply labels valid. A reviewer finding that states the same issue as one of these is a hit."
+    },
+    "not_accepted": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/golden"
+      },
+      "description": "Findings raised in the first review that the owner's reply does not label valid. Not part of the key."
+    }
+  },
+  "$defs": {
+    "golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "comment",
+        "title",
+        "severity",
+        "severity_from",
+        "category",
+        "file",
+        "line_start",
+        "line_end",
+        "bot",
+        "owner_reply"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^pr-[0-9]+-g[0-9]{2,}$"
+        },
+        "comment": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The issue as the bot stated it: its title, then its explanation, as plain text. This is what the judge reads."
+        },
+        "title": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "Critical",
+            "High",
+            "Medium",
+            "Low"
+          ]
+        },
+        "severity_from": {
+          "enum": [
+            "the bot's mark",
+            "the bot's default"
+          ]
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The bot's own label for the kind of issue; null when it gave none."
+        },
+        "file": {
+          "type": "string"
+        },
+        "line_start": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "line_end": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "bot": {
+          "type": "string"
+        },
+        "owner_reply": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

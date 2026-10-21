@@ -1,0 +1,11 @@
+# Files whose change makes every eval and trial stale: the tool, its skills, the eval generator,
+# grader and rows. Paths are relative to the repository root; "dir/**" takes the whole tree.
+include = [
+  "src/review_core/**",
+  "src/context_engine/**",
+  "src/plugin/**",
+  "evals/**",
+]
+exclude_names = ["__pycache__", ".DS_Store", ".pytest_cache", ".ruff_cache"]
+exclude_suffixes = [".pyc", ".pyo"]
+exclude_paths = []
