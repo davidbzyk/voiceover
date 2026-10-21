@@ -20,17 +20,17 @@
 	let editing = $state(false);
 	let editName = $state('');
 	let editInput = $state<HTMLInputElement | null>(null);
-	let converting = $state(false);
+	/** Read from the shared owner, so a card remounted mid-run still shows its run and Cancel. */
+	const converting = $derived(activeConversion.owner === recording.path);
 	let showConvert = $state(false);
 	let convertProgress = $state('');
 	let voiceChoice = $state<VoiceChoice | null>(null);
 	/** True while another card or the Preview is converting; the backend runs one at a time. */
-	const busyElsewhere = $derived(!!activeConversion.owner && activeConversion.owner !== recording.path);
+	const busyElsewhere = $derived(!!activeConversion.owner && !converting);
 
 	/** Convert this recording again, from its original voice, into the picked voice. */
 	async function handleConvertAgain() {
-		if (!voiceChoice || converting) return;
-		converting = true;
+		if (!voiceChoice || activeConversion.owner) return;
 		errorMessage = '';
 		try {
 			await runExclusive(recording.path, () =>
@@ -44,7 +44,6 @@
 			errorMessage = `Convert failed: ${err}`;
 			logger.error('library', 'Convert again failed', err);
 		} finally {
-			converting = false;
 			convertProgress = '';
 		}
 	}

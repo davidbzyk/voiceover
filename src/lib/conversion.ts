@@ -94,6 +94,11 @@ export async function cancelConversion(): Promise<void> {
 	await invoke('cancel_conversion');
 }
 
+/** Revoke `url` if it is a blob URL this page made; `shared` is one another owner still uses. */
+export function releaseObjectUrl(url: string, shared: string | null): void {
+	if (url.startsWith('blob:') && url !== shared) URL.revokeObjectURL(url);
+}
+
 /** Read a saved file into a playable object URL. */
 export async function fileObjectUrl(path: string, type: string): Promise<string> {
 	const { invoke } = await import('@tauri-apps/api/core');

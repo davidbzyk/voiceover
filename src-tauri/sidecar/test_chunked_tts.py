@@ -274,6 +274,16 @@ class TestPadAudioToMatchTiming:
 class TestConvertInOverlappingChunks:
     """Voice conversion over long recordings must keep the recording's length and timing."""
 
+    def test_short_recording_honours_cancel_before_converting(self):
+        calls = []
+        with pytest.raises(ConversionCancelled):
+            convert_in_overlapping_chunks(
+                np.zeros(10 * 16000, dtype=np.float32), 16000,
+                lambda chunk: calls.append(chunk) or chunk,
+                should_cancel=lambda: True,
+            )
+        assert calls == []
+
     def test_identity_conversion_preserves_length_of_long_recording(self):
         # 410.3s matches the real 6m50s recording that drifted out of sync
         source = np.random.default_rng(0).standard_normal(int(410.3 * SR)).astype(np.float32)

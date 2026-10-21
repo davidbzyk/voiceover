@@ -70,9 +70,11 @@ pub async fn process_recording(
         return Ok(final_path.to_string_lossy().to_string());
     }
 
+    // Begun before any work, so a Cancel at any step of this run counts.
+    let token = app.state::<ConversionRuns>().begin();
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
-    let (transformed, token) = convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, &on_event).await?;
+    let transformed = convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, token, &on_event).await?;
 
     progress(&on_event, "Assembling video", 90.0);
     log::info!("[pipeline] Splicing audio into video");
@@ -123,6 +125,8 @@ pub async fn reconvert_recording(
     let mp4 = PathBuf::from(&path);
     library::validate_in_output_dir(&mp4, &output_dir)?;
 
+    // Begun before any work: a Cancel during the ffmpeg steps below would otherwise be erased by a later begin.
+    let token = app.state::<ConversionRuns>().begin();
     let original = original_voice_path(&mp4);
     if !original.exists() {
         if read_meta(&mp4).get("voiceReplacement").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -133,12 +137,13 @@ pub async fn reconvert_recording(
         }
         // An unconverted recording's own audio is the original voice.
         ffmpeg::keep_original_voice(&mp4, &original).await?;
+        ensure_current(&app, token)?;
     }
 
     let choice = conversion::resolve_voice(&config, voice_choice)?;
     let temp_dir = crate::commands::recording::temp_recording_dir();
     let stamp = unix_timestamp();
-    let (transformed, token) = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, &on_event).await?;
+    let transformed = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, token, &on_event).await?;
 
     progress(&on_event, "Assembling video", 90.0);
     // Staged beside the mp4 so the final rename is atomic: the saved video is never half-written.
@@ -162,7 +167,7 @@ pub async fn reconvert_recording(
 
 /// Extract `audio_source`'s audio and convert it into `choice`'s voice, reporting progress 5-85%.
 ///
-/// `video` is the file whose length the result must match. Returns the converted audio's path and the run's token.
+/// `video` is the file whose length the result must match; `token` is the caller's run. Returns the converted audio's path.
 #[allow(clippy::too_many_arguments)]
 async fn convert_voice(
     app: &tauri::AppHandle,
@@ -172,10 +177,10 @@ async fn convert_voice(
     video: &Path,
     temp_dir: &Path,
     stamp: &str,
+    token: u64,
     on_event: &Channel<PipelineEvent>,
-) -> Result<(PathBuf, u64), String> {
+) -> Result<PathBuf, String> {
     let runs = app.state::<ConversionRuns>();
-    let token = runs.begin();
 
     progress(on_event, "Extracting audio", 5.0);
     // The video is the source of truth for timing: WebM audio can end before the video does.
@@ -188,6 +193,10 @@ async fn convert_voice(
     };
     let extracted = temp_dir.join(format!("extracted-{stamp}.wav"));
     ffmpeg::extract_audio(audio_source, &extracted).await?;
+    if let Err(e) = ensure_current(app, token) {
+        cleanup_temp(&extracted);
+        return Err(e);
+    }
 
     let stage = match choice.provider {
         crate::tts_provider::Provider::Local => "Converting voice (local)",
@@ -218,7 +227,7 @@ async fn convert_voice(
         return Err(e);
     }
     progress(on_event, stage, 85.0);
-    Ok((converted, token))
+    Ok(converted)
 }
 
 /// Fail with the cancelled error when `token`'s run was cancelled or superseded.

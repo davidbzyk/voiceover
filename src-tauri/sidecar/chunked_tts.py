@@ -175,6 +175,8 @@ def convert_in_overlapping_chunks(
     if total_samples <= chunk_samples:
         if on_progress:
             on_progress(0, 1)
+        if should_cancel and should_cancel():
+            raise ConversionCancelled()
         audio = np.asarray(convert_chunk(source), dtype=np.float32)
         if on_progress:
             on_progress(1, 1)

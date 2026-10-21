@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	buildVoiceOptions,
 	choiceKey,
 	defaultVoiceChoice,
 	parseChoiceKey,
+	releaseObjectUrl,
 	shouldLoadLocalVoices
 } from './conversion';
 import { activeConversion, runExclusive } from './activeConversion.svelte';
@@ -88,5 +89,33 @@ describe('runExclusive', () => {
 		await expect(runExclusive('card-b', async () => 'ran')).rejects.toThrow(/another conversion/i);
 		release();
 		await first;
+	});
+});
+
+describe('runExclusive for the same owner', () => {
+	it('refuses a second run while the same owner is still converting (a remounted card)', async () => {
+		let finish!: () => void;
+		const first = runExclusive('/r/a.mp4', () => new Promise<void>((r) => (finish = r)));
+		await expect(runExclusive('/r/a.mp4', async () => 'second')).rejects.toThrow(/another conversion/i);
+		finish();
+		await first;
+		expect(activeConversion.owner).toBeNull();
+	});
+});
+
+describe('releaseObjectUrl', () => {
+	it('revokes a page-owned blob URL', () => {
+		const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+		releaseObjectUrl('blob:page-video', 'blob:recording');
+		expect(revoke).toHaveBeenCalledWith('blob:page-video');
+		revoke.mockRestore();
+	});
+	it('leaves the shared recording blob and non-blob URLs alone', () => {
+		const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+		releaseObjectUrl('blob:recording', 'blob:recording');
+		releaseObjectUrl('/Users/me/rec.webm', 'blob:recording');
+		releaseObjectUrl('', null);
+		expect(revoke).not.toHaveBeenCalled();
+		revoke.mockRestore();
 	});
 });

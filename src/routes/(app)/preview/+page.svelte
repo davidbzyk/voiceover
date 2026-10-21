@@ -5,11 +5,12 @@
 	import { blobStore } from '$lib/blobStore';
 	import { refreshDriveToken, driveUploadWithToken, DriveUploadError } from '$lib/drive';
 
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import VoicePicker from '$lib/VoicePicker.svelte';
 	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 	import {
 		cancelConversion,
+		releaseObjectUrl,
 		fileObjectUrl,
 		runConversion,
 		type VoiceChoice
@@ -21,14 +22,18 @@
 	let voiceChoice = $state<VoiceChoice | null>(null);
 	/** Voice the saved file currently has; null for an unconverted recording. */
 	let savedVoice = $state<VoiceChoice | null>(null);
-	/** True while a Library card's conversion is running; the backend runs one at a time. */
-	const busyElsewhere = $derived(!!activeConversion.owner && activeConversion.owner !== 'preview');
+	/** Whether this run converts a voice; only those runs stop on Cancel. */
+	let cancellable = $state(false);
+	/** True while a conversion this page is not showing runs (a Library card's, or one started before a revisit). */
+	const busyElsewhere = $derived(!!activeConversion.owner && !isProcessing);
 
 	/** Swap the player to another video, releasing the old object URL. */
 	function showVideo(url: string) {
-		if (videoSrc.startsWith('blob:') && videoSrc !== appState.recordingPath) URL.revokeObjectURL(videoSrc);
+		releaseObjectUrl(videoSrc, appState.recordingPath);
 		videoSrc = url;
 	}
+
+	onDestroy(() => releaseObjectUrl(videoSrc, appState.recordingPath));
 
 	/** Load the saved mp4 into the player so the new voice can be heard. */
 	async function showSavedOutput() {
@@ -78,6 +83,7 @@
 			logger.pipelineError(msg);
 		}
 		isProcessing = false;
+		cancellable = false;
 	}
 
 	function onProgress(stage: string, percent: number) {
@@ -88,6 +94,7 @@
 
 	async function processViaTauri() {
 		const replace = appState.config.preferences.voice_replacement_enabled;
+		cancellable = replace;
 		const result = await runExclusive('preview', () =>
 			runConversion(
 				'process_recording',
@@ -106,6 +113,7 @@
 	/** Convert the saved recording again, from its original voice, into the picked voice. */
 	async function convertAgain() {
 		isProcessing = true;
+		cancellable = true;
 		processingError = '';
 		appState.processingProgress = 0;
 		appState.processingStage = 'Starting...';
@@ -121,6 +129,7 @@
 			logger.pipelineError(processingError);
 		}
 		isProcessing = false;
+		cancellable = false;
 	}
 
 	async function processViaBrowser() {
@@ -465,7 +474,7 @@
 			<div class="progress-bar">
 				<div class="progress-fill" style="width: {appState.processingProgress}%"></div>
 			</div>
-			{#if isTauri()}
+			{#if isTauri() && cancellable}
 				<button class="link-btn cancel" onclick={cancelConversion}>Cancel</button>
 			{/if}
 		</div>
