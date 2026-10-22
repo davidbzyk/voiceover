@@ -82,24 +82,28 @@ Output files:
 | Artifact | Location |
 |----------|----------|
 | .app bundle | `src-tauri/target/release/bundle/macos/VoiceOver.app` |
-| .dmg installer | `src-tauri/target/release/bundle/dmg/VoiceOver_0.1.0_aarch64.dmg` |
+| .dmg installer | `src-tauri/target/release/bundle/dmg/VoiceOver_<version>_aarch64.dmg` |
 
 The .dmg is what you distribute. Users drag VoiceOver.app into their Applications folder.
 
 ## Creating a GitHub Release
 
-1. Tag the version:
+The version comes from `src-tauri/tauri.conf.json` (bumped with `scripts/bump-version.sh`), so read it
+instead of typing it:
+
+1. Tag the version on `main`:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+   git tag "v$VERSION"
+   git push origin "v$VERSION"
    ```
 
-2. Create the release with the .dmg attached:
+2. Create the release with the notarized, stapled .dmg attached:
    ```bash
-   gh release create v0.1.0 \
-     src-tauri/target/release/bundle/dmg/VoiceOver_0.1.0_aarch64.dmg \
-     --title "VoiceOver v0.1.0" \
-     --notes "Initial release. macOS Apple Silicon only."
+   gh release create "v$VERSION" \
+     "src-tauri/target/release/bundle/dmg/VoiceOver_${VERSION}_aarch64.dmg" \
+     --title "VoiceOver v$VERSION" \
+     --notes-file <(sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d')
    ```
 
 ## Running Tests
