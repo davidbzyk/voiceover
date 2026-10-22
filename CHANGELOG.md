@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0] - 2026-10-22
+
+**29 app files | 2,449 additions | 943 deletions | 6 PRs | 16 commits** (excluding the vendored code reviewer and lockfiles)
+
+### 🌟 New Features
+
+- **Pick any voice per conversion** — choose an ElevenLabs voice or a local CosyVoice profile right on Preview, instead of one global setting (#23)
+- **Convert again** — every converted recording keeps its original voice as `<name>.original.m4a`, so you can redo it in another voice from Preview or a Library card (🎙️) (#23)
+- **Hear the result right away** — after saving, Preview plays the converted video (#23)
+- **Cancel** — stop a conversion at any step; the sidecar job stops too (#23)
+- **Live progress** — the bar moves chunk by chunk instead of sitting at 15% (#23)
+
+### 🐛 Bug Fixes
+
+- **Long recordings time out** — a 6m50s recording failed with "Local TTS timed out after 300s". Local replacement now uses speech-to-speech (CosyVoice) like ElevenLabs: about 40s instead of 10 minutes on the same recording, with no total time limit (#23)
+- **Voice drifting out of sync** on long files — chunk stitching repeated half a second at every seam (8.5s over 410s); output now matches the input length (#23)
+- **ElevenLabs recordings over 5 minutes** — split at pauses into ≤290s pieces and rejoined at exact lengths (#23)
+- **A retry queued behind a timed-out job** — abandoned jobs are now cancelled instead of holding the engine (#23)
+- **"Convert again" safety** — a crash or full disk can no longer leave a half-written video; deleting a recording mid-conversion can't bring it back (#23)
+- **12 dependency security advisories** cleared, including `rustls` and `rustls-webpki` (TLS for ElevenLabs and Drive), `h2`, `quick-xml` and `rkyv` (#25)
+- **CI back to green** — lockfile drift and new clippy lints fixed (#26, #28)
+
+### 🛠️ Other Improvements
+
+- **Code review CI** — every PR gets an automated review at max effort (#24, #27)
+- Declared minimum Rust is now 1.88, matching what the dependencies need (#28)
+- The TTS/VC toggle is gone: replacing a voice is always speech-to-speech; Qwen is still used to speak the test sentence when creating a voice (#23)
+
 ## [0.2.0] - 2026-04-08
 
 **57 files | 3,086 additions | 608 deletions | 3 PRs | 29 commits**
