@@ -57,7 +57,10 @@ echo "Built: $DIST_BINARY ($DIST_SIZE)"
 if [ "$SKIP_TESTS" = false ]; then
     echo ""
     echo "─── Running binary tests ───"
-    bash "$SIDECAR_DIR/test_binary.sh" "$DIST_BINARY"
+    # Test with the ffmpeg the app bundles, so a Mac without ffmpeg on PATH can still build.
+    BUNDLED_FFMPEG="$BINARIES_DIR/ffmpeg-aarch64-apple-darwin"
+    if [ -x "$BUNDLED_FFMPEG" ]; then FFMPEG_FOR_TESTS="$BUNDLED_FFMPEG"; else FFMPEG_FOR_TESTS="ffmpeg"; fi
+    bash "$SIDECAR_DIR/test_binary.sh" "$DIST_BINARY" "$FFMPEG_FOR_TESTS"
 fi
 
 # 4. Copy to Tauri binaries

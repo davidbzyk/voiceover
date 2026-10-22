@@ -32,7 +32,7 @@ echo "════════════════════════�
 echo ""
 
 # Create test audio
-ffmpeg -f lavfi -i "sine=frequency=440:duration=2" -ar 16000 -ac 1 /tmp/test-sine-$$.wav -y -loglevel warning
+"$FFMPEG" -f lavfi -i "sine=frequency=440:duration=2" -ar 16000 -ac 1 /tmp/test-sine-$$.wav -y -loglevel warning
 
 # Start sidecar
 echo "Starting sidecar on port $PORT..."

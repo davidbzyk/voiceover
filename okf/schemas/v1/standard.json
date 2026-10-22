@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/standard.json",
+  "title": "OKF Standard Entity Schema",
+  "description": "Schema for engineering standards, technical contracts, policies, and conventions",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Standard", "standard"]
+    },
+    "standard_scope": {
+      "type": "string",
+      "description": "Scope of the standard (e.g. repository-wide, domain-specific, runtime)"
+    },
+    "conformance_level": {
+      "type": "string",
+      "enum": ["mandatory", "recommended", "optional"],
+      "description": "Compliance requirement level"
+    },
+    "governance_body": {
+      "type": "string",
+      "description": "Owning team or governance committee"
+    },
+    "enforcement": {
+      "type": "string",
+      "enum": ["automated-ci", "manual-review", "runtime-gate", "static-check"],
+      "description": "Method of enforcing standard compliance"
+    }
+  }
+}

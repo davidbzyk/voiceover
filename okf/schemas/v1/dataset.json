@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/dataset.json",
+  "title": "OKF Dataset Entity Schema",
+  "description": "Schema for datasets, dataset surveys, catalogs, and storage manifests",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Dataset", "dataset", "DatasetSummary", "dataset_summary"]
+    },
+    "dataset_count": {
+      "type": "integer",
+      "description": "Number of datasets described in survey/catalog"
+    },
+    "total_size_bytes": {
+      "type": "integer",
+      "description": "Total size in bytes"
+    },
+    "tier_breakdown": {
+      "type": "object",
+      "description": "Count breakdown by tier"
+    },
+    "transport_protocols": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Supported transport protocols (e.g. git-lfs, hf-api, s3)"
+    },
+    "storage_root": {
+      "type": "string",
+      "description": "Base directory for dataset storage"
+    },
+    "manifest_path": {
+      "type": "string",
+      "description": "Path to canonical manifest file"
+    }
+  }
+}

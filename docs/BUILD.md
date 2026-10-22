@@ -82,24 +82,28 @@ Output files:
 | Artifact | Location |
 |----------|----------|
 | .app bundle | `src-tauri/target/release/bundle/macos/VoiceOver.app` |
-| .dmg installer | `src-tauri/target/release/bundle/dmg/VoiceOver_0.1.0_aarch64.dmg` |
+| .dmg installer | `src-tauri/target/release/bundle/dmg/VoiceOver_<version>_aarch64.dmg` |
 
 The .dmg is what you distribute. Users drag VoiceOver.app into their Applications folder.
 
 ## Creating a GitHub Release
 
-1. Tag the version:
+The version comes from `src-tauri/tauri.conf.json` (bumped with `scripts/bump-version.sh`), so read it
+instead of typing it:
+
+1. Tag the version on `main`:
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+   git tag "v$VERSION"
+   git push origin "v$VERSION"
    ```
 
-2. Create the release with the .dmg attached:
+2. Create the release with the notarized, stapled .dmg attached:
    ```bash
-   gh release create v0.1.0 \
-     src-tauri/target/release/bundle/dmg/VoiceOver_0.1.0_aarch64.dmg \
-     --title "VoiceOver v0.1.0" \
-     --notes "Initial release. macOS Apple Silicon only."
+   gh release create "v$VERSION" \
+     "src-tauri/target/release/bundle/dmg/VoiceOver_${VERSION}_aarch64.dmg" \
+     --title "VoiceOver v$VERSION" \
+     --notes-file <(sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d')
    ```
 
 ## Running Tests
@@ -118,13 +122,18 @@ The Python TTS sidecar can be run standalone for development and testing:
 python3 -m venv .sidecar-venv
 source .sidecar-venv/bin/activate
 pip install -r src-tauri/sidecar/requirements.txt
-python src-tauri/sidecar/server.py --port 8123 --data-dir /tmp/voiceover-tts
+python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --parent-pid $$
 ```
 
-To build the sidecar as a standalone binary (bundled into the app for distribution):
+`--parent-pid` is required: the sidecar exits when that process dies, so pass your shell's PID.
+
+To build the sidecar as a standalone binary (bundled into the app for distribution), install
+PyInstaller into the same venv and run the build script. It builds, runs `test_binary.sh` against the
+binary, and copies it to `src-tauri/binaries/voiceover-tts-aarch64-apple-darwin`, the path Tauri bundles:
 
 ```bash
-cd src-tauri/sidecar && pyinstaller voiceover-tts.spec
+pip install pyinstaller==6.19.0
+./scripts/build-sidecar.sh
 ```
 
 ## Notes
