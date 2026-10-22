@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/lineage.json",
+  "title": "OKF Lineage Entity Schema",
+  "description": "Schema for distilled summaries of high-volume runs, trial logs, evidence, and inventory",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Lineage", "lineage", "Evidence", "evidence", "EvidenceSummary", "evidence_summary"]
+    },
+    "kcc_action": {
+      "type": "string",
+      "enum": ["condense", "combine", "distill", "aggregate", "Condense", "Combine", "Distill", "Aggregate"],
+      "description": "KCC disposition action applied"
+    },
+    "source_file_count": {
+      "type": "integer",
+      "description": "Number of raw source files condensed into this summary entity"
+    },
+    "source_root": {
+      "type": "string",
+      "description": "Root path of raw source directory in docs/"
+    },
+    "trial_matrix": {
+      "type": "object",
+      "description": "Matrix mapping trial names or configurations to descriptions"
+    },
+    "key_findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Key empirical findings synthesized from raw data"
+    }
+  },
+  "required": [
+    "kcc_action"
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/tombstone.json",
+  "title": "OKF Tombstone Entity Schema",
+  "description": "Schema for deprecated, killed, or superseded documentation and data assets",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Tombstone", "tombstone"]
+    },
+    "kcc_action": {
+      "type": "string",
+      "enum": ["kill", "condense", "combine", "archive", "Kill", "Condense", "Combine", "Archive"],
+      "description": "KCC disposition action"
+    },
+    "killed_at": {
+      "type": "string",
+      "description": "Timestamp when the asset was deprecated/killed"
+    },
+    "killed_by": {
+      "type": "string",
+      "description": "Author or process that killed the asset"
+    },
+    "tombstone_reason": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Explicit rationale for killing or deprecating the document"
+    },
+    "prior_path": {
+      "type": "string",
+      "description": "Original file path before tombstoning"
+    },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "Target entity ID or path replacing this asset"
+    }
+  },
+  "required": [
+    "kcc_action",
+    "killed_at",
+    "killed_by",
+    "tombstone_reason",
+    "prior_path"
+  ]
+}

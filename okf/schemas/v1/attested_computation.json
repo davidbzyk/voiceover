@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/attested_computation.json",
+  "title": "OKF Attested Computation Entity Schema",
+  "description": "Schema for the one OKF type with an extra required key (spec section 10). Receipts and verdicts are runtime artifacts and are NOT stored in the bundle (spec sections 10.5, 2).",
+  "type": "object",
+  "allOf": [{ "$ref": "base.json" }],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Attested Computation", "attested_computation", "AttestedComputation"]
+    },
+    "runtime": {
+      "type": "string",
+      "minLength": 1,
+      "description": "REQUIRED for this type (spec section 10). E.g. bigquery, postgres, dbt, python, Looker."
+    },
+    "computation": {
+      "type": "string",
+      "description": "Optional path. Absent means the body '# Computation' fence is the computation (spec section 10)."
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "required": { "type": "boolean" },
+          "default": {}
+        },
+        "required": ["name", "type"]
+      },
+      "description": "An agent MAY only supply values for these; it MUST NOT author or edit the computation (spec section 10.3)."
+    },
+    "executor": {
+      "type": "object",
+      "properties": {
+        "resource": { "type": "string" },
+        "receipt": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Declares the fields a run must return (spec section 10)."
+        }
+      },
+      "required": ["resource"]
+    },
+    "attester": {
+      "type": "object",
+      "properties": {
+        "resource": { "type": "string" }
+      },
+      "required": ["resource"],
+      "description": "A deterministic check: code (no LLM) taking a receipt and returning a verdict (spec section 10)."
+    }
+  },
+  "required": ["runtime"]
+}

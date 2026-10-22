@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/architecture.json",
+  "title": "OKF Architecture Entity Schema",
+  "description": "Schema for system architecture, structural blueprints, and execution pipeline concepts",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Architecture", "architecture"]
+    },
+    "architecture_layer": {
+      "type": "string",
+      "description": "Layer of system architecture (e.g. data-plane, runtime-execution, orchestration, storage, interface)"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "type": "string" },
+          "role": { "type": "string" }
+        },
+        "required": ["name"]
+      },
+      "description": "Subsystem components"
+    },
+    "interfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "specification": { "type": "string" }
+        },
+        "required": ["name"]
+      },
+      "description": "Exposed interfaces or contracts"
+    },
+    "decisions_ref": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Pointers to relevant architectural decision records"
+    }
+  }
+}

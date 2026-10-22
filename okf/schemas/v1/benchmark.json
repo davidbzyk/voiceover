@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/benchmark.json",
+  "title": "OKF Benchmark Entity Schema",
+  "description": "Schema for benchmark specs, defect tracking ledgers, rubric audits, and judge evaluations",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Benchmark", "benchmark"]
+    },
+    "benchmark_family": {
+      "type": "string",
+      "description": "Family or suite of benchmarks"
+    },
+    "upstream_repositories": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Upstream source repositories"
+    },
+    "defect_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Known classes of defects and edge cases"
+    },
+    "active_mitigations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Mitigations or patch references"
+    }
+  },
+  "required": ["benchmark_family", "upstream_repositories"]
+}

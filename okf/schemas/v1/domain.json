@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://okf.dev/schemas/v1/domain.json",
+  "title": "OKF Domain Entity Schema",
+  "description": "Schema for domain catalogs, bounded contexts, and domain overviews",
+  "type": "object",
+  "allOf": [
+    { "$ref": "base.json" }
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["Domain", "domain"]
+    },
+    "domain_code": {
+      "type": "string",
+      "description": "Short mnemonic domain code (e.g. EVAL, INFRA, GOV, POST, SUPER)"
+    },
+    "lead_owner": {
+      "type": "string",
+      "description": "Primary domain owner or team"
+    },
+    "bounded_context": {
+      "type": "string",
+      "description": "Bounded context identifier"
+    },
+    "subdomains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Subdomains encompassed by this domain"
+    }
+  }
+}
