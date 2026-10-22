@@ -43,7 +43,7 @@ relations:
 # Voice engines in VoiceOver
 
 ## Context
-The app ships with no models installed; the user installs an engine and picks it per conversion.
+The app ships with no models installed; the user downloads each model from the Models page. Today the job fixes the model (Qwen for Create Voice, CosyVoice or ElevenLabs for replacement, the Whisper model is selectable). Picking the replacement model per conversion is planned in the restore-Qwen plan.
 
 | Engine | Job | Runtime | Notes |
 | --- | --- | --- | --- |

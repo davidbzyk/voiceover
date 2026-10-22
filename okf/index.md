@@ -9,7 +9,7 @@ okf_version: "0.2"
 * [Architecture](./architecture/index.md) - the architecture catalog
 * [Domains](./domains/index.md) - the domains catalog
 * [Lineage](./lineage/index.md) - the lineage catalog
-* [Plans](./plans/index.md) - the plans catalog
+* [Proposals](./proposals/index.md) - plans written before the work they describe
 * [Schemas](./schemas/index.md) - the schemas catalog
 * [Standards](./standards/index.md) - the standards catalog
 * [Tombstones](./tombstones/index.md) - the tombstones catalog

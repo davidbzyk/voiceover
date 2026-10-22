@@ -17,7 +17,7 @@ sources:
     resource: docs/BUILD.md
     title: Build
     type: local_doc
-    sha256: da1c943a624c0488603ddc3fb6bf9ffaca18a23dbdcd73099c8a7723b283e173
+    sha256: 6c85e5e391ddf07c734eec8e9ab2bf612f7e41a822c1b63bff23d955c3f0e7cd
 generated:
   by: process:okf_migrate
   at: "2026-10-22T18:35:58Z"
@@ -153,13 +153,18 @@ The Python TTS sidecar can be run standalone for development and testing:
 python3 -m venv .sidecar-venv
 source .sidecar-venv/bin/activate
 pip install -r src-tauri/sidecar/requirements.txt
-python src-tauri/sidecar/server.py --port 8123 --data-dir /tmp/voiceover-tts
+python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --parent-pid $$
 ```
 
-To build the sidecar as a standalone binary (bundled into the app for distribution):
+`--parent-pid` is required: the sidecar exits when that process dies, so pass your shell's PID.
+
+To build the sidecar as a standalone binary (bundled into the app for distribution), install
+PyInstaller into the same venv and run the build script. It builds, runs `test_binary.sh` against the
+binary, and copies it to `src-tauri/binaries/voiceover-tts-aarch64-apple-darwin`, the path Tauri bundles:
 
 ```bash
-cd src-tauri/sidecar && pyinstaller voiceover-tts.spec
+pip install pyinstaller==6.19.0
+./scripts/build-sidecar.sh
 ```
 
 ## Notes

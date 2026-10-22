@@ -45,7 +45,7 @@ relations:
 2. Adding it changes no pinned version another engine relies on. A conflict is a no, not a venv.
 3. Where the runtime already supports the model (mlx-audio's model list), the engine is a registry
    row, not new loader code.
-4. The app ships with no models installed. The user installs one and picks it; nothing is preselected.
+4. The app ships with no models installed; the user downloads models from the Models page. When per-conversion model choice lands, nothing is preselected.
 
 ## Why
 The April seven-backend sidecar died on exactly these conflicts; see the

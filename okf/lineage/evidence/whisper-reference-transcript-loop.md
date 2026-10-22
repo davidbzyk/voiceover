@@ -11,7 +11,7 @@ tags:
   - whisper
 freshness: "2026-10-22T18:36:00Z"
 version: 1.0.0
-status: stable
+status: draft
 kcc_action: condense
 source_file_count: 1
 source_root: src-tauri/sidecar/
@@ -22,7 +22,7 @@ trial_matrix:
 key_findings:
   - With compression_ratio_threshold off, Whisper large-v3-turbo emitted one word ~223 times for a 30 s clip.
   - Whisper's temperature fallback returns its last attempt even when every temperature still loops, so the threshold alone did not fix it.
-  - Dropping segments whose compression ratio stays above 2.4, with mx.random.seed(0) for repeatable retries, fixed it (commit 760883a).
+  - Dropping segments whose compression ratio stays above 2.4, with mx.random.seed(0) for repeatable retries, fixed it on the real clip (commit 760883a on branch fix/release-prep, not yet on main).
   - The looping transcript fed Qwen as reference text and made Create Voice time out.
 sources:
   - id: fix-commit
@@ -45,6 +45,7 @@ relations:
 # Whisper loops on Create Voice clips; looping segments are dropped
 
 ## Synthesis
-`tts.transcribe` keeps Whisper's 2.4 compression-ratio guard, seeds MLX's sampler so retries are
+Status: the fix is commit `760883a` on branch `fix/release-prep` and is not on `main` yet; this note
+moves to stable when that commit merges. With the fix, `tts.transcribe` keeps Whisper's 2.4 compression-ratio guard, seeds MLX's sampler so retries are
 repeatable, and drops any segment still above the threshold after all retries, logging its time
-range. Tests: `TestTranscribeLoopGuard` in `src-tauri/sidecar/test_tts.py`.
+range. Tests (same commit): `TestTranscribeLoopGuard` in `src-tauri/sidecar/test_tts.py`.

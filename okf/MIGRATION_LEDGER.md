@@ -37,4 +37,4 @@ relations:
 | Source Path | Action | Target | Entity ID | Notes |
 |:---|:---|:---|:---|:---|
 | `BUILD.md` | keep-verbatim | `BUILD.md` | `BUILD` | keep-verbatim from `docs` |
-| `plans/2026-03-31-001-feat-timestamp-synced-tts-plan.md` | keep-verbatim | `plans/2026-03-31-001-feat-timestamp-synced-tts-plan.md` | `plans/2026-03-31-001-feat-timestamp-synced-tts-plan` | keep-verbatim from `docs` |
+| `plans/2026-03-31-001-feat-timestamp-synced-tts-plan.md` | keep-verbatim | `proposals/2026-03-31-001-feat-timestamp-synced-tts-plan.md` | `proposals/2026-03-31-001-feat-timestamp-synced-tts-plan` | keep-verbatim from `docs` |

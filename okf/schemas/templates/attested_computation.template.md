@@ -20,10 +20,10 @@ parameters:
     default: okf
 executor:
   resource: scripts/verify_okf.py
-receipt:
-  - exit_code
-  - total_files_scanned
-  - total_errors
+  receipt:
+    - exit_code
+    - total_files_scanned
+    - total_errors
 attester:
   resource: scripts/verify_okf.py
 sources:
