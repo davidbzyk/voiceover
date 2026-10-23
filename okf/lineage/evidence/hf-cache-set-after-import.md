@@ -9,7 +9,7 @@ tags:
   - lineage
   - evidence
   - huggingface
-freshness: "2026-10-23T23:30:00Z"
+freshness: "2026-10-23T23:36:54Z"
 version: 1.0.0
 status: stable
 kcc_action: condense
@@ -50,6 +50,11 @@ Setting an environment variable inside `main()` looked right and did nothing: by
 read it. The fix moves the assignment above every import that can load the hub, and a test runs the
 import in a clean interpreter to hold it there.
 
-## Open
-Repos an engine fetches on its own (MOSS's tokenizer) now land in the models folder but are not
-registry rows, so the Models page neither shows nor deletes them.
+## Repos an engine fetches by itself
+With the cache fixed, those downloads land in the models folder too, which exposed them: three engines
+fetch a second repo the Models page did not know about. Generating each engine once with
+`HF_HUB_OFFLINE=1` and only its row's repo present named them (2026-10-23): MOSS-TTS Local fetches
+`OpenMOSS-Team/MOSS-Audio-Tokenizer-v2` (8.5 GB, in `generate`), Chatterbox `mlx-community/S3TokenizerV2`
+(0.5 GB, at load) and CosyVoice3 `mlx-community/S3TokenizerV3` (1.0 GB, with its tokenizers). Each row
+now lists them as `extra_repos`, which the Models page downloads, counts as part of "downloaded" and
+deletes with the row.

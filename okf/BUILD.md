@@ -9,7 +9,7 @@ tags:
   - build
   - meta
   - migrated
-freshness: "2026-10-23T23:30:00Z"
+freshness: "2026-10-23T23:36:54Z"
 version: 1.0.0
 status: stable
 sources:
@@ -17,7 +17,7 @@ sources:
     resource: docs/BUILD.md
     title: Build
     type: local_doc
-    sha256: e3ca64e730094e55b6805f02f101e734878653358dfcedde6d76d5dda94370e2
+    sha256: e9693fb845bf8bae915e687f9be22284d95a714ea3d95e85a233b40f232dfcaf
 generated:
   by: process:okf_migrate
   at: "2026-10-22T18:35:58Z"
@@ -157,6 +157,7 @@ The Python TTS sidecar can be run standalone for development and testing:
 python3 -m venv .sidecar-venv
 source .sidecar-venv/bin/activate
 pip install -r src-tauri/sidecar/requirements.txt
+pip install pytest==8.3.3 httpx==0.28.1   # the sidecar tests; the pre-commit hook runs them from this venv
 python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --parent-pid $$
 ```
 

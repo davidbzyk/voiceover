@@ -95,7 +95,11 @@ logger = logging.getLogger("voiceover-tts")
 
 # TTS rows: ``ref_text`` says whether the engine gets the sample's transcript. Qwen clones from
 # the speaker embedding alone (x-vector mode), which stops the transcript leaking into the output.
-# ``license`` is the model card's licence id, shown before download.
+# ``license`` is the model card's licence id, shown before download. ``module`` is the code that
+# loads the repo; ``--check-imports`` imports each one so a frozen build missing a module fails at
+# build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
+# time; they are downloaded, counted and deleted with the row. Find them by generating once with
+# HF_HUB_OFFLINE=1 and only the row's repos in the models folder (okf/standards/engine-admission.md).
 MODEL_REGISTRY = {
     # Whisper variants (transcription)
     "whisper-medium": {
@@ -133,6 +137,7 @@ MODEL_REGISTRY = {
     },
     "moss-tts-local-v1.5": {
         "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
+        "extra_repos": ["OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"],  # 8.5 GB, fetched in generate
         "module": "mlx_audio.tts.models.moss_tts_local",
         "display_name": "MOSS-TTS Local v1.5",
         "category": "tts",
@@ -160,6 +165,7 @@ MODEL_REGISTRY = {
     },
     "chatterbox": {
         "repo_id": "mlx-community/Chatterbox-TTS-fp16",
+        "extra_repos": ["mlx-community/S3TokenizerV2"],  # 0.5 GB, fetched in post_load_hook
         "module": "mlx_audio.tts.models.chatterbox",
         "display_name": "Chatterbox",
         "category": "tts",
@@ -170,6 +176,7 @@ MODEL_REGISTRY = {
     # Voice conversion
     "cosyvoice3-0.5B": {
         "repo_id": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "extra_repos": ["mlx-community/S3TokenizerV3"],  # 1.0 GB, fetched with the tokenizers
         "module": "cosyvoice_mlx.tts.models.cosyvoice3",
         "display_name": "CosyVoice3 0.5B",
         "category": "voice-conversion",
@@ -806,6 +813,16 @@ def _is_model_downloaded(models_dir: Path, repo_id: str) -> bool:
     return result
 
 
+def _row_repos(entry: dict) -> list[str]:
+    """Every Hub repo a registry row needs on disk: its own repo, then the ones its engine fetches."""
+    return [entry["repo_id"], *entry.get("extra_repos", [])]
+
+
+def _row_downloaded(models_dir: Path, entry: dict) -> bool:
+    """True only when every repo the row needs is in the models folder."""
+    return all(_is_model_downloaded(models_dir, repo) for repo in _row_repos(entry))
+
+
 @app.get("/health")
 async def health():
     """Health check with model availability."""
@@ -815,7 +832,7 @@ async def health():
 
     def _any_downloaded(category: str) -> bool:
         return any(
-            _is_model_downloaded(models_dir, entry["repo_id"])
+            _row_downloaded(models_dir, entry)
             for entry in MODEL_REGISTRY.values()
             if entry["category"] == category
         )
@@ -1241,8 +1258,7 @@ async def models_status():
             pass
 
     for model_name, entry in MODEL_REGISTRY.items():
-        repo_id = entry["repo_id"]
-        downloaded = repo_id in downloaded_repos
+        downloaded = all(repo in downloaded_repos for repo in _row_repos(entry))
 
         # Determine loaded status per category
         category = entry["category"]
@@ -1284,7 +1300,7 @@ async def download_model(request: dict):
             content={"error": f"Unknown model: {model}"},
         )
 
-    repo_id = MODEL_REGISTRY[model]["repo_id"]
+    repos = _row_repos(MODEL_REGISTRY[model])
     models_dir = str(DATA_DIR / "models")
 
     async def _stream():
@@ -1295,16 +1311,15 @@ async def download_model(request: dict):
         yield f"data: {json.dumps({'progress': 0.0, 'status': f'Starting download of {model}...'})}\n\n"
 
         try:
-            # snapshot_download is blocking — run in thread
-            def _download():
-                return snapshot_download(
-                    repo_id,
-                    cache_dir=models_dir,
-                )
-
-            path = await asyncio.to_thread(_download)
-            # Invalidate the model cache so /models/status returns fresh results
-            _model_cache.pop(repo_id, None)
+            path = None
+            for i, repo_id in enumerate(repos):
+                if i:
+                    yield f"data: {json.dumps({'progress': i / len(repos), 'status': f'Downloading {repo_id}...'})}\n\n"
+                # snapshot_download is blocking — run in thread
+                downloaded = await asyncio.to_thread(snapshot_download, repo_id, cache_dir=models_dir)
+                path = path or downloaded
+                # Invalidate the model cache so /models/status returns fresh results
+                _model_cache.pop(repo_id, None)
             yield f"data: {json.dumps({'progress': 1.0, 'status': 'Download complete', 'path': str(path)})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'progress': -1, 'status': f'Download failed: {e}', 'error': str(e)})}\n\n"
@@ -1335,24 +1350,22 @@ async def delete_model(model_name: str):
 
         cache_info = scan_cache_dir(str(models_dir))
 
-        # Find the repo matching the exact repo_id
-        target_repo = None
-        for repo in cache_info.repos:
-            if repo.repo_id == repo_id:
-                target_repo = repo
-                break
+        # The row's own repo and the ones its engine fetched, except any another row also needs.
+        shared = {r for name, other in MODEL_REGISTRY.items() if name != canonical for r in _row_repos(other)}
+        wanted = [r for r in _row_repos(entry) if r == repo_id or r not in shared]
+        target_repos = [repo for repo in cache_info.repos if repo.repo_id in wanted]
 
-        if target_repo is None:
+        if not target_repos:
             return error_response(404, "Model not downloaded")
 
         # Collect all revision hashes and delete them
-        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        revision_hashes = [rev.commit_hash for repo in target_repos for rev in repo.revisions]
         delete_strategy = cache_info.delete_revisions(*revision_hashes)
         freed_size = delete_strategy.expected_freed_size
         delete_strategy.execute()
 
         logger.info(
-            f"Deleted model {canonical} (repo_id={repo_id}), "
+            f"Deleted model {canonical} ({', '.join(r.repo_id for r in target_repos)}), "
             f"freed {freed_size / (1024 * 1024):.1f} MB"
         )
     except Exception as e:
@@ -1388,9 +1401,9 @@ async def delete_model(model_name: str):
     except Exception as e:
         logger.warning(f"In-memory cleanup failed for {canonical}: {e}")
 
-    # Invalidate the model cache entry so _is_model_downloaded() doesn't return stale results
-    if repo_id in _model_cache:
-        del _model_cache[repo_id]
+    # Invalidate the model cache entries so _is_model_downloaded() doesn't return stale results
+    for repo in _row_repos(entry):
+        _model_cache.pop(repo, None)
 
     return {"deleted": model_name, "freed_bytes": freed_size}
 

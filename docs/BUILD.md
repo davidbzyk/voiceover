@@ -122,6 +122,7 @@ The Python TTS sidecar can be run standalone for development and testing:
 python3 -m venv .sidecar-venv
 source .sidecar-venv/bin/activate
 pip install -r src-tauri/sidecar/requirements.txt
+pip install pytest==8.3.3 httpx==0.28.1   # the sidecar tests; the pre-commit hook runs them from this venv
 python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --parent-pid $$
 ```
 

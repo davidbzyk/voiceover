@@ -9,7 +9,7 @@ tags:
   - standard
   - sidecar
   - dependencies
-freshness: "2026-10-23T22:50:00Z"
+freshness: "2026-10-23T23:36:54Z"
 version: 0.1.0
 status: draft
 standard_scope: src-tauri/sidecar
@@ -46,9 +46,13 @@ relations:
 2. Adding it changes no pinned version another engine relies on. A conflict is a no, not a venv.
 3. Where the runtime already supports the model (mlx-audio's model list), the engine is a registry
    row, not new loader code. A text-to-speech row names its repo, licence, and whether the
-   engine gets the sample's transcript (`ref_text`).
+   engine gets the sample's transcript (`ref_text`). Every row names the other repos its engine
+   fetches by itself (`extra_repos`), found by generating once with `HF_HUB_OFFLINE=1` and only the
+   row's repos in the models folder; an engine that fails that run is missing one.
 4. The app ships with no models installed; the user downloads models from the Models page. When per-conversion model choice lands, nothing is preselected.
-5. Every package the sidecar imports is pinned in `requirements.txt`; a build venv holds nothing else.
+5. Every package the sidecar imports is pinned in `requirements.txt`. The build venv adds only tools the
+   binary never imports, each at the version the build docs pin: PyInstaller to build, pytest and httpx
+   to run the sidecar tests.
 
 ## Why
 The April seven-backend sidecar died on exactly these conflicts; see the

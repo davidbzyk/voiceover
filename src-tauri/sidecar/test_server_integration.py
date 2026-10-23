@@ -586,3 +586,102 @@ class TestGenerationProgressAndCancel:
 
     def test_cancel_unknown_generation_is_404(self, client):
         assert client.post("/generate/does-not-exist/cancel").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Repos an engine fetches by itself (``extra_repos``)
+# ---------------------------------------------------------------------------
+
+
+def _cache_repo(models_dir: Path, repo_id: str) -> Path:
+    """Write ``repo_id`` the way huggingface_hub lays out a downloaded snapshot (blobs, snapshot, ref)."""
+    import hashlib
+
+    root = models_dir / f"models--{repo_id.replace('/', '--')}"
+    commit = hashlib.sha1(repo_id.encode()).hexdigest()  # commit hashes are per repo, never shared
+    blob = hashlib.sha256(repo_id.encode()).hexdigest()
+    (root / "blobs").mkdir(parents=True)
+    (root / "blobs" / blob).write_bytes(b"weights")
+    (root / "snapshots" / commit).mkdir(parents=True)
+    (root / "snapshots" / commit / "model.safetensors").symlink_to(f"../../blobs/{blob}")
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text(commit)
+    return root
+
+
+class TestEngineExtraRepos:
+    """An engine that fetches a second repo (MOSS's 8.5 GB tokenizer) must not look downloaded without it."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "_model_cache", {})
+
+    def _status(self, client, name):
+        return next(m for m in client.get("/models/status").json()["models"] if m["model_name"] == name)
+
+    def test_rows_name_the_repos_their_engines_fetch(self):
+        """Found by generating each engine with HF_HUB_OFFLINE=1 and only the row's own repo present."""
+        assert MODEL_REGISTRY["moss-tts-local-v1.5"]["extra_repos"] == ["OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"]
+        assert MODEL_REGISTRY["chatterbox"]["extra_repos"] == ["mlx-community/S3TokenizerV2"]
+        assert MODEL_REGISTRY["cosyvoice3-0.5B"]["extra_repos"] == ["mlx-community/S3TokenizerV3"]
+
+    def test_status_is_not_downloaded_until_the_extra_repo_is(self, client, temp_data_dir):
+        models = Path(temp_data_dir) / "models"
+        _cache_repo(models, MODEL_REGISTRY["moss-tts-local-v1.5"]["repo_id"])
+        assert self._status(client, "moss-tts-local-v1.5")["downloaded"] is False
+        _cache_repo(models, "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2")
+        assert self._status(client, "moss-tts-local-v1.5")["downloaded"] is True
+
+    def test_health_needs_the_voice_conversion_tokenizer(self, client, temp_data_dir):
+        _cache_repo(Path(temp_data_dir) / "models", MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"])
+        assert client.get("/health").json()["models"]["cosyvoice"] is False
+
+    def test_download_fetches_the_extra_repo_too(self, client, monkeypatch):
+        import huggingface_hub
+
+        fetched = []
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, cache_dir: fetched.append(repo) or cache_dir)
+        body = client.post("/models/download", json={"model_name": "chatterbox"}).text
+        assert fetched == ["mlx-community/Chatterbox-TTS-fp16", "mlx-community/S3TokenizerV2"]
+        assert "Download complete" in body
+
+    def test_delete_removes_the_extra_repo(self, client, temp_data_dir):
+        models = Path(temp_data_dir) / "models"
+        main = _cache_repo(models, MODEL_REGISTRY["chatterbox"]["repo_id"])
+        extra = _cache_repo(models, "mlx-community/S3TokenizerV2")
+        assert client.delete("/models/chatterbox").status_code == 200
+        assert not main.exists() and not extra.exists()
+
+    def test_delete_keeps_an_extra_repo_another_row_needs(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        registry = {name: dict(entry) for name, entry in MODEL_REGISTRY.items()}
+        registry["voxcpm2"]["extra_repos"] = ["mlx-community/S3TokenizerV2"]
+        monkeypatch.setattr(server, "MODEL_REGISTRY", registry)
+        models = Path(temp_data_dir) / "models"
+        _cache_repo(models, registry["chatterbox"]["repo_id"])
+        shared = _cache_repo(models, "mlx-community/S3TokenizerV2")
+        assert client.delete("/models/chatterbox").status_code == 200
+        assert shared.exists()
+
+    def test_delete_of_a_partial_download_removes_what_is_there(self, client, temp_data_dir):
+        extra = _cache_repo(Path(temp_data_dir) / "models", "mlx-community/S3TokenizerV3")
+        assert client.delete("/models/cosyvoice3-0.5B").status_code == 200
+        assert not extra.exists()
+
+
+def test_cosyvoice_loader_loads_network_and_tokenizers_before_returning(tmp_path, monkeypatch):
+    """The vendored Model loads lazily on the first generate; the server's load step must do that work."""
+    from cosyvoice_mlx import loader
+    from cosyvoice_mlx.tts.models import cosyvoice3
+
+    loaded = []
+    monkeypatch.setattr(loader, "get_model_path", lambda repo: tmp_path)
+    monkeypatch.setattr(loader, "load_config", lambda path: {"model_type": "cosyvoice3"})
+    monkeypatch.setattr(cosyvoice3.Model, "_ensure_model_loaded", lambda self: loaded.append("network"))
+    monkeypatch.setattr(cosyvoice3.Model, "_ensure_tokenizers_loaded", lambda self: loaded.append("tokenizers"))
+    model = loader.load_cosyvoice3("mlx-community/Fun-CosyVoice3-0.5B-2512-8bit")
+    assert loaded == ["network", "tokenizers"]
+    assert model.config.model_path == str(tmp_path)

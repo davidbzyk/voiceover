@@ -1,27 +1,23 @@
-"""Load CosyVoice3 weights with mlx-audio's own loading steps (this file is ours, not vendored)."""
+"""Load CosyVoice3 for voice conversion (this file is ours, not vendored)."""
 
 from __future__ import annotations
 
-import mlx.core as mx
-from mlx_audio.utils import apply_quantization, get_model_path, load_config, load_weights
+from mlx_audio.utils import get_model_path, load_config
 
 from .tts.models import cosyvoice3
 
 
 def load_cosyvoice3(repo_id: str):
-    """Fetch ``repo_id`` through the HF cache and return the CosyVoice3 model.
+    """Fetch ``repo_id`` through the HF cache and return CosyVoice3 with its network and tokenizers loaded.
 
-    Mirrors ``mlx_audio.utils.base_load_model``, which only imports models from mlx-audio itself.
+    The vendored ``Model`` is a lazy wrapper: ``load_weights`` does nothing, and the network and the
+    S3 tokenizer (``mlx-community/S3TokenizerV3``) load on the first ``generate``. Loading them here
+    keeps that work inside the server's load step instead of the first conversion chunk.
     """
     model_path = get_model_path(repo_id)
     config = load_config(model_path)
     config["model_path"] = str(model_path)
     model = cosyvoice3.Model(cosyvoice3.ModelConfig.from_dict(config))
-    weights = model.sanitize(load_weights(model_path))
-    apply_quantization(model, config, weights, getattr(model, "model_quant_predicate", None))
-    model.load_weights(list(weights.items()), strict=True)
-    mx.eval(model.parameters())
-    model.eval()
-    if hasattr(cosyvoice3.Model, "post_load_hook"):
-        model = cosyvoice3.Model.post_load_hook(model, model_path)
+    model._ensure_model_loaded()
+    model._ensure_tokenizers_loaded()
     return model
