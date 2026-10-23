@@ -314,7 +314,7 @@ voiceover/
 │   ├── tts.py                    # Qwen TTS synthesis + Whisper transcription
 │   ├── profiles.py               # Voice profile management
 │   ├── chunked_tts.py            # Chunked generation + timestamp-aware assembly
-│   ├── requirements.txt          # Python dependencies (mlx, qwen-tts, torch)
+│   ├── requirements.txt          # Python dependencies (mlx, mlx-audio; no torch)
 │   ├── entitlements.plist        # Sidecar code signing entitlements
 │   └── voiceover-tts.spec        # PyInstaller build spec
 ├── static/

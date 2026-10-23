@@ -106,13 +106,13 @@ export class VoiceboxClient {
 		return JSON.parse(result);
 	}
 
-	/** Start a test generation */
+	/** Start a test generation with Qwen, the engine create-voice requires until the picker lands. */
 	async testGenerate(
 		profileId: string,
 		text: string
 	): Promise<VoiceboxGeneration> {
 		return this.jsonRequest<VoiceboxGeneration>('/generate', 'POST', {
-			profile_id: profileId, text, language: 'en'
+			engine: 'qwen-tts-1.7B', profile_id: profileId, text
 		});
 	}
 

@@ -55,7 +55,7 @@ class TestHealthEndpoint:
         data = response.json()
         assert "models" in data
         assert "whisper" in data["models"]
-        assert "qwen" in data["models"]
+        assert "tts" in data["models"]
         assert "cosyvoice" in data["models"]
 
 
@@ -197,6 +197,21 @@ class TestGenerateEndpoint:
         })
         assert response.status_code == 400
 
+    def test_missing_engine_is_refused(self, client):
+        response = client.post("/generate", json={"profile_id": "p", "text": "Hello"})
+        assert response.status_code == 400
+        assert "engine" in response.json()["error"]
+
+    def test_unknown_engine_is_refused(self, client):
+        response = client.post("/generate", json={"engine": "nope", "profile_id": "p", "text": "Hi"})
+        assert response.status_code == 400
+
+    def test_non_tts_row_is_refused_as_engine(self, client):
+        response = client.post(
+            "/generate", json={"engine": "whisper-medium", "profile_id": "p", "text": "Hi"}
+        )
+        assert response.status_code == 400
+
     def test_generation_status_not_found(self, client):
         response = client.get("/generate/nonexistent-id/status")
         assert response.status_code == 404
@@ -218,7 +233,7 @@ class TestModelEndpoints:
         data = response.json()
         assert "models" in data
         assert isinstance(data["models"], list)
-        assert len(data["models"]) == 4
+        assert len(data["models"]) == len(MODEL_REGISTRY)
 
     def test_download_unknown_model(self, client):
         response = client.post("/models/download", json={
@@ -322,7 +337,7 @@ class TestHappyPaths:
         assert data["status"] == "healthy"
         assert isinstance(data["models"], dict)
         assert "whisper" in data["models"]
-        assert "qwen" in data["models"]
+        assert "tts" in data["models"]
         assert "cosyvoice" in data["models"]
 
     def test_profile_crud_lifecycle(self, client):
@@ -370,6 +385,9 @@ class TestHappyPaths:
         for m in models:
             assert "model_name" in m
             assert "downloaded" in m
+            assert "license" in m
+        licences = {m["model_name"]: m["license"] for m in models}
+        assert licences["fish-s2-pro"] == "fish-audio-research"
 
 
 # ---------------------------------------------------------------------------
@@ -378,17 +396,25 @@ class TestHappyPaths:
 
 
 class TestModelRegistry:
-    def test_registry_has_expected_entry_count(self):
-        assert len(MODEL_REGISTRY) == 4
-
     def test_registry_contains_expected_models(self):
         expected = {
             "whisper-medium",
             "whisper-large-v3-turbo",
             "qwen-tts-1.7B",
+            "voxcpm2",
+            "moss-tts-local-v1.5",
+            "omnivoice",
+            "fish-s2-pro",
+            "chatterbox",
             "cosyvoice3-0.5B",
         }
         assert set(MODEL_REGISTRY.keys()) == expected
+
+    def test_tts_rows_declare_transcript_use_and_licence(self):
+        for model_name, entry in MODEL_REGISTRY.items():
+            if entry["category"] == "tts":
+                assert isinstance(entry["ref_text"], bool), model_name
+                assert isinstance(entry["license"], str) and entry["license"], model_name
 
     def test_each_entry_has_required_fields(self):
         required_fields = {"repo_id", "display_name", "category", "recommended"}

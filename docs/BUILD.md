@@ -127,6 +127,10 @@ python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --pare
 
 `--parent-pid` is required: the sidecar exits when that process dies, so pass your shell's PID.
 
+Build the venv from `requirements.txt` alone and rebuild it when that file changes. A venv made
+before the mlx-audio 0.5.8 update still holds `mlx-audio-plus`, `qwen-tts` and torch, and the
+fork's files would shadow mlx-audio's: `rm -rf .sidecar-venv` first.
+
 To build the sidecar as a standalone binary (bundled into the app for distribution), install
 PyInstaller into the same venv and run the build script. It builds, runs `test_binary.sh` against the
 binary, and copies it to `src-tauri/binaries/voiceover-tts-aarch64-apple-darwin`, the path Tauri bundles:

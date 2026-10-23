@@ -66,8 +66,8 @@ fi
 echo ""
 echo "─── Test 2: Models status ───"
 MODELS=$(curl -sf http://127.0.0.1:$PORT/models/status)
-if echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); assert len(d['models'])==4" 2>/dev/null; then
-    pass "GET /models/status returns 4 models"
+if echo "$MODELS" | python3 -c "import sys,json; m=json.load(sys.stdin)['models']; assert any(x['category']=='tts' for x in m) and all('license' in x and 'downloaded' in x for x in m)" 2>/dev/null; then
+    pass "GET /models/status lists the registry with licences"
 else
     fail "GET /models/status" "$MODELS"
 fi
@@ -127,11 +127,11 @@ fi
 echo ""
 echo "─── Test 8: TTS generation (end-to-end) ───"
 # This is the critical test — exercises the full generate→poll→audio path
-# that breaks in prod builds when qwen_tts source files aren't bundled.
-# Requires Qwen model to be downloaded; skip gracefully if not available.
+# that breaks in prod builds when an engine's mlx-audio modules aren't bundled.
+# Uses Qwen; the first run downloads it into the data dir's models folder.
 GEN_RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/generate" \
     -H "Content-Type: application/json" \
-    -d "{\"profile_id\": \"$PROFILE_ID\", \"text\": \"Hello, this is a test.\", \"language\": \"en\"}" 2>&1)
+    -d "{\"engine\": \"qwen-tts-1.7B\", \"profile_id\": \"$PROFILE_ID\", \"text\": \"Hello, this is a test.\"}" 2>&1)
 GEN_ID=$(echo "$GEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
 if [ -n "$GEN_ID" ]; then
     pass "POST /generate returns generation ID ($GEN_ID)"
