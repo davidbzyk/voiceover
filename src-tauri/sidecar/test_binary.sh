@@ -34,6 +34,14 @@ echo ""
 # Create test audio
 "$FFMPEG" -f lavfi -i "sine=frequency=440:duration=2" -ar 16000 -ac 1 /tmp/test-sine-$$.wav -y -loglevel warning
 
+# Every registry row's model module must import from the frozen binary (no downloads needed).
+echo "─── Test 0: Engine modules bundled ───"
+if CHECK=$($BINARY --check-imports 2>&1); then
+    pass "--check-imports: every registry module imports"
+else
+    fail "--check-imports" "$(echo "$CHECK" | grep FAIL | head -3)"
+fi
+
 # Start sidecar
 echo "Starting sidecar on port $PORT..."
 rm -rf "$DATA_DIR"

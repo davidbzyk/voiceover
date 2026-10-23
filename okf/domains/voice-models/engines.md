@@ -37,6 +37,7 @@ relations:
     - lineage/evidence/cosyvoice-from-mlx-audio-plus
     - lineage/evidence/hf-cache-set-after-import
     - tombstones/multi-model-backends-2026-04
+    - tombstones/qwen-pytorch-path-2026-10
   implements: []
   supersedes: []
   superseded_by: null
@@ -52,7 +53,7 @@ engines are rows in `MODEL_REGISTRY` (`server.py`) and share one generate path (
 
 | Engine | Job | Runtime | Notes |
 | --- | --- | --- | --- |
-| Qwen3-TTS 1.7B Base (MLX bf16) | Create Voice preview; text-to-speech | mlx-audio | The principal's preferred engine. Clones from the speaker embedding only (no transcript), which stops the ICL leak. |
+| Qwen3-TTS 1.7B Base (MLX bf16) | Create Voice preview; text-to-speech | mlx-audio | The principal's preferred engine. Clones from the speaker embedding only (no transcript), which stops the ICL leak. The PyTorch path it replaced: [tombstone](../../tombstones/qwen-pytorch-path-2026-10.md). |
 | VoxCPM2, MOSS-TTS Local v1.5, Chatterbox | Text-to-speech | mlx-audio | Apache-2.0 / Apache-2.0 / MIT. No leak measured. |
 | OmniVoice | Text-to-speech | mlx-audio | CC-BY-NC weights. Leaks the T2 reference transcript 3 of 24. |
 | Fish S2 Pro | Text-to-speech | mlx-audio | Fish Audio Research licence (non-commercial). Slowest, RTF about 1.5. |

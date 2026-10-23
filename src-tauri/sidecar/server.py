@@ -100,12 +100,14 @@ MODEL_REGISTRY = {
     # Whisper variants (transcription)
     "whisper-medium": {
         "repo_id": "mlx-community/whisper-medium-asr-fp16",
+        "module": "mlx_audio.stt.models.whisper",
         "display_name": "Whisper Medium",
         "category": "transcription",
         "recommended": False,
     },
     "whisper-large-v3-turbo": {
         "repo_id": "mlx-community/whisper-large-v3-turbo-asr-fp16",
+        "module": "mlx_audio.stt.models.whisper",
         "display_name": "Whisper Large v3 Turbo",
         "category": "transcription",
         "recommended": True,
@@ -113,6 +115,7 @@ MODEL_REGISTRY = {
     # TTS
     "qwen-tts-1.7B": {
         "repo_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+        "module": "mlx_audio.tts.models.qwen3_tts",
         "display_name": "Qwen3-TTS 1.7B",
         "category": "tts",
         "recommended": False,
@@ -121,6 +124,7 @@ MODEL_REGISTRY = {
     },
     "voxcpm2": {
         "repo_id": "mlx-community/VoxCPM2-bf16",
+        "module": "mlx_audio.tts.models.voxcpm2",
         "display_name": "VoxCPM2",
         "category": "tts",
         "recommended": False,
@@ -129,6 +133,7 @@ MODEL_REGISTRY = {
     },
     "moss-tts-local-v1.5": {
         "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
+        "module": "mlx_audio.tts.models.moss_tts_local",
         "display_name": "MOSS-TTS Local v1.5",
         "category": "tts",
         "recommended": False,
@@ -137,6 +142,7 @@ MODEL_REGISTRY = {
     },
     "omnivoice": {
         "repo_id": "mlx-community/OmniVoice-bf16",
+        "module": "mlx_audio.tts.models.omnivoice",
         "display_name": "OmniVoice",
         "category": "tts",
         "recommended": False,
@@ -145,6 +151,7 @@ MODEL_REGISTRY = {
     },
     "fish-s2-pro": {
         "repo_id": "mlx-community/fish-audio-s2-pro-bf16",
+        "module": "mlx_audio.tts.models.fish_qwen3_omni",
         "display_name": "Fish S2 Pro",
         "category": "tts",
         "recommended": False,
@@ -153,6 +160,7 @@ MODEL_REGISTRY = {
     },
     "chatterbox": {
         "repo_id": "mlx-community/Chatterbox-TTS-fp16",
+        "module": "mlx_audio.tts.models.chatterbox",
         "display_name": "Chatterbox",
         "category": "tts",
         "recommended": False,
@@ -162,6 +170,7 @@ MODEL_REGISTRY = {
     # Voice conversion
     "cosyvoice3-0.5B": {
         "repo_id": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "module": "cosyvoice_mlx.tts.models.cosyvoice3",
         "display_name": "CosyVoice3 0.5B",
         "category": "voice-conversion",
         "recommended": False,
@@ -1391,8 +1400,26 @@ async def delete_model(model_name: str):
 # ---------------------------------------------------------------------------
 
 
+def check_imports() -> int:
+    """Import every registry row's model module; return 1 if any fails (used on the frozen binary)."""
+    import importlib
+
+    failed = 0
+    for name, entry in MODEL_REGISTRY.items():
+        try:
+            importlib.import_module(entry["module"])
+            print(f"ok   {name}: {entry['module']}")
+        except Exception as e:  # report every failure, not just the first
+            failed = 1
+            print(f"FAIL {name}: {entry['module']}: {e!r}")
+    return failed
+
+
 def main():
-    parser = argparse.ArgumentParser(description="VoiceOver TTS sidecar server")
+    if "--check-imports" in sys.argv:
+        sys.exit(check_imports())
+    # No abbreviations: the HF_HUB_CACHE scan at the top of this file matches --data-dir exactly.
+    parser = argparse.ArgumentParser(description="VoiceOver TTS sidecar server", allow_abbrev=False)
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, required=True, help="Bind port")
     parser.add_argument(

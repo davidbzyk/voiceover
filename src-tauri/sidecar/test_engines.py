@@ -141,3 +141,16 @@ def test_models_land_in_the_data_dir_not_the_default_hf_cache(tmp_path):
         cwd=Path(__file__).parent, env=env, capture_output=True, text=True, check=True,
     ).stdout.strip().splitlines()[-1]
     assert out == str(tmp_path / "models")
+
+
+def test_check_imports_passes_for_every_registry_row():
+    assert server.check_imports() == 0
+
+
+def test_check_imports_fails_when_a_row_module_is_missing(monkeypatch, capsys):
+    """The frozen binary once lacked scipy._external and no engine could load; the gate must say so."""
+    broken = dict(server.MODEL_REGISTRY)
+    broken["voxcpm2"] = {**broken["voxcpm2"], "module": "mlx_audio.tts.models.not_bundled"}
+    monkeypatch.setattr(server, "MODEL_REGISTRY", broken)
+    assert server.check_imports() == 1
+    assert "FAIL voxcpm2" in capsys.readouterr().out

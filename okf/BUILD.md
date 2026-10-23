@@ -9,7 +9,7 @@ tags:
   - build
   - meta
   - migrated
-freshness: "2026-10-22T18:35:58Z"
+freshness: "2026-10-23T23:30:00Z"
 version: 1.0.0
 status: stable
 sources:
@@ -17,7 +17,7 @@ sources:
     resource: docs/BUILD.md
     title: Build
     type: local_doc
-    sha256: 5fcfda1c3220df202069a6549ecc292f1d0ed2a59cdc9e232167ae9596ef268e
+    sha256: e3ca64e730094e55b6805f02f101e734878653358dfcedde6d76d5dda94370e2
 generated:
   by: process:okf_migrate
   at: "2026-10-22T18:35:58Z"
