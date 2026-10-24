@@ -40,7 +40,7 @@ if CHECK=$($BINARY --check-imports 2>&1); then
     pass "--check-imports: every registry module imports"
 else
     # No FAIL lines means the binary died before the check ran (bad bundle, import error): show its tail.
-    DETAIL=$(echo "$CHECK" | grep FAIL | head -3)
+    DETAIL=$(echo "$CHECK" | grep FAIL | head -3 || true)  # grep finds none: keep going under set -e
     fail "--check-imports" "${DETAIL:-$(echo "$CHECK" | tail -5)}"
 fi
 
