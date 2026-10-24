@@ -36,7 +36,7 @@ firebase-debug.log
 src-tauri/binaries/
 
 # Sidecar Python build artifacts
-src-tauri/sidecar/__pycache__/
+__pycache__/
 src-tauri/sidecar/dist/
 src-tauri/sidecar/build/
 src-tauri/sidecar/.venv/

@@ -8,7 +8,7 @@ domain: voice-models
 tags:
   - domain
   - voice-models
-freshness: "2026-10-22T18:36:00Z"
+freshness: "2026-10-23T22:50:00Z"
 version: 1.0.0
 status: stable
 domain_code: VOICE
@@ -33,7 +33,11 @@ relations:
     - standards/engine-admission
     - lineage/evidence/qwen3-tts-icl-reference-leak
     - lineage/evidence/whisper-reference-transcript-loop
+    - lineage/evidence/mlx-audio-058-engine-bench
+    - lineage/evidence/cosyvoice-from-mlx-audio-plus
+    - lineage/evidence/hf-cache-set-after-import
     - tombstones/multi-model-backends-2026-04
+    - tombstones/qwen-pytorch-path-2026-10
   implements: []
   supersedes: []
   superseded_by: null
@@ -43,14 +47,19 @@ relations:
 # Voice engines in VoiceOver
 
 ## Context
-The app ships with no models installed; the user downloads each model from the Models page. Today the job fixes the model (Qwen for Create Voice, CosyVoice or ElevenLabs for replacement, the Whisper model is selectable). Picking the replacement model per conversion is planned in the restore-Qwen plan.
+The app ships with no models installed; the user downloads each model from the Models page. Every
+local engine runs on MLX through mlx-audio 0.5.8 in the sidecar; there is no PyTorch. Text-to-speech
+engines are rows in `MODEL_REGISTRY` (`server.py`) and share one generate path (`tts.generate_speech`).
 
 | Engine | Job | Runtime | Notes |
 | --- | --- | --- | --- |
-| Qwen3-TTS-12Hz-1.7B-Base (qwen_tts 0.1.1) | Create Voice preview; text re-speak replacement | PyTorch MPS | The principal's preferred engine. Replacement mode was removed in PR #23 and is being restored (2026-10-22). ICL leak: see evidence. |
-| CosyVoice3 0.5B 8-bit | Speech-to-speech replacement | MLX (mlx-audio 0.4.2) | Keeps timing; no reference leak measured. |
+| Qwen3-TTS 1.7B Base (MLX bf16) | Create Voice preview; text-to-speech | mlx-audio | The principal's preferred engine. Clones from the speaker embedding only (no transcript), which stops the ICL leak. The PyTorch path it replaced: [tombstone](../../tombstones/qwen-pytorch-path-2026-10.md). |
+| VoxCPM2, MOSS-TTS Local v1.5, Chatterbox | Text-to-speech | mlx-audio | Apache-2.0 / Apache-2.0 / MIT. No leak measured. |
+| OmniVoice | Text-to-speech | mlx-audio | CC-BY-NC weights. Leaks the T2 reference transcript 3 of 24. |
+| Fish S2 Pro | Text-to-speech | mlx-audio | Fish Audio Research licence (non-commercial). Slowest, RTF about 1.5. |
+| CosyVoice3 0.5B 8-bit | Speech-to-speech replacement | `cosyvoice_mlx` (copied, on mlx-audio) | Keeps timing; see the fork evidence. |
 | ElevenLabs eleven_multilingual_sts_v2 | Speech-to-speech replacement | Hosted API | Needs the user's API key. |
-| Whisper large-v3-turbo | Transcribe the reference and the recording | MLX (mlx-audio) | Loop guard: see evidence. |
+| Whisper large-v3-turbo / medium (`-asr` repos) | Transcribe the reference and the recording | mlx-audio | Loop guard: see evidence. |
 
 ## Adding an engine
 Follow [engine admission](../../standards/engine-admission.md). The 2026-10-22 Hugging Face scan of

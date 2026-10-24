@@ -1,0 +1,4 @@
+# Copied third-party code (MIT, see its LICENSE); loader.py and README.md are ours.
+src-tauri/sidecar/cosyvoice_mlx/** linguist-vendored
+src-tauri/sidecar/cosyvoice_mlx/loader.py -linguist-vendored
+src-tauri/sidecar/cosyvoice_mlx/README.md -linguist-vendored

@@ -313,10 +313,10 @@ class TestWhisperModels:
         assert set(WHISPER_MODELS.keys()) == expected_keys
 
     def test_whisper_medium_maps_to_correct_repo(self):
-        assert WHISPER_MODELS["whisper-medium"] == "mlx-community/whisper-medium-mlx"
+        assert WHISPER_MODELS["whisper-medium"] == "mlx-community/whisper-medium-asr-fp16"
 
     def test_whisper_large_v3_turbo_maps_to_correct_repo(self):
-        assert WHISPER_MODELS["whisper-large-v3-turbo"] == "mlx-community/whisper-large-v3-turbo"
+        assert WHISPER_MODELS["whisper-large-v3-turbo"] == "mlx-community/whisper-large-v3-turbo-asr-fp16"
 
     def test_whisper_models_match_model_registry(self):
         """WHISPER_MODELS in tts.py must stay in sync with MODEL_REGISTRY in server.py."""

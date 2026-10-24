@@ -9,7 +9,7 @@ tags:
   - build
   - meta
   - migrated
-freshness: "2026-10-22T18:35:58Z"
+freshness: "2026-10-23T23:36:54Z"
 version: 1.0.0
 status: stable
 sources:
@@ -17,7 +17,7 @@ sources:
     resource: docs/BUILD.md
     title: Build
     type: local_doc
-    sha256: 5fcfda1c3220df202069a6549ecc292f1d0ed2a59cdc9e232167ae9596ef268e
+    sha256: e9693fb845bf8bae915e687f9be22284d95a714ea3d95e85a233b40f232dfcaf
 generated:
   by: process:okf_migrate
   at: "2026-10-22T18:35:58Z"
@@ -157,10 +157,15 @@ The Python TTS sidecar can be run standalone for development and testing:
 python3 -m venv .sidecar-venv
 source .sidecar-venv/bin/activate
 pip install -r src-tauri/sidecar/requirements.txt
+pip install pytest==8.3.3 httpx==0.28.1   # the sidecar tests; the pre-commit hook runs them from this venv
 python src-tauri/sidecar/server.py --port 8123 --data-dir ./.sidecar-data --parent-pid $$
 ```
 
 `--parent-pid` is required: the sidecar exits when that process dies, so pass your shell's PID.
+
+Build the venv from `requirements.txt` alone and rebuild it when that file changes. A venv made
+before the mlx-audio 0.5.8 update still holds `mlx-audio-plus`, `qwen-tts` and torch, and the
+fork's files would shadow mlx-audio's: `rm -rf .sidecar-venv` first.
 
 To build the sidecar as a standalone binary (bundled into the app for distribution), install
 PyInstaller into the same venv and run the build script. It builds, runs `test_binary.sh` against the

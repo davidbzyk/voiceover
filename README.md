@@ -311,10 +311,11 @@ voiceover/
 │           └── window.rs         # Widget window management
 ├── src-tauri/sidecar/            # Python TTS sidecar (FastAPI)
 │   ├── server.py                 # Main FastAPI server
-│   ├── tts.py                    # Qwen TTS synthesis + Whisper transcription
+│   ├── tts.py                    # Registry-driven MLX engine loading/generation + Whisper transcription
+│   ├── cosyvoice_mlx/            # CosyVoice3 voice conversion (copied MIT code; loader.py is ours)
 │   ├── profiles.py               # Voice profile management
 │   ├── chunked_tts.py            # Chunked generation + timestamp-aware assembly
-│   ├── requirements.txt          # Python dependencies (mlx, qwen-tts, torch)
+│   ├── requirements.txt          # Python dependencies (mlx, mlx-audio; no torch)
 │   ├── entitlements.plist        # Sidecar code signing entitlements
 │   └── voiceover-tts.spec        # PyInstaller build spec
 ├── static/
