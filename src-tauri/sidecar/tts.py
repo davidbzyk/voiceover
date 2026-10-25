@@ -1,35 +1,18 @@
 """TTS inference engine for VoiceOver sidecar.
 
-Whisper transcription (via mlx-audio) + Qwen TTS generation.
-Ported from Voicebox mlx_backend.py and pytorch_backend.py patterns.
+Whisper transcription and text-to-speech engines, both through mlx-audio.
 """
 
 from __future__ import annotations
 
 import asyncio
 import gc
-import hashlib
 import logging
 import os
-import sys
-from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger("voiceover-tts.engine")
-
-LANGUAGE_CODE_TO_NAME = {
-    "zh": "chinese",
-    "en": "english",
-    "ja": "japanese",
-    "ko": "korean",
-    "de": "german",
-    "fr": "french",
-    "ru": "russian",
-    "pt": "portuguese",
-    "es": "spanish",
-    "it": "italian",
-}
 
 # ---------------------------------------------------------------------------
 # Whisper transcription (using mlx-audio, same as Voicebox)
@@ -38,9 +21,11 @@ LANGUAGE_CODE_TO_NAME = {
 _whisper_model = None
 _whisper_model_name = None  # Track which model is loaded
 
+# The -asr repos carry the tokenizer files mlx-audio's Whisper loads its processor from;
+# the older repos without them fail with "Processor not found" (tested on 0.5.8).
 WHISPER_MODELS = {
-    "whisper-medium": "mlx-community/whisper-medium-mlx",
-    "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "whisper-medium": "mlx-community/whisper-medium-asr-fp16",
+    "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo-asr-fp16",
 }
 
 
@@ -167,8 +152,6 @@ def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-larg
         )
     repo_id = WHISPER_MODELS[model_name]
 
-    os.environ["HF_HUB_CACHE"] = models_dir
-
     # Reload if a different model is requested
     if model_name != _whisper_model_name:
         _whisper_model = None
@@ -260,81 +243,11 @@ def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-larg
 
 
 # ---------------------------------------------------------------------------
-# Qwen TTS generation
+# Text-to-speech engines (mlx-audio)
 # ---------------------------------------------------------------------------
 
-_qwen_model = None
-_qwen_model_size = None
-
-
-def _get_device() -> str:
-    """Get the best available device for PyTorch."""
-    import torch
-
-    mps_built = hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
-    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-    device = "mps" if mps_available else "cpu"
-
-    logger.info(
-        "Device selection: chosen=%s mps_built=%s mps_available=%s frozen=%s",
-        device, mps_built, mps_available, getattr(sys, "frozen", False),
-    )
-    return device
-
-
-async def load_qwen_model(models_dir: str, model_size: str = "1.7B") -> None:
-    """Load Qwen TTS model (async, runs blocking load in thread pool)."""
-    global _qwen_model, _qwen_model_size
-
-    if _qwen_model is not None and _qwen_model_size == model_size:
-        return
-
-    os.environ["HF_HUB_CACHE"] = models_dir
-
-    def _load_sync():
-        global _qwen_model, _qwen_model_size
-        import torch
-        from qwen_tts import Qwen3TTSModel
-
-        hf_map = {
-            "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-            "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        }
-        model_path = hf_map.get(model_size, hf_map["1.7B"])
-        device = _get_device()
-
-        logger.info(f"Loading Qwen TTS {model_size} on {device}...")
-        if device == "cpu":
-            _qwen_model = Qwen3TTSModel.from_pretrained(
-                model_path, torch_dtype=torch.float32, low_cpu_mem_usage=False,
-            )
-        else:
-            _qwen_model = Qwen3TTSModel.from_pretrained(
-                model_path, device_map=device, torch_dtype=torch.bfloat16,
-            )
-        _qwen_model_size = model_size
-        logger.info(f"Qwen TTS {model_size} loaded successfully")
-
-        # Warmup: run a short dummy generation to prime MPS shader compilation
-        # and internal buffers. Without this, the first real generation can
-        # produce degraded output (slow/deep voice) on Apple Silicon.
-        try:
-            logger.info("Warming up Qwen TTS model...")
-            wavs, sr = _qwen_model.generate_voice_clone(
-                text="Hello.",
-                language="English",
-                voice_clone_prompt=None,
-                non_streaming_mode=True,
-            )
-            logger.info(f"Qwen TTS warmup complete (sr={sr})")
-        except Exception as e:
-            logger.warning(f"Qwen TTS warmup failed (non-critical): {e}")
-
-    await asyncio.to_thread(_load_sync)
-
-
-def is_qwen_loaded() -> bool:
-    return _qwen_model is not None
+_tts_model = None
+_tts_engine = None  # registry key of the loaded engine
 
 
 def is_whisper_loaded() -> bool:
@@ -345,128 +258,67 @@ def get_whisper_model_name() -> str | None:
     return _whisper_model_name
 
 
-async def create_voice_prompt(
-    audio_path: str,
-    reference_text: str,
-    cache_dir: str | None = None,
-) -> list:
-    """Create voice prompt from reference audio.
-
-    Returns a list of VoiceClonePromptItem (qwen-tts 0.1.x API).
-    """
-    if _qwen_model is None:
-        raise RuntimeError("Qwen model not loaded")
-
-    if cache_dir:
-        cache_key = _cache_key(audio_path, reference_text)
-        cached = _load_cached_prompt(cache_dir, cache_key)
-        if cached is not None:
-            logger.info(f"Using cached voice prompt: {cache_key[:12]}...")
-            return cached
-
-    def _create_sync():
-        return _qwen_model.create_voice_clone_prompt(
-            ref_audio=str(audio_path),
-            ref_text=reference_text,
-            x_vector_only_mode=False,
-        )
-
-    prompt_items = await asyncio.to_thread(_create_sync)
-
-    if cache_dir:
-        _save_cached_prompt(cache_dir, cache_key, prompt_items)
-
-    return prompt_items
+def get_loaded_tts_engine() -> str | None:
+    """Return the registry key of the TTS engine in memory, or None."""
+    return _tts_engine
 
 
-async def combine_voice_prompts(
-    audio_paths: list[str],
-    reference_texts: list[str],
-    cache_dir: str | None = None,
-) -> list:
-    """Combine multiple samples into a list of VoiceClonePromptItems."""
-    all_items = []
-    for audio_path, ref_text in zip(audio_paths, reference_texts):
-        items = await create_voice_prompt(audio_path, ref_text, cache_dir)
-        all_items.extend(items)
-    # Use only the last sample's prompt (consistent with Voicebox behavior)
-    return all_items[-1:] if all_items else []
+def unload_tts_engine() -> None:
+    """Drop the loaded TTS engine and free its Metal memory."""
+    global _tts_model, _tts_engine
+    _tts_model = None
+    _tts_engine = None
+    gc.collect()
+    try:
+        import mlx.core as mx
+        mx.metal.clear_cache()
+    except Exception:
+        pass
+
+
+async def load_tts_engine(models_dir: str, engine: str, repo_id: str) -> None:
+    """Load an engine's weights through mlx-audio; any other engine is unloaded first."""
+    global _tts_model, _tts_engine
+    if _tts_engine == engine and _tts_model is not None:
+        return
+    unload_tts_engine()
+    def _load_sync():
+        from mlx_audio.tts.utils import load_model
+        return load_model(repo_id)
+
+    logger.info("Loading TTS engine %s (%s)...", engine, repo_id)
+    _tts_model = await asyncio.to_thread(_load_sync)
+    _tts_engine = engine
+    logger.info("TTS engine %s loaded (sr=%s)", engine, _tts_model.sample_rate)
 
 
 async def generate_speech(
     text: str,
-    voice_prompt: list,
-    language: str = "en",
+    ref_audio_path: str,
+    ref_text: str | None,
     seed: int | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Generate speech from text using voice clone prompt items."""
-    if _qwen_model is None:
-        raise RuntimeError("Qwen model not loaded")
+    """Speak ``text`` in the reference voice with the loaded engine's own sampling defaults.
+
+    ``ref_text`` is None for engines that clone from the audio alone (Qwen x-vector mode).
+    """
+    if _tts_model is None:
+        raise RuntimeError("No TTS engine loaded")
+    model = _tts_model
 
     def _generate_sync():
-        import torch
+        import mlx.core as mx
+        from mlx_audio.utils import load_audio
 
         if seed is not None:
-            torch.manual_seed(seed)
-            if torch.backends.mps.is_available():
-                torch.mps.manual_seed(seed)
+            mx.random.seed(seed)
+        ref = load_audio(ref_audio_path, sample_rate=model.sample_rate)
+        parts = [
+            np.asarray(r.audio, dtype=np.float32).flatten()
+            for r in model.generate(text=text, ref_audio=ref, ref_text=ref_text)
+        ]
+        if not parts:
+            raise RuntimeError("TTS engine produced no audio")
+        return np.concatenate(parts), model.sample_rate
 
-        # Map language code to display name (capitalize for qwen-tts 0.1.x)
-        lang_name = LANGUAGE_CODE_TO_NAME.get(language, "auto")
-        if lang_name != "auto":
-            lang_name = lang_name.capitalize()
-        else:
-            lang_name = "Auto"
-
-        wavs, sample_rate = _qwen_model.generate_voice_clone(
-            text=text,
-            voice_clone_prompt=voice_prompt,
-            language=lang_name,
-        )
-        return wavs[0], sample_rate
-
-    audio, sample_rate = await asyncio.to_thread(_generate_sync)
-    return np.asarray(audio, dtype=np.float32), sample_rate
-
-
-# ---------------------------------------------------------------------------
-# Voice prompt caching
-# ---------------------------------------------------------------------------
-
-
-def _cache_key(audio_path: str, reference_text: str) -> str:
-    h = hashlib.sha256()
-    try:
-        h.update(Path(audio_path).read_bytes())
-    except OSError:
-        h.update(audio_path.encode())
-    h.update(reference_text.encode())
-    return h.hexdigest()
-
-
-def _load_cached_prompt(cache_dir: str, cache_key: str) -> dict | None:
-    cache_path = Path(cache_dir) / f"{cache_key}.prompt"
-    if not cache_path.exists():
-        return None
-    try:
-        import torch
-        from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
-        torch.serialization.add_safe_globals([VoiceClonePromptItem])
-        # Load to the same device the model uses so cached and fresh prompts
-        # produce identical generation output (avoids MPS vs CPU precision drift)
-        device = _get_device()
-        return torch.load(cache_path, map_location=device, weights_only=True)
-    except Exception as e:
-        logger.warning(f"Failed to load cached prompt: {e}")
-        return None
-
-
-def _save_cached_prompt(cache_dir: str, cache_key: str, prompt: dict) -> None:
-    cache_path = Path(cache_dir) / f"{cache_key}.prompt"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import torch
-        torch.save(prompt, cache_path)
-        logger.info(f"Cached voice prompt: {cache_key[:12]}...")
-    except Exception as e:
-        logger.warning(f"Failed to cache voice prompt: {e}")
+    return await asyncio.to_thread(_generate_sync)
