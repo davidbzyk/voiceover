@@ -385,7 +385,7 @@ class TestTranscribeModelName:
             with patch("mlx_audio.stt.utils.load_model", return_value=mock_model):
                 from tts import transcribe
 
-                transcribe("/tmp/fake-audio.wav", "/tmp/models", model_name="whisper-medium")
+                transcribe("/tmp/fake-audio.wav", model_name="whisper-medium")
                 assert tts._whisper_model_name == "whisper-medium"
         except ImportError:
             # mlx_audio not available in test environment — skip gracefully

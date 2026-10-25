@@ -18,8 +18,8 @@ import os
 #    these can be None, causing crashes from print/logging/tqdm.
 # 2. freeze_support(): when multiprocessing spawns a child, PyInstaller
 #    re-executes this binary from the top. Without freeze_support() before
-#    heavy imports, torch/transformers run in the child, fail to find CLI
-#    args, and silently degrade (e.g. MPS → CPU fallback).
+#    heavy imports, the child runs those imports and the server start-up
+#    instead of the worker it was spawned for.
 # 3. Early-exit for frozen children invoked without sidecar CLI flags.
 # ---------------------------------------------------------------------------
 
@@ -442,7 +442,7 @@ async def _do_generate(
         raise ValueError(f"No samples found for profile {profile_id}")
 
     set_status("loading_model")
-    await load_tts_engine(str(data_dir / "models"), engine, row["repo_id"])
+    await load_tts_engine(engine, row["repo_id"])
     # The last sample is the voice reference, as the Qwen prompt path used before.
     ref_audio_path = samples[-1]["audio_path"]
     ref_text = None
@@ -587,8 +587,6 @@ async def _do_voice_convert(
     from mlx_audio.utils import load_audio
     from profiles import get_samples
     from chunked_tts import convert_in_overlapping_chunks
-
-    models_dir = str(data_dir / "models")
 
     # Load CosyVoice3 model
     set_status("loading_model")
@@ -827,7 +825,7 @@ async def transcribe(file: UploadFile = File(...), model_name: str = Form(None))
             kwargs["model_name"] = model_name
 
         result = await asyncio.to_thread(
-            do_transcribe, str(temp_path), str(DATA_DIR / "models"), **kwargs
+            do_transcribe, str(temp_path), **kwargs
         )
         logger.info(
             f"Transcribed: {result['duration']:.1f}s audio -> "
@@ -862,7 +860,7 @@ async def transcribe_path(request: dict):
             kwargs["model_name"] = model_name
 
         result = await asyncio.to_thread(
-            do_transcribe, audio_path, str(DATA_DIR / "models"), **kwargs
+            do_transcribe, audio_path, **kwargs
         )
         logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
         return result
@@ -1421,12 +1419,12 @@ def main():
     DATA_DIR = Path(args.data_dir)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Set HuggingFace cache to our data directory
+    # The models folder; HF_HUB_CACHE was pointed at it before any import (top of this file).
     models_dir = DATA_DIR / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
     # If a bundled ffmpeg path is provided, add its directory to PATH
-    # so that mlx-whisper and subprocess calls can find it.
+    # so that the sidecar's ffmpeg subprocess calls can find it.
     if args.ffmpeg and Path(args.ffmpeg).exists():
         ffmpeg_dir = str(Path(args.ffmpeg).parent)
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")

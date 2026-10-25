@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
-import os
 
 import numpy as np
 
@@ -129,7 +128,7 @@ def _filter_segments(raw_segments: list) -> list:
     return filtered
 
 
-def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-large-v3-turbo") -> dict:
+def transcribe(audio_path: str, model_name: str = "whisper-large-v3-turbo") -> dict:
     """Transcribe audio file using MLX Whisper via mlx-audio.
 
     Uses mlx_audio.stt.load() which handles model loading correctly
@@ -137,7 +136,6 @@ def transcribe(audio_path: str, models_dir: str, model_name: str = "whisper-larg
 
     Args:
         audio_path: Path to the audio file to transcribe.
-        models_dir: Path to HuggingFace model cache directory.
         model_name: Key into WHISPER_MODELS dict (default: whisper-large-v3-turbo).
 
     Returns dict with text, duration, and segments (with timestamps).
@@ -276,7 +274,7 @@ def unload_tts_engine() -> None:
         pass
 
 
-async def load_tts_engine(models_dir: str, engine: str, repo_id: str) -> None:
+async def load_tts_engine(engine: str, repo_id: str) -> None:
     """Load an engine's weights through mlx-audio; any other engine is unloaded first."""
     global _tts_model, _tts_engine
     if _tts_engine == engine and _tts_model is not None:

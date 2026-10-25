@@ -24,7 +24,7 @@ def calls(monkeypatch):
     """Replace model loading and generation with recorders; return the list of generate calls."""
     recorded = []
 
-    async def fake_load(models_dir, engine, repo_id):
+    async def fake_load(engine, repo_id):
         recorded.append(("load", engine, repo_id))
 
     async def fake_speak(text, ref_audio_path, ref_text, seed=None):
@@ -121,9 +121,9 @@ def test_loading_another_engine_unloads_the_first(monkeypatch):
     monkeypatch.setattr("mlx_audio.tts.utils.load_model", lambda repo: loaded.append(repo) or _FakeModel())
     monkeypatch.setattr(tts, "_tts_model", None)
     monkeypatch.setattr(tts, "_tts_engine", None)
-    asyncio.run(tts.load_tts_engine("/models", "engine-a", "repo/a"))
-    asyncio.run(tts.load_tts_engine("/models", "engine-a", "repo/a"))
-    asyncio.run(tts.load_tts_engine("/models", "engine-b", "repo/b"))
+    asyncio.run(tts.load_tts_engine("engine-a", "repo/a"))
+    asyncio.run(tts.load_tts_engine("engine-a", "repo/a"))
+    asyncio.run(tts.load_tts_engine("engine-b", "repo/b"))
     assert loaded == ["repo/a", "repo/b"]
     assert tts.get_loaded_tts_engine() == "engine-b"
 
