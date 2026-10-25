@@ -168,7 +168,7 @@ class _FakeCosyVoice:
 
 def test_a_voice_sample_over_30_s_converts(monkeypatch, tmp_path):
     """The reference is trimmed to 30 s; on mlx 0.32 a trim made on another thread failed the first chunk
-    ("There is no Stream(gpu, 2) in current thread", frozen binary, 60 s sample, 2026-10-25)."""
+    ("There is no Stream(gpu, 2) in current thread", frozen binary, 60 s sample)."""
     import soundfile as sf
     from cosyvoice_mlx import loader
 

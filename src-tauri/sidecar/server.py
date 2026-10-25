@@ -443,7 +443,7 @@ async def _do_generate(
 
     set_status("loading_model")
     await load_tts_engine(engine, row["repo_id"])
-    # The last sample is the voice reference, as the Qwen prompt path used before.
+    # The last sample is the voice reference.
     ref_audio = await run_mlx(load_reference, samples[-1]["audio_path"])
     ref_text = None
     if row["ref_text"]:
