@@ -157,3 +157,12 @@ def test_check_imports_fails_when_a_row_module_is_missing(monkeypatch, capsys):
     monkeypatch.setattr(server, "MODEL_REGISTRY", broken)
     assert server.check_imports() == 1
     assert "FAIL qwen-tts-1.7B" in capsys.readouterr().out
+
+
+def test_check_imports_fails_when_the_copy_ships_without_its_licences(monkeypatch, tmp_path, capsys):
+    """collect_submodules bundles only modules; a build that drops the licence texts must fail."""
+    import cosyvoice_mlx
+
+    monkeypatch.setattr(cosyvoice_mlx, "__file__", str(tmp_path / "__init__.py"))
+    assert server.check_imports() == 1
+    assert "FAIL cosyvoice_mlx licence texts" in capsys.readouterr().out

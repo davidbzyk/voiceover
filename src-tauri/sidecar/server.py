@@ -1370,7 +1370,8 @@ async def delete_model(model_name: str):
 
 
 def check_imports() -> int:
-    """Import every registry row's model module; return 1 if any fails (used on the frozen binary)."""
+    """Import every registry row's model module and find the copy's licence texts; return 1 if any
+    is missing (used on the frozen binary)."""
     import importlib
 
     failed = 0
@@ -1381,6 +1382,14 @@ def check_imports() -> int:
         except Exception as e:  # report every failure, not just the first
             failed = 1
             print(f"FAIL {name}: {entry['module']}: {e!r}")
+    import cosyvoice_mlx
+
+    package = Path(cosyvoice_mlx.__file__).parent  # the copy's licence texts ship with its code
+    if (package / "LICENSE").is_file() and any((package / "licenses").glob("*.txt")):
+        print("ok   cosyvoice_mlx licence texts")
+    else:
+        failed = 1
+        print(f"FAIL cosyvoice_mlx licence texts: none under {package}")
     return failed
 
 

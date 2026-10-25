@@ -24,6 +24,8 @@ datas += copy_metadata('tqdm')
 # Collect submodules (ensures all .so native extensions are included)
 hiddenimports += collect_submodules('mlx')
 hiddenimports += collect_submodules('cosyvoice_mlx')
+# The copy has no package metadata to carry its licences, so its texts are bundled by hand.
+datas += [('cosyvoice_mlx/LICENSE', 'cosyvoice_mlx'), ('cosyvoice_mlx/licenses', 'cosyvoice_mlx/licenses')]
 # scipy 1.18 imports its vendored array-api backends by name (importlib), which PyInstaller cannot see;
 # without them every mlx-audio model that touches scipy.signal fails to load in the frozen binary.
 hiddenimports += collect_submodules('scipy._external')
