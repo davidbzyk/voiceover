@@ -426,7 +426,7 @@ async def _do_generate(
     segments (or text chunks) done, and stops at the next one when ``should_cancel()`` is true.
     """
     from profiles import get_samples
-    from tts import generate_speech, load_reference, load_tts_engine
+    from tts import generate_speech, load_reference, load_tts_engine, run_mlx
     from chunked_tts import (
         ConversionCancelled,
         assemble_timed_segments,
@@ -444,7 +444,7 @@ async def _do_generate(
     set_status("loading_model")
     await load_tts_engine(engine, row["repo_id"])
     # The last sample is the voice reference, as the Qwen prompt path used before.
-    ref_audio = await asyncio.to_thread(load_reference, samples[-1]["audio_path"])
+    ref_audio = await run_mlx(load_reference, samples[-1]["audio_path"])
     ref_text = None
     if row["ref_text"]:
         ref_text = (samples[-1].get("reference_text") or "").strip() or None
@@ -591,6 +591,7 @@ async def _do_voice_convert(
     from mlx_audio.utils import load_audio
     from profiles import get_samples
     from chunked_tts import convert_in_overlapping_chunks
+    from tts import call_mlx, run_mlx
 
     # Load CosyVoice3 model
     set_status("loading_model")
@@ -611,7 +612,7 @@ async def _do_voice_convert(
                 _vc_model_name = None
                 raise
 
-        await asyncio.to_thread(_load)
+        await run_mlx(_load)
         logger.info("Voice conversion model loaded")
 
     # Get reference audio from voice profile — use all samples up to 30s
@@ -624,62 +625,67 @@ async def _do_voice_convert(
     logger.info(f"Voice conversion: model_sr={model_sr}, original_duration={original_duration:.3f}s")
     max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
 
-    ref_parts = []
-    ref_texts = []
-    total_ref = 0
-    all_have_text = True
-    for sample in samples:
-        if total_ref >= max_ref_samples:
-            break
-        part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
-        remaining = max_ref_samples - total_ref
-        was_truncated = len(part) > remaining
-        if was_truncated:
-            part = part[:remaining]
-        ref_parts.append(part)
-        total_ref += len(part)
+    def _load_inputs():
+        """Decode the reference (trimmed to 30 s) and the source; on the MLX thread, like the chunks."""
+        ref_parts = []
+        ref_texts = []
+        total_ref = 0
+        all_have_text = True
+        for sample in samples:
+            if total_ref >= max_ref_samples:
+                break
+            part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
+            remaining = max_ref_samples - total_ref
+            was_truncated = len(part) > remaining
+            if was_truncated:
+                part = part[:remaining]
+            ref_parts.append(part)
+            total_ref += len(part)
 
-        sample_text = sample.get("reference_text", "").strip()
-        if sample_text and not was_truncated:
-            ref_texts.append(sample_text)
-        elif was_truncated:
-            # Audio was truncated — omit transcript to avoid text/audio mismatch
-            all_have_text = False
-            logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
-        else:
-            all_have_text = False
+            sample_text = sample.get("reference_text", "").strip()
+            if sample_text and not was_truncated:
+                ref_texts.append(sample_text)
+            elif was_truncated:
+                # Audio was truncated — omit transcript to avoid text/audio mismatch
+                all_have_text = False
+                logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
+            else:
+                all_have_text = False
 
-        logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
+            logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
 
-    if not ref_parts:
-        raise ValueError("No reference audio samples loaded successfully")
+        if not ref_parts:
+            raise ValueError("No reference audio samples loaded successfully")
 
-    ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
-    # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
-    # Partial text causes voice cloning degradation.
-    ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
-    logger.info(
-        f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
-        f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
-    )
-
-    source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
-    source_duration = len(source_audio) / model_sr if model_sr else 0
-    logger.info(
-        f"Voice conversion: source_samples={len(source_audio)}, "
-        f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
-        f"original_duration={original_duration:.3f}s"
-    )
-    if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
-        logger.warning(
-            f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
-            f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+        ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
+        # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
+        # Partial text causes voice cloning degradation.
+        ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
+        logger.info(
+            f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
+            f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
         )
+
+        source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+        source_duration = len(source_audio) / model_sr if model_sr else 0
+        logger.info(
+            f"Voice conversion: source_samples={len(source_audio)}, "
+            f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
+            f"original_duration={original_duration:.3f}s"
+        )
+        if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
+            logger.warning(
+                f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
+                f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+            )
+        return ref_audio, ref_text, np.array(source_audio)
+
+    ref_audio, ref_text, source_audio = await run_mlx(_load_inputs)
 
     set_status("generating")
 
     def _convert_chunk(chunk_audio):
-        """Run voice conversion on a single chunk (blocking, for thread pool)."""
+        """Run voice conversion on a single chunk (blocking, on the MLX thread)."""
         # CosyVoice transcribes the reference only when no source_audio is given, so voice
         # conversion never uses an STT model; None keeps it from naming one.
         results = _vc_model.generate(
@@ -698,11 +704,13 @@ async def _do_voice_convert(
         return np.concatenate(audio_parts)
 
     # CosyVoice3 accepts at most 30s of source audio per call, so 25s windows leave headroom.
+    # The chunker runs on a worker and hands each chunk to the MLX thread, so a transcription can run
+    # between chunks instead of waiting out the whole conversion (the app gives it 120 s).
     audio = await asyncio.to_thread(
         convert_in_overlapping_chunks,
-        np.array(source_audio),
+        source_audio,
         model_sr,
-        _convert_chunk,
+        lambda chunk: call_mlx(_convert_chunk, chunk),
         chunk_seconds=25.0,
         overlap_seconds=1.0,
         on_progress=set_progress,
@@ -822,15 +830,13 @@ async def transcribe(file: UploadFile = File(...), model_name: str = Form(None))
 
         logger.info(f"Transcribing: {temp_path} ({len(content) // 1024}KB)")
 
-        from tts import transcribe as do_transcribe
+        from tts import run_mlx, transcribe as do_transcribe
 
         kwargs = {}
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = await asyncio.to_thread(
-            do_transcribe, str(temp_path), **kwargs
-        )
+        result = await run_mlx(do_transcribe, str(temp_path), **kwargs)
         logger.info(
             f"Transcribed: {result['duration']:.1f}s audio -> "
             f"{len(result['text'])} chars"
@@ -857,15 +863,13 @@ async def transcribe_path(request: dict):
 
     try:
         logger.info(f"Transcribing from path: {audio_path}")
-        from tts import transcribe as do_transcribe
+        from tts import run_mlx, transcribe as do_transcribe
 
         kwargs = {}
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = await asyncio.to_thread(
-            do_transcribe, audio_path, **kwargs
-        )
+        result = await run_mlx(do_transcribe, audio_path, **kwargs)
         logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
         return result
     except Exception as e:

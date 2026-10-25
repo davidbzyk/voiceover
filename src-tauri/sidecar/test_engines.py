@@ -1,6 +1,7 @@
 """Tests for the text-to-speech engine path: one generic mlx-audio path for every TTS row."""
 
 import asyncio
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -124,6 +125,65 @@ class _FakeModel:
             audio = np.ones(SR, dtype=np.float32)
 
         yield R()
+
+
+class _ThreadRecordingModel(_FakeModel):
+    """A _FakeModel that records the thread each generate call runs on."""
+
+    def __init__(self, seen):
+        super().__init__()
+        self.seen = seen
+
+    def generate(self, **kwargs):
+        self.seen.append(("generate", threading.current_thread().name))
+        yield from super().generate(**kwargs)
+
+
+def test_loading_decoding_and_generating_run_on_the_mlx_thread(monkeypatch):
+    """mlx 0.32 fails an array not yet evaluated on any thread but its own; one MLX thread does all of it."""
+    seen = []
+    monkeypatch.setattr(tts, "_tts_model", None)
+    monkeypatch.setattr(tts, "_tts_engine", None)
+    monkeypatch.setattr("mlx_audio.tts.utils.load_model", lambda repo: seen.append(("load", threading.current_thread().name)) or _ThreadRecordingModel(seen))
+    monkeypatch.setattr("mlx_audio.utils.load_audio", lambda path, sample_rate: seen.append(("reference", threading.current_thread().name)) or np.zeros(10))
+    monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: SAMPLES)
+    run_generate("qwen-tts-1.7B", segments=[{"text": f"Line {i}.", "start": float(i), "end": i + 0.5} for i in range(2)])
+    assert [what for what, _ in seen] == ["load", "reference", "generate", "generate"]
+    assert all(name.startswith("mlx") for _, name in seen), seen
+
+
+class _FakeCosyVoice:
+    """Stand-in for CosyVoice3: reads the reference first, as the real generate does, and returns the chunk."""
+
+    sample_rate = SR
+
+    def generate(self, *, ref_audio, source_audio, **kwargs):
+        np.array(ref_audio)
+
+        class R:
+            audio = source_audio
+
+        yield R()
+
+
+def test_a_voice_sample_over_30_s_converts(monkeypatch, tmp_path):
+    """The reference is trimmed to 30 s; on mlx 0.32 a trim made on another thread failed the first chunk
+    ("There is no Stream(gpu, 2) in current thread", frozen binary, 60 s sample, 2026-10-25)."""
+    import soundfile as sf
+    from cosyvoice_mlx import loader
+
+    sample, source = tmp_path / "sample.wav", tmp_path / "source.wav"
+    sf.write(sample, np.zeros(16000 * 40, dtype=np.float32), 16000)
+    sf.write(source, np.zeros(16000 * 5, dtype=np.float32), 16000)
+    monkeypatch.setattr(server, "_vc_model", None)
+    monkeypatch.setattr(server, "_vc_model_name", None)
+    monkeypatch.setattr(loader, "load_cosyvoice3", lambda repo: _FakeCosyVoice())
+    monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: [{"audio_path": str(sample), "reference_text": "Hi."}])
+    audio, sr, _ = asyncio.run(server._do_voice_convert(
+        set_status=lambda s: None, data_dir=tmp_path, profile_id="p",
+        source_audio_path=str(source), original_duration=5.0,
+    ))
+    assert sr == SR and len(audio) == 5 * SR
 
 
 def test_generate_speech_leaves_sampling_to_the_model(monkeypatch):

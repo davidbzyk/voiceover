@@ -6,12 +6,31 @@ Whisper transcription and text-to-speech engines, both through mlx-audio.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import gc
 import logging
 
 import numpy as np
 
 logger = logging.getLogger("voiceover-tts.engine")
+
+# mlx 0.32 ties a stream, and every array not yet evaluated, to the thread that made it; used on any
+# other thread it fails ("There is no Stream(gpu, N) in current thread"). So every MLX computation runs
+# on this one thread, one unit (a model load, a segment, a chunk, a transcription) at a time. Freeing a
+# model and clearing the Metal cache work from any thread (tested on 0.32.4).
+_mlx_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
+
+
+async def run_mlx(fn, /, *args, **kwargs):
+    """Await ``fn(*args, **kwargs)`` run on the sidecar's MLX thread."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_mlx_thread, functools.partial(fn, *args, **kwargs))
+
+
+def call_mlx(fn, /, *args, **kwargs):
+    """Run ``fn`` on the MLX thread from another worker thread and wait for it; never call it on the MLX thread."""
+    return _mlx_thread.submit(fn, *args, **kwargs).result()
 
 # ---------------------------------------------------------------------------
 # Whisper transcription (using mlx-audio, same as Voicebox)
@@ -285,7 +304,7 @@ async def load_tts_engine(engine: str, repo_id: str) -> None:
         return load_model(repo_id)
 
     logger.info("Loading TTS engine %s (%s)...", engine, repo_id)
-    _tts_model = await asyncio.to_thread(_load_sync)
+    _tts_model = await run_mlx(_load_sync)
     _tts_engine = engine
     logger.info("TTS engine %s loaded (sr=%s)", engine, _tts_model.sample_rate)
 
@@ -327,4 +346,4 @@ async def generate_speech(
             raise RuntimeError("TTS engine produced no audio")
         return np.concatenate(parts), model.sample_rate
 
-    return await asyncio.to_thread(_generate_sync)
+    return await run_mlx(_generate_sync)

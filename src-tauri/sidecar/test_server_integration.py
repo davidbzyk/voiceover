@@ -280,6 +280,18 @@ class TestTranscriptionEndpoints:
         })
         assert response.status_code == 400
 
+    def test_transcription_runs_on_the_mlx_thread(self, client, temp_data_dir, monkeypatch):
+        """Whisper shares the one MLX thread with generation; mlx 0.32 fails an array used off its thread."""
+        import threading
+        import tts
+
+        audio = Path(temp_data_dir) / "clip.wav"
+        audio.write_bytes(b"RIFF")
+        seen = []
+        monkeypatch.setattr(tts, "transcribe", lambda path, **kw: seen.append(threading.current_thread().name) or {"text": "Hi.", "duration": 1.0})
+        assert client.post("/transcribe-path", json={"audio_path": str(audio)}).status_code == 200
+        assert seen and seen[0].startswith("mlx"), seen
+
 
 # ---------------------------------------------------------------------------
 # Path traversal security (S2)
