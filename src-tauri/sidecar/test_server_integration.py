@@ -400,6 +400,8 @@ class TestHappyPaths:
             assert "license" in m
         licences = {m["model_name"]: m["license"] for m in models}
         assert licences["qwen-tts-1.7B"] == "apache-2.0"
+        assert licences["omnivoice"] == "cc-by-nc"
+        assert licences["fish-s2-pro"] == "fish-audio-research"
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +415,11 @@ class TestModelRegistry:
             "whisper-medium",
             "whisper-large-v3-turbo",
             "qwen-tts-1.7B",
+            "voxcpm2",
+            "moss-tts-local-v1.5",
+            "omnivoice",
+            "fish-s2-pro",
+            "chatterbox",
             "cosyvoice3-0.5B",
         }
         assert set(MODEL_REGISTRY.keys()) == expected
@@ -680,6 +687,8 @@ class TestEngineExtraRepos:
     def test_rows_name_the_repos_their_engines_fetch(self):
         """Found by generating each engine with HF_HUB_OFFLINE=1 and only the row's own repo present."""
         assert MODEL_REGISTRY["cosyvoice3-0.5B"]["extra_repos"] == ["mlx-community/S3TokenizerV3"]
+        assert MODEL_REGISTRY["moss-tts-local-v1.5"]["extra_repos"] == ["OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"]
+        assert MODEL_REGISTRY["chatterbox"]["extra_repos"] == ["mlx-community/S3TokenizerV2"]
 
     def test_status_is_not_downloaded_until_the_extra_repo_is(self, client, temp_data_dir):
         models = Path(temp_data_dir) / "models"
