@@ -309,6 +309,15 @@ async def load_tts_engine(engine: str, repo_id: str) -> None:
     logger.info("TTS engine %s loaded (sr=%s)", engine, _tts_model.sample_rate)
 
 
+def to_mono(audio) -> np.ndarray:
+    """One float32 channel from an engine result: mlx-audio gives (samples,), a (1, samples) batch, or
+    (samples, channels) stereo from MOSS-TTS Local; channels are always the shorter axis, and are averaged."""
+    a = np.asarray(audio, dtype=np.float32)
+    if a.ndim == 2:
+        a = a.mean(axis=0 if a.shape[0] < a.shape[1] else 1)
+    return a.reshape(-1)
+
+
 def load_reference(ref_audio_path: str):
     """Decode a voice sample at the loaded engine's sample rate; done once per generation."""
     from mlx_audio.utils import load_audio
@@ -339,7 +348,7 @@ async def generate_speech(
         if seed is not None:
             mx.random.seed(seed)
         parts = [
-            np.asarray(r.audio, dtype=np.float32).flatten()
+            to_mono(r.audio)
             for r in model.generate(text=text, ref_audio=ref_audio, ref_text=ref_text)
         ]
         if not parts:

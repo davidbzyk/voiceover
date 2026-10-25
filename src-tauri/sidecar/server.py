@@ -591,7 +591,7 @@ async def _do_voice_convert(
     from mlx_audio.utils import load_audio
     from profiles import get_samples
     from chunked_tts import convert_in_overlapping_chunks
-    from tts import call_mlx, run_mlx
+    from tts import call_mlx, run_mlx, to_mono
 
     # Load CosyVoice3 model
     set_status("loading_model")
@@ -698,7 +698,7 @@ async def _do_voice_convert(
         )
         audio_parts = []
         for result in results:
-            audio_parts.append(np.array(result.audio, dtype=np.float32).flatten())
+            audio_parts.append(to_mono(result.audio))
         if not audio_parts:
             return np.array([], dtype=np.float32)
         return np.concatenate(audio_parts)

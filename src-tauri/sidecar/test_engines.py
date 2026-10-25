@@ -186,6 +186,22 @@ def test_a_voice_sample_over_30_s_converts(monkeypatch, tmp_path):
     assert sr == SR and len(audio) == 5 * SR
 
 
+def test_stereo_engine_output_is_downmixed_not_interleaved(monkeypatch):
+    """MOSS-TTS Local returns (samples, 2) at 48 kHz (measured: (99840, 2) for a 2.08 s line); flattening
+    interleaved the channels into mono twice as long, so the sidecar saved that line as 4.0 s."""
+
+    class _StereoModel(_FakeModel):
+        def generate(self, **kwargs):
+            class R:
+                audio = np.stack([np.full(SR, 0.2, dtype=np.float32), np.full(SR, 0.4, dtype=np.float32)], axis=1)
+
+            yield R()
+
+    monkeypatch.setattr(tts, "_tts_model", _StereoModel())
+    audio, sr = asyncio.run(tts.generate_speech("Hi.", np.zeros(10), None))
+    assert audio.shape == (SR,) and np.allclose(audio, 0.3)
+
+
 def test_generate_speech_leaves_sampling_to_the_model(monkeypatch):
     """mlx-audio 0.5.8's generate_audio helper forced temperature 0.7 and MOSS looped to its
     96 s limit; the engine path must pass only text and the voice reference."""

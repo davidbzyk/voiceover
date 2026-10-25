@@ -24,12 +24,14 @@ trial_matrix:
   whisper_turbo_30s: same transcript word for word; warm 0.46 s old, 0.49 s new
   cosyvoice_vc_30s_warm: 3.35-3.62 s old, 2.83-2.86 s new; 29.99 s out on both
   frozen_binary_60s_sample: Replace Voice failed on the new pins until the MLX-thread fix, completes after
+  moss_output_layout: (99840, 2) float32 at 48 kHz for a 2.08 s line; the sidecar saved it as 4.0 s mono until tts.to_mono
 key_findings:
   - mlx-audio 0.6.1 pins mlx==0.32.4 exactly, so the two move together; the principal approved taking them before the 14-day age rule cleared.
   - Every engine is faster on the new pins (long-line RTF, old to new) and CosyVoice conversion is about 17% faster warm; bad clips across seeds are within run-to-run variation (MOSS 2 of 120 old and 3 of 120 new, with the same voice dropping the same phrase on both; VoxCPM2 3 of 72 on both).
   - mlx 0.32 ties an array not yet evaluated to the thread that made it; the sidecar's MLX work hopped threads, so every MLX computation now runs on one thread (tts.run_mlx, tts.call_mlx).
   - 0.6.0's resampler fix (PR 1021) cuts imaging above 8 kHz in a 16 kHz reference upsampled for the engines from about 1e-4 to 2e-8 of the energy, so every engine hears a cleaner reference.
   - The frozen binary grows from 188 MB to 228 MB because mlx's Metal kernel library grows from 131 MB to 214 MB.
+  - MOSS-TTS Local returns stereo as (samples, 2); flattening interleaved the channels into mono twice as long. Every engine result and voice-conversion chunk now goes through tts.to_mono, which averages the channels.
 sources:
   - id: engine-tests
     resource: src-tauri/sidecar/test_engines.py
