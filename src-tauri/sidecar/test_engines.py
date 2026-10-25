@@ -27,11 +27,12 @@ def calls(monkeypatch):
     async def fake_load(engine, repo_id):
         recorded.append(("load", engine, repo_id))
 
-    async def fake_speak(text, ref_audio_path, ref_text, seed=None):
-        recorded.append(("speak", text, ref_audio_path, ref_text, seed))
+    async def fake_speak(text, ref_audio, ref_text, seed=None):
+        recorded.append(("speak", text, ref_audio, ref_text, seed))
         return np.zeros(SR // 10, dtype=np.float32), SR
 
     monkeypatch.setattr(tts, "load_tts_engine", fake_load)
+    monkeypatch.setattr(tts, "load_reference", lambda path: ("decoded", path))
     monkeypatch.setattr(tts, "generate_speech", fake_speak)
     monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: SAMPLES)
     return recorded
@@ -58,7 +59,7 @@ def test_qwen_clones_without_the_transcript(calls):
     run_generate("qwen-tts-1.7B")
     speaks = [c for c in calls if c[0] == "speak"]
     assert speaks and all(c[3] is None for c in speaks)
-    assert speaks[0][2] == SAMPLES[-1]["audio_path"]
+    assert speaks[0][2] == ("decoded", SAMPLES[-1]["audio_path"])  # the last sample is the reference
 
 
 def test_transcript_engines_get_the_last_samples_text(calls, monkeypatch):
@@ -77,10 +78,30 @@ def test_engine_row_picks_the_repo_that_loads(calls):
 
 def test_cancel_stops_before_the_next_segment(calls):
     segments = [{"text": f"Line {i}.", "start": float(i), "end": i + 0.5} for i in range(3)]
-    flags = iter([False, True, True])
     with pytest.raises(ConversionCancelled):
-        run_generate("qwen-tts-1.7B", segments=segments, should_cancel=lambda: next(flags))
+        run_generate("qwen-tts-1.7B", segments=segments, should_cancel=lambda: any(c[0] == "speak" for c in calls))
     assert len([c for c in calls if c[0] == "speak"]) == 1
+
+
+def test_cancel_stops_between_the_sub_chunks_of_a_long_segment(calls):
+    """A segment over the 800-character limit is spoken in sub-chunks; a cancel during one stops the rest."""
+    sentence = "This sentence is here to make one long segment for the sub-chunk path. " * 6
+    segments = [{"text": sentence * 3, "start": 0.0, "end": 60.0}]
+    with pytest.raises(ConversionCancelled):
+        run_generate("qwen-tts-1.7B", segments=segments, should_cancel=lambda: any(c[0] == "speak" for c in calls))
+    assert len([c for c in calls if c[0] == "speak"]) == 1
+
+
+def test_the_voice_sample_is_decoded_once_per_generation(monkeypatch):
+    """Every segment is spoken from the same reference; decoding it per segment repeats file I/O and resampling."""
+    decoded = []
+    monkeypatch.setattr(tts, "_tts_model", _FakeModel())
+    monkeypatch.setattr(tts, "load_tts_engine", lambda engine, repo_id: asyncio.sleep(0))
+    monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: SAMPLES)
+    monkeypatch.setattr("mlx_audio.utils.load_audio", lambda path, sample_rate: decoded.append(path) or np.zeros(10))
+    segments = [{"text": f"Line {i}.", "start": float(i), "end": i + 0.5} for i in range(3)]
+    run_generate("qwen-tts-1.7B", segments=segments)
+    assert decoded == [SAMPLES[-1]["audio_path"]]
 
 
 def test_progress_counts_segments(calls):
@@ -110,8 +131,7 @@ def test_generate_speech_leaves_sampling_to_the_model(monkeypatch):
     96 s limit; the engine path must pass only text and the voice reference."""
     model = _FakeModel()
     monkeypatch.setattr(tts, "_tts_model", model)
-    monkeypatch.setattr("mlx_audio.utils.load_audio", lambda path, sample_rate: np.zeros(10))
-    audio, sr = asyncio.run(tts.generate_speech("Hi.", "/ref.wav", None))
+    audio, sr = asyncio.run(tts.generate_speech("Hi.", np.zeros(10), None))
     assert set(model.kwargs) == {"text", "ref_audio", "ref_text"}
     assert sr == SR and len(audio) == SR
 

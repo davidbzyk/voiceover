@@ -290,13 +290,23 @@ async def load_tts_engine(engine: str, repo_id: str) -> None:
     logger.info("TTS engine %s loaded (sr=%s)", engine, _tts_model.sample_rate)
 
 
+def load_reference(ref_audio_path: str):
+    """Decode a voice sample at the loaded engine's sample rate; done once per generation."""
+    from mlx_audio.utils import load_audio
+
+    if _tts_model is None:
+        raise RuntimeError("No TTS engine loaded")
+    return load_audio(ref_audio_path, sample_rate=_tts_model.sample_rate)
+
+
 async def generate_speech(
     text: str,
-    ref_audio_path: str,
+    ref_audio,
     ref_text: str | None,
     seed: int | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Speak ``text`` in the reference voice with the loaded engine's own sampling defaults.
+    """Speak ``text`` in the voice of ``ref_audio`` (from ``load_reference``) with the loaded
+    engine's own sampling defaults.
 
     ``ref_text`` is None for engines that clone from the audio alone (Qwen x-vector mode).
     """
@@ -306,14 +316,12 @@ async def generate_speech(
 
     def _generate_sync():
         import mlx.core as mx
-        from mlx_audio.utils import load_audio
 
         if seed is not None:
             mx.random.seed(seed)
-        ref = load_audio(ref_audio_path, sample_rate=model.sample_rate)
         parts = [
             np.asarray(r.audio, dtype=np.float32).flatten()
-            for r in model.generate(text=text, ref_audio=ref, ref_text=ref_text)
+            for r in model.generate(text=text, ref_audio=ref_audio, ref_text=ref_text)
         ]
         if not parts:
             raise RuntimeError("TTS engine produced no audio")

@@ -426,7 +426,7 @@ async def _do_generate(
     segments (or text chunks) done, and stops at the next one when ``should_cancel()`` is true.
     """
     from profiles import get_samples
-    from tts import generate_speech, load_tts_engine
+    from tts import generate_speech, load_reference, load_tts_engine
     from chunked_tts import (
         ConversionCancelled,
         assemble_timed_segments,
@@ -444,17 +444,21 @@ async def _do_generate(
     set_status("loading_model")
     await load_tts_engine(engine, row["repo_id"])
     # The last sample is the voice reference, as the Qwen prompt path used before.
-    ref_audio_path = samples[-1]["audio_path"]
+    ref_audio = await asyncio.to_thread(load_reference, samples[-1]["audio_path"])
     ref_text = None
     if row["ref_text"]:
         ref_text = (samples[-1].get("reference_text") or "").strip() or None
 
-    async def speak(chunk_text: str, seed: int | None = None):
-        return await generate_speech(chunk_text, ref_audio_path, ref_text, seed=seed)
-
-    def step(done: int, total: int) -> None:
+    def check_cancel() -> None:
         if should_cancel():
             raise ConversionCancelled()
+
+    async def speak(chunk_text: str, seed: int | None = None):
+        check_cancel()  # also between the sub-chunks of a long segment
+        return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+
+    def step(done: int, total: int) -> None:
+        check_cancel()
         set_progress(done, total)
 
     set_status("generating")
