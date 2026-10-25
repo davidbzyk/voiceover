@@ -10,7 +10,7 @@ tags:
   - evidence
   - cosyvoice
   - dependencies
-freshness: "2026-10-25T15:21:22Z"
+freshness: "2026-10-25T15:42:21Z"
 version: 1.0.0
 status: stable
 kcc_action: condense
@@ -59,6 +59,9 @@ Copying only the CosyVoice code (MIT, from the 0.1.8 wheel) into its own package
 runtime: it imports mlx-audio's shared pieces and replaces nothing.
 `scripts/check-cosyvoice-copy.sh` re-derives the copy from the wheel (fetched by its PyPI digest, the
 same import edits applied) and diffs; it prints nothing and exits 0 while the copy is unchanged.
+The wheel carries only the fork's MIT licence. The texts of the projects the code was ported from
+(CosyVoice, Chatterbox, Matcha-TTS, S3Tokenizer) are in `cosyvoice_mlx/licenses/`, from the fork's
+tag v0.1.8, and `test_cosyvoice_licenses.py` fails if a ported upstream has no text there.
 
 ## Open
 Upkeep: the copy does not follow the fork. The fork's main branch has CosyVoice3 alignment work from
