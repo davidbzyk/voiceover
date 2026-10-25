@@ -550,6 +550,30 @@ class TestGenerationProgressAndCancel:
         assert data["status"] == "cancelled"
         assert len(converted) < data["progress"]["total"]
 
+    def test_cancel_during_the_last_chunk_is_not_saved_as_completed(self, client, temp_data_dir, monkeypatch):
+        """A short recording is one chunk: a cancel that lands while it runs must still end cancelled."""
+        import asyncio
+
+        import numpy as np
+
+        import server
+
+        async def one_chunk(*, set_status, set_progress, should_cancel, **_):
+            set_status("generating")
+            set_progress(0, 1)
+            while not should_cancel():  # the model is still running when the cancel arrives
+                await asyncio.sleep(0.01)
+            set_progress(1, 1)
+            return np.zeros(16000, dtype=np.float32), 16000, "Voice conversion"
+
+        monkeypatch.setattr(server, "_do_voice_convert", one_chunk)
+        gen_id = _submit_convert(client, temp_data_dir)
+        _wait_for(client, gen_id, lambda d: d["status"] == "generating")
+        assert client.post(f"/generate/{gen_id}/cancel").status_code == 200
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
+        assert data["status"] == "cancelled"
+        assert not (Path(temp_data_dir) / "generations" / f"{gen_id}.wav").exists()
+
     def test_cancel_drops_a_queued_conversion_before_it_runs(self, client, temp_data_dir, monkeypatch):
         import server
 

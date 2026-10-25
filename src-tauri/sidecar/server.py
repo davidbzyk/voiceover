@@ -95,7 +95,7 @@ logger = logging.getLogger("voiceover-tts")
 
 # TTS rows: ``ref_text`` says whether the engine gets the sample's transcript. Qwen clones from
 # the speaker embedding alone (x-vector mode), which stops the transcript leaking into the output.
-# ``license`` is the model card's licence id, shown before download. ``module`` is the code that
+# ``license`` is the model card's licence id, sent by /models/status. ``module`` is the code that
 # loads the repo; ``--check-imports`` imports each one so a frozen build missing a module fails at
 # build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
 # time; they are downloaded, counted and deleted with the row. Find them by generating once with
@@ -332,6 +332,9 @@ async def _run_generation(gen_id: str, generate_fn):
 
     try:
         audio, sample_rate, log_label = await generate_fn()
+        # Engines check cancel between chunks, so one that arrives during the last chunk lands here.
+        if _generations[gen_id]["cancel"]:
+            raise ConversionCancelled()
 
         # Diagnostic: log audio properties before saving
         audio_duration = len(audio) / sample_rate if sample_rate else 0
