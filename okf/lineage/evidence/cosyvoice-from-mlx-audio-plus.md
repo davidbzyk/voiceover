@@ -3,14 +3,14 @@ id: lineage/evidence/cosyvoice-from-mlx-audio-plus
 schema: okf/schemas/v1/lineage.json
 type: Lineage
 title: CosyVoice came from an undeclared fork; the sidecar now carries its code
-description: Replace Voice ran on mlx-audio-plus 0.1.8 installed by hand over mlx-audio 0.4.2; its CosyVoice3 code now lives in src-tauri/sidecar/cosyvoice_mlx on mlx-audio 0.5.8.
+description: Replace Voice ran on mlx-audio-plus 0.1.8 installed by hand over mlx-audio 0.4.2; its CosyVoice3 code now lives in src-tauri/sidecar/cosyvoice_mlx on the sidecar's mlx-audio pin (0.6.1 since 2026-10-25).
 domain: voice-models
 tags:
   - lineage
   - evidence
   - cosyvoice
   - dependencies
-freshness: "2026-10-25T15:42:21Z"
+freshness: "2026-10-25T22:35:00Z"
 version: 1.0.0
 status: stable
 kcc_action: condense

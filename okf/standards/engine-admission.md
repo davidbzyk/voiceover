@@ -9,7 +9,7 @@ tags:
   - standard
   - sidecar
   - dependencies
-freshness: "2026-10-25T15:40:42Z"
+freshness: "2026-10-25T22:35:00Z"
 version: 0.1.0
 status: draft
 standard_scope: src-tauri/sidecar
@@ -54,12 +54,17 @@ relations:
    sidecar's modules and `cosyvoice_mlx`). The build venv adds only tools the
    binary never imports, each at the version the build docs pin: PyInstaller to build, pytest and httpx
    to run the sidecar tests.
+6. Every MLX computation an engine needs (load, reference decode, generate, transcribe) runs on the
+   sidecar's one MLX thread: `tts.run_mlx` from async code, `tts.call_mlx` from a worker thread. The
+   thread tests in `test_engines.py` and `test_server_integration.py` cover the shared paths.
 
 ## Why
 The April seven-backend sidecar died on exactly these conflicts; see the
 [tombstone](../tombstones/multi-model-backends-2026-04.md). Rule 5 comes from CosyVoice running for
 months on a fork nobody had listed; see the
-[fork evidence](../lineage/evidence/cosyvoice-from-mlx-audio-plus.md).
+[fork evidence](../lineage/evidence/cosyvoice-from-mlx-audio-plus.md). Rule 6 comes from mlx 0.32,
+where an array not yet evaluated fails on any thread but the one that made it; see the
+[bump evidence](../lineage/evidence/mlx-0324-mlx-audio-061-bump.md).
 
 ## Status
 Draft from the 2026-10-22 restore-Qwen plan; becomes stable when that plan's PR merges.

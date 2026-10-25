@@ -8,7 +8,7 @@ domain: voice-models
 tags:
   - domain
   - voice-models
-freshness: "2026-10-23T22:50:00Z"
+freshness: "2026-10-25T22:35:00Z"
 version: 1.0.0
 status: stable
 domain_code: VOICE
@@ -48,7 +48,8 @@ relations:
 
 ## Context
 The app ships with no models installed; the user downloads each model from the Models page. Every
-local engine runs on MLX through mlx-audio 0.5.8 in the sidecar; there is no PyTorch. Text-to-speech
+local engine runs on MLX through mlx-audio 0.6.1 (mlx 0.32.4) in the sidecar, every MLX computation on
+one thread; there is no PyTorch. Text-to-speech
 engines are rows in `MODEL_REGISTRY` (`server.py`) and share one generate path (`tts.generate_speech`).
 
 | Engine | Job | Runtime | Notes |

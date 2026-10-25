@@ -9,7 +9,7 @@ tags:
   - lineage
   - evidence
   - mlx-audio
-freshness: "2026-10-23T22:50:00Z"
+freshness: "2026-10-25T22:35:00Z"
 version: 1.0.0
 status: stable
 kcc_action: condense
@@ -42,6 +42,7 @@ relations:
   relates_to:
     - domains/voice-models/engines
     - lineage/evidence/qwen3-tts-icl-reference-leak
+    - lineage/evidence/mlx-0324-mlx-audio-061-bump
   implements: []
   supersedes: []
   superseded_by: null
@@ -57,6 +58,7 @@ changed? What changed?") until its 96 s limit. Calling `model.generate` directly
 sampling to the model's own defaults, gave MOSS a WER of 0.009. The sidecar's engine path does the
 same; `test_engines.py::test_generate_speech_leaves_sampling_to_the_model` holds it there.
 
-## Open
-Qwen x-vector starts short lines late on 0.5.8; 0.6.0's "prefill full text" fix (PR 1036) is the
-likely cure, and 0.6.0 is under the 14-day age rule until 2026-11-02.
+## Resolved
+Qwen x-vector started short lines late on 0.5.8. The sidecar moved to mlx-audio 0.6.1 and mlx 0.32.4
+on 2026-10-25, with the principal's yes ahead of the 14-day age rule; the
+[bump evidence](./mlx-0324-mlx-audio-061-bump.md) has the rerun.
