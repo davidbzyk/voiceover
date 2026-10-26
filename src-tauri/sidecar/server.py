@@ -126,6 +126,53 @@ MODEL_REGISTRY = {
         "ref_text": False,
         "license": "apache-2.0",
     },
+    "voxcpm2": {
+        "repo_id": "mlx-community/VoxCPM2-bf16",
+        "module": "mlx_audio.tts.models.voxcpm2",
+        "display_name": "VoxCPM2",
+        "category": "tts",
+        "recommended": False,
+        "ref_text": True,
+        "license": "apache-2.0",
+    },
+    "moss-tts-local-v1.5": {
+        "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
+        "extra_repos": ["OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"],  # 8.5 GB, fetched in generate
+        "module": "mlx_audio.tts.models.moss_tts_local",
+        "display_name": "MOSS-TTS Local v1.5",
+        "category": "tts",
+        "recommended": False,
+        "ref_text": True,
+        "license": "apache-2.0",
+    },
+    "omnivoice": {
+        "repo_id": "mlx-community/OmniVoice-bf16",
+        "module": "mlx_audio.tts.models.omnivoice",
+        "display_name": "OmniVoice",
+        "category": "tts",
+        "recommended": False,
+        "ref_text": True,
+        "license": "cc-by-nc",
+    },
+    "fish-s2-pro": {
+        "repo_id": "mlx-community/fish-audio-s2-pro-bf16",
+        "module": "mlx_audio.tts.models.fish_qwen3_omni",
+        "display_name": "Fish S2 Pro",
+        "category": "tts",
+        "recommended": False,
+        "ref_text": True,
+        "license": "fish-audio-research",
+    },
+    "chatterbox": {
+        "repo_id": "mlx-community/Chatterbox-TTS-fp16",
+        "extra_repos": ["mlx-community/S3TokenizerV2"],  # 0.5 GB, fetched in post_load_hook
+        "module": "mlx_audio.tts.models.chatterbox",
+        "display_name": "Chatterbox",
+        "category": "tts",
+        "recommended": False,
+        "ref_text": True,
+        "license": "mit",
+    },
     # Voice conversion
     "cosyvoice3-0.5B": {
         "repo_id": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",

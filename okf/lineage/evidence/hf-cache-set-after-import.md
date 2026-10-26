@@ -9,7 +9,7 @@ tags:
   - lineage
   - evidence
   - huggingface
-freshness: "2026-10-23T23:36:54Z"
+freshness: "2026-10-25T15:28:03Z"
 version: 1.0.0
 status: stable
 kcc_action: condense
@@ -57,4 +57,4 @@ fetch a second repo the Models page did not know about. Generating each engine o
 `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2` (8.5 GB, in `generate`), Chatterbox `mlx-community/S3TokenizerV2`
 (0.5 GB, at load) and CosyVoice3 `mlx-community/S3TokenizerV3` (1.0 GB, with its tokenizers). A row lists
 them as `extra_repos`, which the Models page downloads, counts as part of "downloaded" and deletes with
-the row. The CosyVoice3 row does; the MOSS-TTS Local and Chatterbox rows must when those engines are added.
+the row. The CosyVoice3, MOSS-TTS Local and Chatterbox rows do.
