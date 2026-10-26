@@ -15,7 +15,6 @@ hiddenimports = []
 
 # Copy package metadata (required for safetensors format detection)
 datas += copy_metadata('safetensors')
-datas += copy_metadata('qwen-tts')
 datas += copy_metadata('requests')
 datas += copy_metadata('transformers')
 datas += copy_metadata('huggingface-hub')
@@ -24,7 +23,12 @@ datas += copy_metadata('tqdm')
 
 # Collect submodules (ensures all .so native extensions are included)
 hiddenimports += collect_submodules('mlx')
-hiddenimports += collect_submodules('mlx_whisper')
+hiddenimports += collect_submodules('cosyvoice_mlx')
+# The copy has no package metadata to carry its licences, so its texts are bundled by hand.
+datas += [('cosyvoice_mlx/LICENSE', 'cosyvoice_mlx'), ('cosyvoice_mlx/licenses', 'cosyvoice_mlx/licenses')]
+# scipy 1.18 imports its vendored array-api backends by name (importlib), which PyInstaller cannot see;
+# without them every mlx-audio model that touches scipy.signal fails to load in the frozen binary.
+hiddenimports += collect_submodules('scipy._external')
 hiddenimports += collect_submodules('mlx_audio')
 
 # MLX needs its Metal shader library and native .dylib bundled explicitly
@@ -34,14 +38,6 @@ binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
 tmp_ret = collect_all('mlx_metal')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
-
-# qwen_tts uses inspect.getsource() at runtime to locate
-# modeling_qwen3_tts.py — needs physical .py source files bundled.
-# This MUST NOT be in a try/except: if it fails, generation silently breaks.
-tmp_ret = collect_all('qwen_tts')
 datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
@@ -85,20 +81,12 @@ a = Analysis(
         "mlx",
         "mlx.core",
         "mlx.nn",
-        "mlx_whisper",
         "mlx_audio",
         "mlx_audio.stt",
-        # Qwen TTS
-        "qwen_tts",
-        "qwen_tts.core",
-        # PyTorch
-        "torch",
-        "torchaudio",
         # HuggingFace
         "huggingface_hub",
         "huggingface_hub.utils",
         "safetensors",
-        "safetensors.torch",
         "tokenizers",
         "transformers",
         # Audio
@@ -112,14 +100,17 @@ a = Analysis(
         "tts",
         "profiles",
         "chunked_tts",
+        "cosyvoice_mlx",
     ]
     + hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Exclude NVIDIA packages (Apple Silicon only — keep torch.cuda as it's
-        # imported by mlx_audio for device detection and handles missing gracefully)
+        # Every engine runs on MLX; torch must not ride in from an older build venv.
+        "torch",
+        "torchaudio",
+        # Exclude NVIDIA packages (Apple Silicon only)
         "nvidia",
         "nvidia.cublas",
         "nvidia.cuda_cupti",

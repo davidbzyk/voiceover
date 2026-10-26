@@ -55,7 +55,7 @@ class TestHealthEndpoint:
         data = response.json()
         assert "models" in data
         assert "whisper" in data["models"]
-        assert "qwen" in data["models"]
+        assert "tts" in data["models"]
         assert "cosyvoice" in data["models"]
 
 
@@ -197,6 +197,21 @@ class TestGenerateEndpoint:
         })
         assert response.status_code == 400
 
+    def test_missing_engine_is_refused(self, client):
+        response = client.post("/generate", json={"profile_id": "p", "text": "Hello"})
+        assert response.status_code == 400
+        assert "engine" in response.json()["error"]
+
+    def test_unknown_engine_is_refused(self, client):
+        response = client.post("/generate", json={"engine": "nope", "profile_id": "p", "text": "Hi"})
+        assert response.status_code == 400
+
+    def test_non_tts_row_is_refused_as_engine(self, client):
+        response = client.post(
+            "/generate", json={"engine": "whisper-medium", "profile_id": "p", "text": "Hi"}
+        )
+        assert response.status_code == 400
+
     def test_generation_status_not_found(self, client):
         response = client.get("/generate/nonexistent-id/status")
         assert response.status_code == 404
@@ -218,7 +233,7 @@ class TestModelEndpoints:
         data = response.json()
         assert "models" in data
         assert isinstance(data["models"], list)
-        assert len(data["models"]) == 4
+        assert len(data["models"]) == len(MODEL_REGISTRY)
 
     def test_download_unknown_model(self, client):
         response = client.post("/models/download", json={
@@ -264,6 +279,18 @@ class TestTranscriptionEndpoints:
             "audio_path": "",
         })
         assert response.status_code == 400
+
+    def test_transcription_runs_on_the_mlx_thread(self, client, temp_data_dir, monkeypatch):
+        """Whisper shares the one MLX thread with generation; mlx 0.32 fails an array used off its thread."""
+        import threading
+        import tts
+
+        audio = Path(temp_data_dir) / "clip.wav"
+        audio.write_bytes(b"RIFF")
+        seen = []
+        monkeypatch.setattr(tts, "transcribe", lambda path, **kw: seen.append(threading.current_thread().name) or {"text": "Hi.", "duration": 1.0})
+        assert client.post("/transcribe-path", json={"audio_path": str(audio)}).status_code == 200
+        assert seen and seen[0].startswith("mlx"), seen
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +349,7 @@ class TestHappyPaths:
         assert data["status"] == "healthy"
         assert isinstance(data["models"], dict)
         assert "whisper" in data["models"]
-        assert "qwen" in data["models"]
+        assert "tts" in data["models"]
         assert "cosyvoice" in data["models"]
 
     def test_profile_crud_lifecycle(self, client):
@@ -370,6 +397,9 @@ class TestHappyPaths:
         for m in models:
             assert "model_name" in m
             assert "downloaded" in m
+            assert "license" in m
+        licences = {m["model_name"]: m["license"] for m in models}
+        assert licences["qwen-tts-1.7B"] == "apache-2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +408,6 @@ class TestHappyPaths:
 
 
 class TestModelRegistry:
-    def test_registry_has_expected_entry_count(self):
-        assert len(MODEL_REGISTRY) == 4
-
     def test_registry_contains_expected_models(self):
         expected = {
             "whisper-medium",
@@ -389,6 +416,12 @@ class TestModelRegistry:
             "cosyvoice3-0.5B",
         }
         assert set(MODEL_REGISTRY.keys()) == expected
+
+    def test_tts_rows_declare_transcript_use_and_licence(self):
+        for model_name, entry in MODEL_REGISTRY.items():
+            if entry["category"] == "tts":
+                assert isinstance(entry["ref_text"], bool), model_name
+                assert isinstance(entry["license"], str) and entry["license"], model_name
 
     def test_each_entry_has_required_fields(self):
         required_fields = {"repo_id", "display_name", "category", "recommended"}
@@ -517,6 +550,31 @@ class TestGenerationProgressAndCancel:
         assert data["progress"]["total"] == len(converted) > 1
         assert data["progress"]["done"] == data["progress"]["total"]
 
+    def test_the_runner_hands_each_job_the_callbacks_into_its_own_record(self, temp_data_dir, monkeypatch):
+        """Both routes queue _run_generation, which gives the job its status, progress and cancel callbacks,
+        so the speech and conversion routes cannot report a job differently."""
+        import asyncio
+
+        import numpy as np
+
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", Path(temp_data_dir))
+        gen_id = server._new_generation()
+        seen = []
+
+        async def job(*, set_status, set_progress, should_cancel):
+            set_status("generating")
+            set_progress(1, 2)
+            seen.append((server._generations[gen_id]["status"], should_cancel()))
+            return np.zeros(160, dtype=np.float32), 16000, "Test job"
+
+        asyncio.run(server._run_generation(gen_id, job))
+        record = server._generations.pop(gen_id)
+        assert seen == [("generating", False)], record
+        assert record["status"] == "completed"
+        assert record["progress"] == {"done": 1, "total": 2}
+
     def test_cancel_stops_a_running_conversion_between_chunks(self, client, temp_data_dir, monkeypatch):
         import server
 
@@ -528,6 +586,30 @@ class TestGenerationProgressAndCancel:
         data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
         assert data["status"] == "cancelled"
         assert len(converted) < data["progress"]["total"]
+
+    def test_cancel_during_the_last_chunk_is_not_saved_as_completed(self, client, temp_data_dir, monkeypatch):
+        """A short recording is one chunk: a cancel that lands while it runs must still end cancelled."""
+        import asyncio
+
+        import numpy as np
+
+        import server
+
+        async def one_chunk(*, set_status, set_progress, should_cancel, **_):
+            set_status("generating")
+            set_progress(0, 1)
+            while not should_cancel():  # the model is still running when the cancel arrives
+                await asyncio.sleep(0.01)
+            set_progress(1, 1)
+            return np.zeros(16000, dtype=np.float32), 16000, "Voice conversion"
+
+        monkeypatch.setattr(server, "_do_voice_convert", one_chunk)
+        gen_id = _submit_convert(client, temp_data_dir)
+        _wait_for(client, gen_id, lambda d: d["status"] == "generating")
+        assert client.post(f"/generate/{gen_id}/cancel").status_code == 200
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
+        assert data["status"] == "cancelled"
+        assert not (Path(temp_data_dir) / "generations" / f"{gen_id}.wav").exists()
 
     def test_cancel_drops_a_queued_conversion_before_it_runs(self, client, temp_data_dir, monkeypatch):
         import server
@@ -560,3 +642,100 @@ class TestGenerationProgressAndCancel:
 
     def test_cancel_unknown_generation_is_404(self, client):
         assert client.post("/generate/does-not-exist/cancel").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Repos an engine fetches by itself (``extra_repos``)
+# ---------------------------------------------------------------------------
+
+
+def _cache_repo(models_dir: Path, repo_id: str) -> Path:
+    """Write ``repo_id`` the way huggingface_hub lays out a downloaded snapshot (blobs, snapshot, ref)."""
+    import hashlib
+
+    root = models_dir / f"models--{repo_id.replace('/', '--')}"
+    commit = hashlib.sha1(repo_id.encode()).hexdigest()  # commit hashes are per repo, never shared
+    blob = hashlib.sha256(repo_id.encode()).hexdigest()
+    (root / "blobs").mkdir(parents=True)
+    (root / "blobs" / blob).write_bytes(b"weights")
+    (root / "snapshots" / commit).mkdir(parents=True)
+    (root / "snapshots" / commit / "model.safetensors").symlink_to(f"../../blobs/{blob}")
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text(commit)
+    return root
+
+
+class TestEngineExtraRepos:
+    """An engine that fetches a second repo (CosyVoice's 1 GB S3 tokenizer) must not look downloaded without it."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "_model_cache", {})
+
+    def _status(self, client, name):
+        return next(m for m in client.get("/models/status").json()["models"] if m["model_name"] == name)
+
+    def test_rows_name_the_repos_their_engines_fetch(self):
+        """Found by generating each engine with HF_HUB_OFFLINE=1 and only the row's own repo present."""
+        assert MODEL_REGISTRY["cosyvoice3-0.5B"]["extra_repos"] == ["mlx-community/S3TokenizerV3"]
+
+    def test_status_is_not_downloaded_until_the_extra_repo_is(self, client, temp_data_dir):
+        models = Path(temp_data_dir) / "models"
+        _cache_repo(models, MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"])
+        assert self._status(client, "cosyvoice3-0.5B")["downloaded"] is False
+        _cache_repo(models, "mlx-community/S3TokenizerV3")
+        assert self._status(client, "cosyvoice3-0.5B")["downloaded"] is True
+
+    def test_health_needs_the_voice_conversion_tokenizer(self, client, temp_data_dir):
+        _cache_repo(Path(temp_data_dir) / "models", MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"])
+        assert client.get("/health").json()["models"]["cosyvoice"] is False
+
+    def test_download_fetches_the_extra_repo_too(self, client, monkeypatch):
+        import huggingface_hub
+
+        fetched = []
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, cache_dir: fetched.append(repo) or cache_dir)
+        body = client.post("/models/download", json={"model_name": "cosyvoice3-0.5B"}).text
+        assert fetched == ["mlx-community/Fun-CosyVoice3-0.5B-2512-8bit", "mlx-community/S3TokenizerV3"]
+        assert "Download complete" in body
+
+    def test_delete_removes_the_extra_repo(self, client, temp_data_dir):
+        models = Path(temp_data_dir) / "models"
+        main = _cache_repo(models, MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"])
+        extra = _cache_repo(models, "mlx-community/S3TokenizerV3")
+        assert client.delete("/models/cosyvoice3-0.5B").status_code == 200
+        assert not main.exists() and not extra.exists()
+
+    def test_delete_keeps_an_extra_repo_another_row_needs(self, client, temp_data_dir, monkeypatch):
+        import server
+
+        registry = {name: dict(entry) for name, entry in MODEL_REGISTRY.items()}
+        registry["qwen-tts-1.7B"]["extra_repos"] = ["mlx-community/S3TokenizerV3"]
+        monkeypatch.setattr(server, "MODEL_REGISTRY", registry)
+        models = Path(temp_data_dir) / "models"
+        _cache_repo(models, registry["cosyvoice3-0.5B"]["repo_id"])
+        shared = _cache_repo(models, "mlx-community/S3TokenizerV3")
+        assert client.delete("/models/cosyvoice3-0.5B").status_code == 200
+        assert shared.exists()
+
+    def test_delete_of_a_partial_download_removes_what_is_there(self, client, temp_data_dir):
+        extra = _cache_repo(Path(temp_data_dir) / "models", "mlx-community/S3TokenizerV3")
+        assert client.delete("/models/cosyvoice3-0.5B").status_code == 200
+        assert not extra.exists()
+
+
+def test_cosyvoice_loader_loads_network_and_tokenizers_before_returning(tmp_path, monkeypatch):
+    """The vendored Model loads lazily on the first generate; the server's load step must do that work."""
+    from cosyvoice_mlx import loader
+    from cosyvoice_mlx.tts.models import cosyvoice3
+
+    loaded = []
+    monkeypatch.setattr(loader, "get_model_path", lambda repo: tmp_path)
+    monkeypatch.setattr(loader, "load_config", lambda path: {"model_type": "cosyvoice3"})
+    monkeypatch.setattr(cosyvoice3.Model, "_ensure_model_loaded", lambda self: loaded.append("network"))
+    monkeypatch.setattr(cosyvoice3.Model, "_ensure_tokenizers_loaded", lambda self: loaded.append("tokenizers"))
+    model = loader.load_cosyvoice3("mlx-community/Fun-CosyVoice3-0.5B-2512-8bit")
+    assert loaded == ["network", "tokenizers"]
+    assert model.config.model_path == str(tmp_path)

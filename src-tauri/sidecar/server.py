@@ -18,8 +18,8 @@ import os
 #    these can be None, causing crashes from print/logging/tqdm.
 # 2. freeze_support(): when multiprocessing spawns a child, PyInstaller
 #    re-executes this binary from the top. Without freeze_support() before
-#    heavy imports, torch/transformers run in the child, fail to find CLI
-#    args, and silently degrade (e.g. MPS → CPU fallback).
+#    heavy imports, the child runs those imports and the server start-up
+#    instead of the worker it was spawned for.
 # 3. Early-exit for frozen children invoked without sidecar CLI flags.
 # ---------------------------------------------------------------------------
 
@@ -48,6 +48,15 @@ multiprocessing.freeze_support()
 if getattr(sys, "frozen", False) and len(sys.argv) == 1:
     sys.exit(0)
 
+# huggingface_hub reads HF_HUB_CACHE once, when first imported, and some engines fetch extra repos
+# by themselves (CosyVoice's S3 tokenizer). Set it before any import can load the hub, so every
+# model lands in the app's models folder, where the Models page lists and deletes it.
+for _i, _arg in enumerate(sys.argv):
+    if _arg.startswith("--data-dir="):
+        os.environ["HF_HUB_CACHE"] = os.path.join(_arg.split("=", 1)[1], "models")
+    elif _arg == "--data-dir" and _i + 1 < len(sys.argv):
+        os.environ["HF_HUB_CACHE"] = os.path.join(sys.argv[_i + 1], "models")
+
 # ---------------------------------------------------------------------------
 # All other imports — safe now that freeze_support has run.
 # ---------------------------------------------------------------------------
@@ -65,31 +74,6 @@ from pathlib import Path
 
 import numpy as np
 from contextlib import asynccontextmanager
-
-# Monkey-patch transformers.check_model_inputs to a no-op decorator.
-# qwen-tts 0.1.1 uses @check_model_inputs() (with parens as a decorator factory)
-# but the actual implementation in transformers 4.56-4.57 does complex kwargs
-# inspection that is incompatible with qwen-tts's forward() signatures.
-# We don't need its functionality (attention capture, cache management).
-import transformers.utils.generic as _tug
-
-if hasattr(_tug, "check_model_inputs"):
-    _original = _tug.check_model_inputs
-
-    def _noop_check_model_inputs(*args, **kwargs):
-        if args and callable(args[0]):
-            return args[0]  # @check_model_inputs without parens
-        def decorator(func):
-            return func
-        return decorator  # @check_model_inputs() with parens
-
-    _tug.check_model_inputs = _noop_check_model_inputs
-else:
-    logger = logging.getLogger("voiceover-tts")
-    logger.info(
-        "transformers.utils.generic.check_model_inputs not found — "
-        "monkey-patch may no longer be needed"
-    )
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
@@ -109,30 +93,44 @@ logger = logging.getLogger("voiceover-tts")
 # Model registry
 # ---------------------------------------------------------------------------
 
+# TTS rows: ``ref_text`` says whether the engine gets the sample's transcript. Qwen clones from
+# the speaker embedding alone (x-vector mode), which stops the transcript leaking into the output.
+# ``license`` is the model card's licence id, sent by /models/status. ``module`` is the code that
+# loads the repo; ``--check-imports`` imports each one so a frozen build missing a module fails at
+# build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
+# time; they are downloaded, counted and deleted with the row. Find them by generating once with
+# HF_HUB_OFFLINE=1 and only the row's repos in the models folder (okf/standards/engine-admission.md).
 MODEL_REGISTRY = {
     # Whisper variants (transcription)
     "whisper-medium": {
-        "repo_id": "mlx-community/whisper-medium-mlx",
+        "repo_id": "mlx-community/whisper-medium-asr-fp16",
+        "module": "mlx_audio.stt.models.whisper",
         "display_name": "Whisper Medium",
         "category": "transcription",
         "recommended": False,
     },
     "whisper-large-v3-turbo": {
-        "repo_id": "mlx-community/whisper-large-v3-turbo",
+        "repo_id": "mlx-community/whisper-large-v3-turbo-asr-fp16",
+        "module": "mlx_audio.stt.models.whisper",
         "display_name": "Whisper Large v3 Turbo",
         "category": "transcription",
         "recommended": True,
     },
     # TTS
     "qwen-tts-1.7B": {
-        "repo_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        "display_name": "Qwen TTS 1.7B",
+        "repo_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+        "module": "mlx_audio.tts.models.qwen3_tts",
+        "display_name": "Qwen3-TTS 1.7B",
         "category": "tts",
         "recommended": False,
+        "ref_text": False,
+        "license": "apache-2.0",
     },
     # Voice conversion
     "cosyvoice3-0.5B": {
         "repo_id": "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit",
+        "extra_repos": ["mlx-community/S3TokenizerV3"],  # 1.0 GB, fetched with the tokenizers
+        "module": "cosyvoice_mlx.tts.models.cosyvoice3",
         "display_name": "CosyVoice3 0.5B",
         "category": "voice-conversion",
         "recommended": False,
@@ -326,14 +324,24 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 async def _run_generation(gen_id: str, generate_fn):
     """Shared lifecycle for TTS/VC generation tasks.
 
-    Calls generate_fn() which must return (audio_data, sample_rate, log_label).
-    Handles saving the WAV, marking status as completed/error, and logging.
+    Calls generate_fn(set_status=, set_progress=, should_cancel=), which report into and read this job's
+    record, and must return (audio_data, sample_rate, log_label). Handles saving the WAV, marking status
+    as completed/error, and logging.
     """
     import soundfile as sf
     from chunked_tts import ConversionCancelled
 
     try:
-        audio, sample_rate, log_label = await generate_fn()
+        audio, sample_rate, log_label = await generate_fn(
+            set_status=lambda s: _generations[gen_id].__setitem__("status", s),
+            set_progress=lambda done, total: _generations[gen_id].__setitem__(
+                "progress", {"done": done, "total": total}
+            ),
+            should_cancel=lambda: _generations[gen_id]["cancel"],
+        )
+        # Engines check cancel between chunks, so one that arrives during the last chunk lands here.
+        if _generations[gen_id]["cancel"]:
+            raise ConversionCancelled()
 
         # Diagnostic: log audio properties before saving
         audio_duration = len(audio) / sample_rate if sample_rate else 0
@@ -410,25 +418,24 @@ async def _generation_worker():
 async def _do_generate(
     *,
     set_status,
+    set_progress=lambda done, total: None,
+    should_cancel=lambda: False,
     data_dir: Path,
+    engine: str,
     profile_id: str,
     text: str,
-    language: str,
     segments: list,
     original_duration: float,
 ):
-    """Generate speech audio from text using Qwen TTS.
+    """Generate speech from text with the TTS engine named by ``engine`` (a registry key).
 
-    Returns (audio_data, sample_rate, log_label) for _run_generation.
-    Calls set_status(str) to report progress.
+    Returns (audio_data, sample_rate, log_label) for _run_generation. Reports progress in
+    segments (or text chunks) done, and stops at the next one when ``should_cancel()`` is true.
     """
     from profiles import get_samples
-    from tts import (
-        combine_voice_prompts,
-        generate_speech,
-        load_qwen_model,
-    )
+    from tts import generate_speech, load_reference, load_tts_engine, run_mlx
     from chunked_tts import (
+        ConversionCancelled,
         assemble_timed_segments,
         concatenate_audio_chunks,
         pad_audio_to_match_timing,
@@ -436,23 +443,30 @@ async def _do_generate(
         split_text_into_chunks,
     )
 
-    models_dir = str(data_dir / "models")
-    cache_dir = str(data_dir / "cache")
-
-    # Load model if needed
-    set_status("loading_model")
-    await load_qwen_model(models_dir)
-
-    # Get voice samples for profile
+    row = MODEL_REGISTRY[engine]
     samples = get_samples(data_dir, profile_id)
     if not samples:
         raise ValueError(f"No samples found for profile {profile_id}")
 
-    # Create voice prompt from samples
-    set_status("preparing_voice")
-    audio_paths = [s["audio_path"] for s in samples]
-    ref_texts = [s["reference_text"] for s in samples]
-    voice_prompt = await combine_voice_prompts(audio_paths, ref_texts, cache_dir)
+    set_status("loading_model")
+    await load_tts_engine(engine, row["repo_id"])
+    # The last sample is the voice reference.
+    ref_audio = await run_mlx(load_reference, samples[-1]["audio_path"])
+    ref_text = None
+    if row["ref_text"]:
+        ref_text = (samples[-1].get("reference_text") or "").strip() or None
+
+    def check_cancel() -> None:
+        if should_cancel():
+            raise ConversionCancelled()
+
+    async def speak(chunk_text: str, seed: int | None = None):
+        check_cancel()  # also between the sub-chunks of a long segment
+        return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+
+    def step(done: int, total: int) -> None:
+        check_cancel()
+        set_progress(done, total)
 
     set_status("generating")
 
@@ -466,6 +480,7 @@ async def _do_generate(
         sample_rate = None
 
         for i, seg in enumerate(segments):
+            step(i, len(segments))
             seg_text = seg.get("text", "").strip()
             seg_start = float(seg.get("start", 0))
             seg_end = float(seg.get("end", 0))
@@ -482,9 +497,7 @@ async def _do_generate(
             # Sub-chunk long segments (>800 chars) and crossfade
             sub_chunks = split_text_into_chunks(seg_text)
             if len(sub_chunks) <= 1:
-                seg_audio, seg_sr = await generate_speech(
-                    seg_text, voice_prompt, language, seed=i
-                )
+                seg_audio, seg_sr = await speak(seg_text, seed=i)
             else:
                 logger.info(
                     f"  Sub-chunking segment {i + 1}: "
@@ -493,9 +506,7 @@ async def _do_generate(
                 sub_audios = []
                 seg_sr = None
                 for j, sub_text in enumerate(sub_chunks):
-                    sub_audio, sub_sr = await generate_speech(
-                        sub_text, voice_prompt, language, seed=i * 100 + j
-                    )
+                    sub_audio, sub_sr = await speak(sub_text, seed=i * 100 + j)
                     sub_audios.append(sub_audio)
                     if seg_sr is None:
                         seg_sr = sub_sr
@@ -515,6 +526,7 @@ async def _do_generate(
 
         if sample_rate is None:
             raise ValueError("No segments produced audio")
+        set_progress(len(segments), len(segments))
 
         audio = assemble_timed_segments(
             tts_segments, original_duration, sample_rate
@@ -524,22 +536,21 @@ async def _do_generate(
         chunks = split_text_into_chunks(text)
 
         if len(chunks) <= 1:
-            audio, sample_rate = await generate_speech(
-                text, voice_prompt, language
-            )
+            step(0, 1)
+            audio, sample_rate = await speak(text)
+            set_progress(1, 1)
         else:
             logger.info(f"Chunked generation: {len(chunks)} chunks")
             audio_chunks = []
             sample_rate = None
             for i, chunk_text in enumerate(chunks):
-                chunk_seed = i  # Deterministic per chunk
-                chunk_audio, chunk_sr = await generate_speech(
-                    chunk_text, voice_prompt, language, seed=chunk_seed
-                )
+                step(i, len(chunks))
+                chunk_audio, chunk_sr = await speak(chunk_text, seed=i)  # deterministic per chunk
                 audio_chunks.append(chunk_audio)
                 if sample_rate is None:
                     sample_rate = chunk_sr
             audio = concatenate_audio_chunks(audio_chunks, sample_rate)
+            set_progress(len(chunks), len(chunks))
 
         # Diagnostic: log raw TTS output before pad/truncate
         raw_duration = len(audio) / sample_rate if sample_rate else 0
@@ -583,26 +594,24 @@ async def _do_voice_convert(
     """
     import asyncio
     import mlx.core as mx
-    from mlx_audio.tts.utils import load_model
-    from mlx_audio.tts.generate import load_audio
+    from cosyvoice_mlx.loader import load_cosyvoice3
+    from mlx_audio.utils import load_audio
     from profiles import get_samples
     from chunked_tts import convert_in_overlapping_chunks
-
-    models_dir = str(data_dir / "models")
+    from tts import call_mlx, run_mlx, to_mono
 
     # Load CosyVoice3 model
     set_status("loading_model")
     global _vc_model, _vc_model_name
 
-    vc_model_id = "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"
+    vc_model_id = MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"]
     if _vc_model is None or _vc_model_name != vc_model_id:
         logger.info(f"Loading voice conversion model: {vc_model_id}")
-        os.environ["HF_HUB_CACHE"] = models_dir
 
         def _load():
             global _vc_model, _vc_model_name
             try:
-                model = load_model(vc_model_id)
+                model = load_cosyvoice3(vc_model_id)
                 _vc_model = model
                 _vc_model_name = vc_model_id
             except Exception:
@@ -610,7 +619,7 @@ async def _do_voice_convert(
                 _vc_model_name = None
                 raise
 
-        await asyncio.to_thread(_load)
+        await run_mlx(_load)
         logger.info("Voice conversion model loaded")
 
     # Get reference audio from voice profile — use all samples up to 30s
@@ -623,86 +632,92 @@ async def _do_voice_convert(
     logger.info(f"Voice conversion: model_sr={model_sr}, original_duration={original_duration:.3f}s")
     max_ref_samples = int(30 * model_sr)  # CosyVoice3 accepts up to 30s ref
 
-    ref_parts = []
-    ref_texts = []
-    total_ref = 0
-    all_have_text = True
-    for sample in samples:
-        if total_ref >= max_ref_samples:
-            break
-        part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
-        remaining = max_ref_samples - total_ref
-        was_truncated = len(part) > remaining
-        if was_truncated:
-            part = part[:remaining]
-        ref_parts.append(part)
-        total_ref += len(part)
+    def _load_inputs():
+        """Decode the reference (trimmed to 30 s) and the source; on the MLX thread, like the chunks."""
+        ref_parts = []
+        ref_texts = []
+        total_ref = 0
+        all_have_text = True
+        for sample in samples:
+            if total_ref >= max_ref_samples:
+                break
+            part = load_audio(sample["audio_path"], sample_rate=model_sr, volume_normalize=False)
+            remaining = max_ref_samples - total_ref
+            was_truncated = len(part) > remaining
+            if was_truncated:
+                part = part[:remaining]
+            ref_parts.append(part)
+            total_ref += len(part)
 
-        sample_text = sample.get("reference_text", "").strip()
-        if sample_text and not was_truncated:
-            ref_texts.append(sample_text)
-        elif was_truncated:
-            # Audio was truncated — omit transcript to avoid text/audio mismatch
-            all_have_text = False
-            logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
-        else:
-            all_have_text = False
+            sample_text = sample.get("reference_text", "").strip()
+            if sample_text and not was_truncated:
+                ref_texts.append(sample_text)
+            elif was_truncated:
+                # Audio was truncated — omit transcript to avoid text/audio mismatch
+                all_have_text = False
+                logger.info(f"  Truncated sample — omitting transcript to avoid mismatch")
+            else:
+                all_have_text = False
 
-        logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
+            logger.info(f"  Loaded ref sample: {sample['audio_path']} ({len(part)/model_sr:.1f}s)")
 
-    if not ref_parts:
-        raise ValueError("No reference audio samples loaded successfully")
+        if not ref_parts:
+            raise ValueError("No reference audio samples loaded successfully")
 
-    ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
-    # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
-    # Partial text causes voice cloning degradation. When ref_text is None and
-    # stt_model is set, CosyVoice3 will auto-transcribe the reference audio.
-    ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
-    logger.info(
-        f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
-        f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
-    )
-
-    source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
-    source_duration = len(source_audio) / model_sr if model_sr else 0
-    logger.info(
-        f"Voice conversion: source_samples={len(source_audio)}, "
-        f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
-        f"original_duration={original_duration:.3f}s"
-    )
-    if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
-        logger.warning(
-            f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
-            f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+        ref_audio = mx.concatenate(ref_parts) if len(ref_parts) > 1 else ref_parts[0]
+        # Only use ref_text if ALL included samples have full (non-truncated) transcripts.
+        # Partial text causes voice cloning degradation.
+        ref_text = " ".join(ref_texts) if ref_texts and all_have_text else None
+        logger.info(
+            f"Voice conversion: {len(samples)} samples -> {len(ref_audio)/model_sr:.1f}s ref audio, "
+            f"ref_text={'yes' if ref_text else 'no'}, source={source_audio_path}"
         )
+
+        source_audio = load_audio(source_audio_path, sample_rate=model_sr, volume_normalize=False)
+        source_duration = len(source_audio) / model_sr if model_sr else 0
+        logger.info(
+            f"Voice conversion: source_samples={len(source_audio)}, "
+            f"source_duration={source_duration:.3f}s (at model_sr={model_sr}), "
+            f"original_duration={original_duration:.3f}s"
+        )
+        if original_duration > 0 and abs(source_duration - original_duration) > 1.0:
+            logger.warning(
+                f"Voice conversion: source audio duration ({source_duration:.3f}s) differs from "
+                f"original_duration ({original_duration:.3f}s) by {abs(source_duration - original_duration):.1f}s"
+            )
+        return ref_audio, ref_text, np.array(source_audio)
+
+    ref_audio, ref_text, source_audio = await run_mlx(_load_inputs)
 
     set_status("generating")
 
     def _convert_chunk(chunk_audio):
-        """Run voice conversion on a single chunk (blocking, for thread pool)."""
-        # When ref_text is available, skip auto-transcription (faster).
-        # When ref_text is None, let the model auto-transcribe for best quality.
+        """Run voice conversion on a single chunk (blocking, on the MLX thread)."""
+        # CosyVoice transcribes the reference only when no source_audio is given, so voice
+        # conversion never uses an STT model; None keeps it from naming one.
         results = _vc_model.generate(
             text="",
             ref_audio=ref_audio,
             ref_text=ref_text,
             source_audio=mx.array(chunk_audio, dtype=mx.float32),
-            stt_model=None if ref_text else "mlx-community/whisper-large-v3-turbo-4bit",
+            stt_model=None,
             verbose=False,
         )
         audio_parts = []
         for result in results:
-            audio_parts.append(np.array(result.audio, dtype=np.float32).flatten())
+            audio_parts.append(to_mono(result.audio))
         if not audio_parts:
             return np.array([], dtype=np.float32)
         return np.concatenate(audio_parts)
 
     # CosyVoice3 accepts at most 30s of source audio per call, so 25s windows leave headroom.
+    # The chunker runs on a worker and hands each chunk to the MLX thread, so a transcription can run
+    # between chunks instead of waiting out the whole conversion (the app gives it 120 s).
     audio = await asyncio.to_thread(
         convert_in_overlapping_chunks,
-        np.array(source_audio),
+        source_audio,
         model_sr,
-        _convert_chunk,
+        lambda chunk: call_mlx(_convert_chunk, chunk),
         chunk_seconds=25.0,
         overlap_seconds=1.0,
         on_progress=set_progress,
@@ -771,22 +786,36 @@ def _is_model_downloaded(models_dir: Path, repo_id: str) -> bool:
     return result
 
 
+def _row_repos(entry: dict) -> list[str]:
+    """Every Hub repo a registry row needs on disk: its own repo, then the ones its engine fetches."""
+    return [entry["repo_id"], *entry.get("extra_repos", [])]
+
+
+def _row_downloaded(models_dir: Path, entry: dict) -> bool:
+    """True only when every repo the row needs is in the models folder."""
+    return all(_is_model_downloaded(models_dir, repo) for repo in _row_repos(entry))
+
+
 @app.get("/health")
 async def health():
     """Health check with model availability."""
-    from tts import is_qwen_loaded
+    from tts import get_loaded_tts_engine
 
     models_dir = DATA_DIR / "models"
+
+    def _any_downloaded(category: str) -> bool:
+        return any(
+            _row_downloaded(models_dir, entry)
+            for entry in MODEL_REGISTRY.values()
+            if entry["category"] == category
+        )
+
     return {
         "status": "healthy",
         "models": {
-            "whisper": any(
-                _is_model_downloaded(models_dir, entry["repo_id"])
-                for entry in MODEL_REGISTRY.values()
-                if entry["category"] == "transcription"
-            ),
-            "qwen": is_qwen_loaded() or _is_model_downloaded(models_dir, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"),
-            "cosyvoice": _vc_model is not None or _is_model_downloaded(models_dir, "mlx-community/Fun-CosyVoice3-0.5B-2512-8bit"),
+            "whisper": _any_downloaded("transcription"),
+            "tts": get_loaded_tts_engine() is not None or _any_downloaded("tts"),
+            "cosyvoice": _vc_model is not None or _any_downloaded("voice-conversion"),
         },
     }
 
@@ -808,15 +837,13 @@ async def transcribe(file: UploadFile = File(...), model_name: str = Form(None))
 
         logger.info(f"Transcribing: {temp_path} ({len(content) // 1024}KB)")
 
-        from tts import transcribe as do_transcribe
+        from tts import run_mlx, transcribe as do_transcribe
 
         kwargs = {}
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = await asyncio.to_thread(
-            do_transcribe, str(temp_path), str(DATA_DIR / "models"), **kwargs
-        )
+        result = await run_mlx(do_transcribe, str(temp_path), **kwargs)
         logger.info(
             f"Transcribed: {result['duration']:.1f}s audio -> "
             f"{len(result['text'])} chars"
@@ -843,15 +870,13 @@ async def transcribe_path(request: dict):
 
     try:
         logger.info(f"Transcribing from path: {audio_path}")
-        from tts import transcribe as do_transcribe
+        from tts import run_mlx, transcribe as do_transcribe
 
         kwargs = {}
         if model_name:
             kwargs["model_name"] = model_name
 
-        result = await asyncio.to_thread(
-            do_transcribe, audio_path, str(DATA_DIR / "models"), **kwargs
-        )
+        result = await run_mlx(do_transcribe, audio_path, **kwargs)
         logger.info(f"Transcribed: {result['duration']:.1f}s -> {len(result['text'])} chars")
         return result
     except Exception as e:
@@ -866,21 +891,25 @@ async def transcribe_path(request: dict):
 
 @app.post("/generate")
 async def generate(request: dict):
-    """Start voice generation. Returns immediately with a generation ID.
+    """Start voice generation with the TTS engine named by ``engine``. Returns a generation ID.
 
     When ``segments`` (with timestamps) and ``original_duration`` are provided,
     generates TTS per-segment and assembles at original timestamps with silence
     gaps. Without segments, falls back to character-based chunked generation.
+    The engines detect the language from the text, so ``language`` is not used.
     """
     _cleanup_generations()
+    engine = request.get("engine", "")
     profile_id = request.get("profile_id", "")
     text = request.get("text", "")
-    language = request.get("language", "en")
     segments = request.get("segments", []) or []
     original_duration = request.get("original_duration", 0.0)
 
     if not profile_id or not text:
         return error_response(400, "profile_id and text are required")
+    if MODEL_REGISTRY.get(engine, {}).get("category") != "tts":
+        tts_keys = [k for k, v in MODEL_REGISTRY.items() if v["category"] == "tts"]
+        return error_response(400, f"engine must be one of {tts_keys}, got {engine!r}")
 
     if len(_generations) >= MAX_GENERATIONS:
         _cleanup_generations()
@@ -891,11 +920,10 @@ async def generate(request: dict):
 
     generate_fn = functools.partial(
         _do_generate,
-        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
         data_dir=DATA_DIR,
+        engine=engine,
         profile_id=profile_id,
         text=text,
-        language=language,
         segments=segments,
         original_duration=original_duration,
     )
@@ -978,11 +1006,6 @@ async def voice_convert(request: dict):
 
     convert_fn = functools.partial(
         _do_voice_convert,
-        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
-        set_progress=lambda done, total: _generations[gen_id].__setitem__(
-            "progress", {"done": done, "total": total}
-        ),
-        should_cancel=lambda: _generations[gen_id]["cancel"],
         data_dir=DATA_DIR,
         profile_id=profile_id,
         source_audio_path=source_audio_path,
@@ -1178,7 +1201,7 @@ async def delete_profile(profile_id: str):
 @app.get("/models/status")
 async def models_status():
     """Get model download/load status for all registered models."""
-    from tts import is_qwen_loaded, is_whisper_loaded, get_whisper_model_name
+    from tts import get_loaded_tts_engine, is_whisper_loaded, get_whisper_model_name
 
     models_dir = DATA_DIR / "models"
     result = []
@@ -1194,15 +1217,14 @@ async def models_status():
             pass
 
     for model_name, entry in MODEL_REGISTRY.items():
-        repo_id = entry["repo_id"]
-        downloaded = repo_id in downloaded_repos
+        downloaded = all(repo in downloaded_repos for repo in _row_repos(entry))
 
         # Determine loaded status per category
         category = entry["category"]
         if category == "transcription":
             loaded = is_whisper_loaded() and get_whisper_model_name() == model_name
         elif category == "tts":
-            loaded = is_qwen_loaded()
+            loaded = get_loaded_tts_engine() == model_name
         elif category == "voice-conversion":
             loaded = _vc_model is not None
         else:
@@ -1215,6 +1237,7 @@ async def models_status():
             "recommended": entry["recommended"],
             "downloaded": downloaded,
             "loaded": loaded,
+            "license": entry.get("license"),
         })
 
     return {"models": result}
@@ -1236,7 +1259,7 @@ async def download_model(request: dict):
             content={"error": f"Unknown model: {model}"},
         )
 
-    repo_id = MODEL_REGISTRY[model]["repo_id"]
+    repos = _row_repos(MODEL_REGISTRY[model])
     models_dir = str(DATA_DIR / "models")
 
     async def _stream():
@@ -1247,17 +1270,15 @@ async def download_model(request: dict):
         yield f"data: {json.dumps({'progress': 0.0, 'status': f'Starting download of {model}...'})}\n\n"
 
         try:
-            # snapshot_download is blocking — run in thread
-            def _download():
-                os.environ["HF_HUB_CACHE"] = models_dir
-                return snapshot_download(
-                    repo_id,
-                    cache_dir=models_dir,
-                )
-
-            path = await asyncio.to_thread(_download)
-            # Invalidate the model cache so /models/status returns fresh results
-            _model_cache.pop(repo_id, None)
+            path = None
+            for i, repo_id in enumerate(repos):
+                if i:
+                    yield f"data: {json.dumps({'progress': i / len(repos), 'status': f'Downloading {repo_id}...'})}\n\n"
+                # snapshot_download is blocking — run in thread
+                downloaded = await asyncio.to_thread(snapshot_download, repo_id, cache_dir=models_dir)
+                path = path or downloaded
+                # Invalidate the model cache so /models/status returns fresh results
+                _model_cache.pop(repo_id, None)
             yield f"data: {json.dumps({'progress': 1.0, 'status': 'Download complete', 'path': str(path)})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'progress': -1, 'status': f'Download failed: {e}', 'error': str(e)})}\n\n"
@@ -1288,24 +1309,22 @@ async def delete_model(model_name: str):
 
         cache_info = scan_cache_dir(str(models_dir))
 
-        # Find the repo matching the exact repo_id
-        target_repo = None
-        for repo in cache_info.repos:
-            if repo.repo_id == repo_id:
-                target_repo = repo
-                break
+        # The row's own repo and the ones its engine fetched, except any another row also needs.
+        shared = {r for name, other in MODEL_REGISTRY.items() if name != canonical for r in _row_repos(other)}
+        wanted = [r for r in _row_repos(entry) if r == repo_id or r not in shared]
+        target_repos = [repo for repo in cache_info.repos if repo.repo_id in wanted]
 
-        if target_repo is None:
+        if not target_repos:
             return error_response(404, "Model not downloaded")
 
         # Collect all revision hashes and delete them
-        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        revision_hashes = [rev.commit_hash for repo in target_repos for rev in repo.revisions]
         delete_strategy = cache_info.delete_revisions(*revision_hashes)
         freed_size = delete_strategy.expected_freed_size
         delete_strategy.execute()
 
         logger.info(
-            f"Deleted model {canonical} (repo_id={repo_id}), "
+            f"Deleted model {canonical} ({', '.join(r.repo_id for r in target_repos)}), "
             f"freed {freed_size / (1024 * 1024):.1f} MB"
         )
     except Exception as e:
@@ -1326,14 +1345,8 @@ async def delete_model(model_name: str):
                 pass
         elif category == "tts":
             import tts as _tts_module
-            _tts_module._qwen_model = None
-            _tts_module._qwen_model_size = None
-            gc.collect()
-            try:
-                import torch
-                torch.mps.empty_cache()
-            except Exception:
-                pass
+            if _tts_module.get_loaded_tts_engine() == canonical:
+                _tts_module.unload_tts_engine()
         elif category == "voice-conversion":
             global _vc_model, _vc_model_name
             _vc_model = None
@@ -1347,9 +1360,9 @@ async def delete_model(model_name: str):
     except Exception as e:
         logger.warning(f"In-memory cleanup failed for {canonical}: {e}")
 
-    # Invalidate the model cache entry so _is_model_downloaded() doesn't return stale results
-    if repo_id in _model_cache:
-        del _model_cache[repo_id]
+    # Invalidate the model cache entries so _is_model_downloaded() doesn't return stale results
+    for repo in _row_repos(entry):
+        _model_cache.pop(repo, None)
 
     return {"deleted": model_name, "freed_bytes": freed_size}
 
@@ -1359,8 +1372,35 @@ async def delete_model(model_name: str):
 # ---------------------------------------------------------------------------
 
 
+def check_imports() -> int:
+    """Import every registry row's model module and find the copy's licence texts; return 1 if any
+    is missing (used on the frozen binary)."""
+    import importlib
+
+    failed = 0
+    for name, entry in MODEL_REGISTRY.items():
+        try:
+            importlib.import_module(entry["module"])
+            print(f"ok   {name}: {entry['module']}")
+        except Exception as e:  # report every failure, not just the first
+            failed = 1
+            print(f"FAIL {name}: {entry['module']}: {e!r}")
+    import cosyvoice_mlx
+
+    package = Path(cosyvoice_mlx.__file__).parent  # the copy's licence texts ship with its code
+    if (package / "LICENSE").is_file() and any((package / "licenses").glob("*.txt")):
+        print("ok   cosyvoice_mlx licence texts")
+    else:
+        failed = 1
+        print(f"FAIL cosyvoice_mlx licence texts: none under {package}")
+    return failed
+
+
 def main():
-    parser = argparse.ArgumentParser(description="VoiceOver TTS sidecar server")
+    if "--check-imports" in sys.argv:
+        sys.exit(check_imports())
+    # No abbreviations: the HF_HUB_CACHE scan at the top of this file matches --data-dir exactly.
+    parser = argparse.ArgumentParser(description="VoiceOver TTS sidecar server", allow_abbrev=False)
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, required=True, help="Bind port")
     parser.add_argument(
@@ -1384,13 +1424,12 @@ def main():
     DATA_DIR = Path(args.data_dir)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Set HuggingFace cache to our data directory
+    # The models folder; HF_HUB_CACHE was pointed at it before any import (top of this file).
     models_dir = DATA_DIR / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HUB_CACHE"] = str(models_dir)
 
     # If a bundled ffmpeg path is provided, add its directory to PATH
-    # so that mlx-whisper and subprocess calls can find it.
+    # so that the sidecar's ffmpeg subprocess calls can find it.
     if args.ffmpeg and Path(args.ffmpeg).exists():
         ffmpeg_dir = str(Path(args.ffmpeg).parent)
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")

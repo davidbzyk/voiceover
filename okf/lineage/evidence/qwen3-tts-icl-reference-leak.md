@@ -9,7 +9,7 @@ tags:
   - lineage
   - evidence
   - qwen3-tts
-freshness: "2026-10-22T18:36:00Z"
+freshness: "2026-10-23T23:30:00Z"
 version: 1.0.0
 status: stable
 kcc_action: condense
@@ -56,7 +56,10 @@ generated speech sometimes opens with the reference's final words ("Yes, Mike. B
 Trials on 2026-10-22 point at the reference ending: clips cut on a finished sentence were clean,
 mid-word cuts leaked. CosyVoice3 speech-to-speech with the same references did not leak.
 
-## Open
-The fix belongs where the voice prompt is built (`tts.create_voice_prompt`) so preview and
-replacement share it; candidates under test are a 0.5 s silence pad, sentence-end trimming and
-x-vector-only mode.
+## Resolution
+Shipped 2026-10-23: Qwen clones in x-vector-only mode (speaker embedding, no transcript). The
+`qwen-tts-1.7B` registry row has `ref_text: False`, and
+`test_engines.py::test_qwen_clones_without_the_transcript` holds it. On the all-voices bench this
+gave 0 of 24 leaks against 5 of 24 for ICL; the 0.5 s silence pad leaked 6 of 24 and was dropped,
+and sentence-end trimming was not pursued. The torch voice-prompt path (`tts.create_voice_prompt`)
+is gone; see the [Qwen PyTorch tombstone](../../tombstones/qwen-pytorch-path-2026-10.md).
