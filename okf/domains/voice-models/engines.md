@@ -8,7 +8,7 @@ domain: voice-models
 tags:
   - domain
   - voice-models
-freshness: "2026-10-25T22:35:00Z"
+freshness: "2026-10-26T17:55:00Z"
 version: 1.0.0
 status: stable
 domain_code: VOICE
@@ -57,7 +57,7 @@ engines are rows in `MODEL_REGISTRY` (`server.py`) and share one generate path (
 | Qwen3-TTS 1.7B Base (MLX bf16) | Create Voice preview; text-to-speech | mlx-audio | The principal's preferred engine. Clones from the speaker embedding only (no transcript), which stops the ICL leak. The PyTorch path it replaced: [tombstone](../../tombstones/qwen-pytorch-path-2026-10.md). |
 | VoxCPM2, MOSS-TTS Local v1.5, Chatterbox | Text-to-speech | mlx-audio | Apache-2.0 / Apache-2.0 / MIT. No leak measured. |
 | OmniVoice | Text-to-speech | mlx-audio | CC-BY-NC weights. Leaks the T2 reference transcript 3 of 24. |
-| Fish S2 Pro | Text-to-speech | mlx-audio | Fish Audio Research licence (non-commercial). Slowest, RTF about 1.5. |
+| Fish S2 Pro | Text-to-speech | mlx-audio | Fish Audio Research licence (non-commercial). Slowest, long-line RTF 1.03 on mlx-audio 0.6.1 (1.53 on 0.5.8); see the 0.6.1 bump evidence. |
 | CosyVoice3 0.5B 8-bit | Speech-to-speech replacement | `cosyvoice_mlx` (copied, on mlx-audio) | Keeps timing; see the fork evidence. |
 | ElevenLabs eleven_multilingual_sts_v2 | Speech-to-speech replacement | Hosted API | Needs the user's API key. |
 | Whisper large-v3-turbo / medium (`-asr` repos) | Transcribe the reference and the recording | mlx-audio | Loop guard: see evidence. |
