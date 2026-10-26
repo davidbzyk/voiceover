@@ -550,6 +550,31 @@ class TestGenerationProgressAndCancel:
         assert data["progress"]["total"] == len(converted) > 1
         assert data["progress"]["done"] == data["progress"]["total"]
 
+    def test_the_runner_hands_each_job_the_callbacks_into_its_own_record(self, temp_data_dir, monkeypatch):
+        """Both routes queue _run_generation, which gives the job its status, progress and cancel callbacks,
+        so the speech and conversion routes cannot report a job differently."""
+        import asyncio
+
+        import numpy as np
+
+        import server
+
+        monkeypatch.setattr(server, "DATA_DIR", Path(temp_data_dir))
+        gen_id = server._new_generation()
+        seen = []
+
+        async def job(*, set_status, set_progress, should_cancel):
+            set_status("generating")
+            set_progress(1, 2)
+            seen.append((server._generations[gen_id]["status"], should_cancel()))
+            return np.zeros(160, dtype=np.float32), 16000, "Test job"
+
+        asyncio.run(server._run_generation(gen_id, job))
+        record = server._generations.pop(gen_id)
+        assert seen == [("generating", False)], record
+        assert record["status"] == "completed"
+        assert record["progress"] == {"done": 1, "total": 2}
+
     def test_cancel_stops_a_running_conversion_between_chunks(self, client, temp_data_dir, monkeypatch):
         import server
 

@@ -324,14 +324,21 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 async def _run_generation(gen_id: str, generate_fn):
     """Shared lifecycle for TTS/VC generation tasks.
 
-    Calls generate_fn() which must return (audio_data, sample_rate, log_label).
-    Handles saving the WAV, marking status as completed/error, and logging.
+    Calls generate_fn(set_status=, set_progress=, should_cancel=), which report into and read this job's
+    record, and must return (audio_data, sample_rate, log_label). Handles saving the WAV, marking status
+    as completed/error, and logging.
     """
     import soundfile as sf
     from chunked_tts import ConversionCancelled
 
     try:
-        audio, sample_rate, log_label = await generate_fn()
+        audio, sample_rate, log_label = await generate_fn(
+            set_status=lambda s: _generations[gen_id].__setitem__("status", s),
+            set_progress=lambda done, total: _generations[gen_id].__setitem__(
+                "progress", {"done": done, "total": total}
+            ),
+            should_cancel=lambda: _generations[gen_id]["cancel"],
+        )
         # Engines check cancel between chunks, so one that arrives during the last chunk lands here.
         if _generations[gen_id]["cancel"]:
             raise ConversionCancelled()
@@ -913,11 +920,6 @@ async def generate(request: dict):
 
     generate_fn = functools.partial(
         _do_generate,
-        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
-        set_progress=lambda done, total: _generations[gen_id].__setitem__(
-            "progress", {"done": done, "total": total}
-        ),
-        should_cancel=lambda: _generations[gen_id]["cancel"],
         data_dir=DATA_DIR,
         engine=engine,
         profile_id=profile_id,
@@ -1004,11 +1006,6 @@ async def voice_convert(request: dict):
 
     convert_fn = functools.partial(
         _do_voice_convert,
-        set_status=lambda s: _generations[gen_id].__setitem__("status", s),
-        set_progress=lambda done, total: _generations[gen_id].__setitem__(
-            "progress", {"done": done, "total": total}
-        ),
-        should_cancel=lambda: _generations[gen_id]["cancel"],
         data_dir=DATA_DIR,
         profile_id=profile_id,
         source_audio_path=source_audio_path,
