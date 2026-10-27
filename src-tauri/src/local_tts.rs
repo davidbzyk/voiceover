@@ -152,7 +152,8 @@ async fn cancel_generation(client: &reqwest::Client, base_url: &str, generation_
 /// Poll a sidecar job until it finishes, then download its audio to `output_wav`.
 ///
 /// `on_progress` gets the job's status and chunk counts whenever either changes, from the first poll.
-/// Fails only when the job errors, is cancelled, or stops making chunk progress for `timing.stall_after`; never on total length.
+/// Fails only when the job errors, is cancelled, stops making chunk progress for `timing.stall_after`, or the
+/// sidecar cannot be reached for that long; never on total length.
 pub(crate) async fn poll_and_download(
     client: &reqwest::Client,
     base_url: &str,
@@ -179,12 +180,22 @@ pub(crate) async fn poll_and_download(
                 return Err(CANCELLED.to_string());
             }
 
-            let poll_resp = send_with_timeout(
+            let poll_resp = match send_with_timeout(
                 client.get(&status_url).send(),
                 120,
                 "Failed to poll generation status",
             )
-            .await?;
+            .await
+            {
+                Ok(resp) => resp,
+                // A dropped connection is not a failed job: poll again, and give up only once nothing has
+                // changed for the stall window. An answer with an error status still fails at once, below.
+                Err(e) if last_change.elapsed() <= timing.stall_after => {
+                    log::warn!("[local_tts] {e}; polling again");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             if !poll_resp.status().is_success() {
                 let body = poll_resp.text().await.unwrap_or_default();
@@ -803,6 +814,9 @@ mod tests {
                         ("application/json", br#"{"status":"generating"}"#.to_vec())
                     } else if req.contains("/status") {
                         let i = polls.fetch_add(1, Ordering::SeqCst).min(statuses.len() - 1);
+                        if statuses[i] == "RESET" {
+                            return; // close the connection without an answer, as a reset or a busy sidecar does
+                        }
                         if statuses[i] == "HTTP 500" {
                             code = "500 Internal Server Error";
                         }
@@ -907,6 +921,38 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("stopped making progress"), "{err}");
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_status_poll_is_retried_not_fatal() {
+        // PR 1's end-to-end run lost a whole conversion to one connection reset on a status poll.
+        let fake = fake_sidecar(vec![
+            generating(1),
+            "RESET",
+            generating(2),
+            r#"{"status":"completed","error":null,"progress":{"done":2,"total":2}}"#,
+        ])
+        .await;
+        let out = std::env::temp_dir().join("vo-test-poll-reset.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-6", &out, fast_timing(10_000),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_unreachable_for_the_stall_window_fails_the_job() {
+        let fake = fake_sidecar(vec![generating(1), "RESET"]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-gone.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-7", &out, fast_timing(100),
+            &|_, _| {}, &|| false,
+        ).await;
+        let err = result.unwrap_err();
+        assert!(err.contains("Failed to poll generation status"), "{err}");
     }
 
     #[tokio::test]

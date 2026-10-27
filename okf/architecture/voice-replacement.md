@@ -69,7 +69,8 @@ The sidecar's `/voice-convert` decides what the engine does from its registry ro
 Either job is one entry in the sidecar's serial queue, so transcription waits its turn, shows as status
 `transcribing`, and is cancelled like the rest. The app's progress label follows the job's status
 (Loading, Transcribing, Converting voice) and its chunk counts. A job fails only when it stops reporting
-new chunks for the stall window (`local_tts::STALL_AFTER_SECS`), never on total length.
+new chunks for the stall window (`local_tts::STALL_AFTER_SECS`), or the sidecar stays unreachable that long;
+never on total length, and a dropped status poll is simply polled again.
 
 ## Bounds on each phrase and on memory
 A text-to-speech engine samples one token at a time and stops when it samples an end token, so a phrase
