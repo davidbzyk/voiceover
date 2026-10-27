@@ -234,7 +234,8 @@ pub(crate) async fn poll_and_download(
                     return Err(CANCELLED.to_string());
                 }
                 // Before the first chunk the model may still be downloading; only a stop after progress is a stall.
-                "generating"
+                // A retry speaks a phrase again, so it stalls the same way; the switch to it restarts the clock.
+                "generating" | "retrying"
                     if gen_status.progress.done > 0 && last_change.elapsed() > timing.stall_after =>
                 {
                     return Err(format!(
@@ -927,8 +928,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retry_with_nothing_new_for_the_stall_window_fails_the_job() {
+        // A retry speaks the phrase again, so a retry that hangs is the same stall as a first try that hangs.
+        let retrying = r#"{"status":"retrying","error":null,"progress":{"done":3,"total":200}}"#;
+        let fake = fake_sidecar(vec![generating(3), retrying]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-retry-stall.wav");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            poll_and_download(
+                &reqwest::Client::new(), &fake.base_url, "gen-10", &out, fast_timing(100),
+                &|_, _| {}, &|| false,
+            ),
+        ).await;
+        let err = result.expect("a hung retry must fail the job, not poll forever").unwrap_err();
+        assert!(err.contains("stopped making progress"), "{err}");
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn a_dropped_status_poll_is_retried_not_fatal() {
-        // PR 1's end-to-end run lost a whole conversion to one connection reset on a status poll.
+        // One connection reset on a status poll must not cost the whole conversion.
         let fake = fake_sidecar(vec![
             generating(1),
             "RESET",

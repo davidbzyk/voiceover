@@ -70,8 +70,8 @@ Either job is one entry in the sidecar's serial queue, so transcription waits it
 `transcribing`, and is cancelled like the rest. The app's progress label follows the job's status
 (Loading, Transcribing, Converting voice) and its chunk counts. A job fails when the sidecar reports an
 error (an engine that kept speaking past its bound, for example) or when it is cancelled. Time alone fails it
-only through the stall window (`local_tts::STALL_AFTER_SECS`): while the job is `generating` and has finished a
-chunk, its status and progress stay unchanged that long; never on total length. A dropped or slow status poll
+only through the stall window (`local_tts::STALL_AFTER_SECS`): while the job is `generating` or `retrying` and
+has finished a chunk, its status and progress stay unchanged that long; never on total length. A dropped or slow status poll
 is polled again until polls have failed for that window; a refused connection means the sidecar is gone and
 fails at once. A request `/voice-convert` refuses (a missing engine, a disallowed path) creates no job.
 
