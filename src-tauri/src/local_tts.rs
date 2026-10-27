@@ -141,6 +141,7 @@ async fn cancel_generation(client: &reqwest::Client, base_url: &str, generation_
 
 /// Poll a sidecar job until it finishes, then download its audio to `output_wav`.
 ///
+/// `on_progress` gets the job's status and chunk counts whenever either changes, from the first poll.
 /// Fails only when the job errors, is cancelled, or stops making chunk progress for `timing.stall_after`; never on total length.
 pub(crate) async fn poll_and_download(
     client: &reqwest::Client,
@@ -148,7 +149,7 @@ pub(crate) async fn poll_and_download(
     generation_id: &str,
     output_wav: &Path,
     timing: PollTiming,
-    on_progress: &(dyn Fn(JobProgress) + Send + Sync),
+    on_progress: &(dyn Fn(&str, JobProgress) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<PathBuf, String> {
     let status_url = format!("{}/generate/{}/status", base_url, generation_id);
@@ -187,9 +188,7 @@ pub(crate) async fn poll_and_download(
 
             let seen = (gen_status.status.clone(), gen_status.progress);
             if last_seen.as_ref() != Some(&seen) {
-                if gen_status.progress.total > 0 {
-                    on_progress(gen_status.progress);
-                }
+                on_progress(&gen_status.status, gen_status.progress);
                 last_seen = Some(seen);
                 last_change = std::time::Instant::now();
             }
@@ -267,32 +266,38 @@ use crate::tts_provider::CANCELLED;
 // Voice conversion (speech-to-speech, same contract as ElevenLabs)
 // ---------------------------------------------------------------------------
 
-/// Convert `input_wav` to the profile's voice with CosyVoice3, keeping the original timing.
+/// Replace the voice in `input_wav` with the profile's, spoken by `engine` (a sidecar registry key), at the video's length.
 ///
-/// Reports chunk progress through `on_progress` and stops (cancelling the sidecar job) when `is_cancelled` turns true.
+/// A speech-to-speech engine converts the speech; a text-to-speech engine first transcribes it with `whisper_model`.
+/// Reports the job's status and chunk progress through `on_progress`, and stops (cancelling the sidecar job) when
+/// `is_cancelled` turns true.
 #[allow(clippy::too_many_arguments)]
 pub async fn voice_convert(
     client: &reqwest::Client,
     port: u16,
+    engine: &str,
     profile_id: &str,
+    whisper_model: &str,
     input_wav: &Path,
     output_wav: &Path,
     video_duration: Option<f64>,
-    on_progress: &(dyn Fn(JobProgress) + Send + Sync),
+    on_progress: &(dyn Fn(&str, JobProgress) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(), String> {
     let base = format!("http://127.0.0.1:{}", port);
     let start = std::time::Instant::now();
 
     log::info!(
-        "[local_tts] Voice conversion: profile={}, input={:?}, port={}",
-        profile_id, input_wav, port,
+        "[local_tts] Voice conversion: engine={}, profile={}, input={:?}, port={}",
+        engine, profile_id, input_wav, port,
     );
 
     let input_path_str = input_wav.to_str()
         .ok_or_else(|| "Input audio path contains non-UTF8 characters".to_string())?;
     let body = serde_json::json!({
+        "engine": engine,
         "profile_id": profile_id,
+        "whisper_model": whisper_model,
         "source_audio_path": input_path_str,
         "original_duration": video_duration.unwrap_or(0.0),
     });
@@ -707,10 +712,38 @@ mod tests {
         assert_eq!(v["language"], "en");
     }
 
-    /// A scripted stand-in for the sidecar: serves status bodies in order, then audio; records cancel calls.
+    /// A scripted stand-in for the sidecar: serves status bodies in order, then audio; records cancel calls
+    /// and the body of each job request.
     struct FakeSidecar {
         base_url: String,
         cancels: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        jobs: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    /// Read one HTTP request: headers, then as many body bytes as Content-Length says.
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
     }
 
     async fn fake_sidecar(statuses: Vec<&'static str>) -> FakeSidecar {
@@ -721,24 +754,28 @@ mod tests {
     async fn fake_sidecar_with(statuses: Vec<&'static str>, failing_cancels: usize) -> FakeSidecar {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let cancels = Arc::new(AtomicUsize::new(0));
+        let jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
         let polls = Arc::new(AtomicUsize::new(0));
         let statuses = Arc::new(statuses);
-        let cancels_srv = cancels.clone();
+        let (cancels_srv, jobs_srv) = (cancels.clone(), jobs.clone());
         tokio::spawn(async move {
             loop {
                 let (mut sock, _) = listener.accept().await.unwrap();
-                let (cancels, polls, statuses) = (cancels_srv.clone(), polls.clone(), statuses.clone());
+                let (cancels, jobs, polls, statuses) =
+                    (cancels_srv.clone(), jobs_srv.clone(), polls.clone(), statuses.clone());
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let n = sock.read(&mut buf).await.unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let req = read_request(&mut sock).await;
                     let mut code = "200 OK";
-                    let (ctype, body): (&str, Vec<u8>) = if req.contains("/cancel") {
+                    let (ctype, body): (&str, Vec<u8>) = if req.starts_with("POST /voice-convert") {
+                        let json = req.split("\r\n\r\n").nth(1).unwrap_or("");
+                        jobs.lock().unwrap().push(serde_json::from_str(json).unwrap_or_default());
+                        ("application/json", br#"{"id":"gen-9"}"#.to_vec())
+                    } else if req.contains("/cancel") {
                         if cancels.fetch_add(1, Ordering::SeqCst) < failing_cancels {
                             code = "500 Internal Server Error";
                         }
@@ -761,7 +798,7 @@ mod tests {
                 });
             }
         });
-        FakeSidecar { base_url, cancels }
+        FakeSidecar { base_url, cancels, jobs }
     }
 
     fn fast_timing(stall_ms: u64) -> PollTiming {
@@ -785,7 +822,7 @@ mod tests {
         let seen = std::sync::Mutex::new(Vec::new());
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(200),
-            &|p| seen.lock().unwrap().push(p.done), &|| false,
+            &|_, p| seen.lock().unwrap().push(p.done), &|| false,
         ).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(std::fs::read(&out).unwrap(), b"RIFFfake");
@@ -795,12 +832,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_status_is_reported_before_any_chunk_is_done() {
+        // A text-to-speech engine transcribes first: no chunks yet, but the label must move on.
+        let fake = fake_sidecar(vec![
+            r#"{"status":"loading_model","error":null,"progress":{"done":0,"total":0}}"#,
+            r#"{"status":"transcribing","error":null,"progress":{"done":0,"total":0}}"#,
+            r#"{"status":"completed","error":null,"progress":{"done":7,"total":7}}"#,
+        ])
+        .await;
+        let out = std::env::temp_dir().join("vo-test-poll-status.wav");
+        let seen = std::sync::Mutex::new(Vec::new());
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-7", &out, fast_timing(1_000),
+            &|status, p| seen.lock().unwrap().push((status.to_string(), p.done)), &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+            ["loading_model", "transcribing", "completed"]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn voice_convert_asks_the_sidecar_for_the_chosen_engine() {
+        let fake = fake_sidecar(vec![r#"{"status":"completed","error":null,"progress":{"done":1,"total":1}}"#]).await;
+        let port: u16 = fake.base_url.rsplit(':').next().unwrap().parse().unwrap();
+        let out = std::env::temp_dir().join("vo-test-convert-engine.wav");
+        voice_convert(
+            &reqwest::Client::new(), port, "qwen-tts-1.7B", "4ad88b19", "whisper-large-v3-turbo",
+            Path::new("/tmp/extracted-1.wav"), &out, Some(29.993), &|_, _| {}, &|| false,
+        )
+        .await
+        .unwrap();
+        let jobs = fake.jobs.lock().unwrap().clone();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["engine"], "qwen-tts-1.7B");
+        assert_eq!(jobs[0]["profile_id"], "4ad88b19");
+        assert_eq!(jobs[0]["whisper_model"], "whisper-large-v3-turbo");
+        assert_eq!(jobs[0]["original_duration"], 29.993);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
     async fn job_with_no_new_chunk_for_the_stall_window_fails_and_is_cancelled() {
         let fake = fake_sidecar(vec![generating(3)]).await;
         let out = std::env::temp_dir().join("vo-test-poll-stall.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-2", &out, fast_timing(100),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         let err = result.unwrap_err();
         assert!(err.contains("stopped making progress"), "{err}");
@@ -813,7 +894,7 @@ mod tests {
         let out = std::env::temp_dir().join("vo-test-poll-500.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-5", &out, fast_timing(10_000),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         assert!(result.is_err());
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1, "job must not keep blocking the queue");
@@ -827,7 +908,7 @@ mod tests {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-6", &out, fast_timing(20),
-            &|_| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 40,
+            &|_, _| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 40,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED, "should wait for the user, not report a stall");
     }
@@ -840,7 +921,7 @@ mod tests {
         let out = std::env::temp_dir().join("vo-test-poll-loading.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-3", &out, fast_timing(50),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         assert!(result.is_ok(), "{result:?}");
         std::fs::remove_file(&out).ok();
@@ -851,7 +932,7 @@ mod tests {
         let fake = fake_sidecar_with(vec![generating(1)], 1).await;
         let out = std::env::temp_dir().join("vo-test-poll-cancel-retry.wav");
         let result = poll_and_download(
-            &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(5_000), &|_| {}, &|| true,
+            &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(5_000), &|_, _| {}, &|| true,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 2, "a 500 is not a cancel");
@@ -864,7 +945,7 @@ mod tests {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-4", &out, fast_timing(10_000),
-            &|_| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3,
+            &|_, _| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);

@@ -100,6 +100,9 @@ pub struct AppConfig {
     /// Voice profile ID to use with the local TTS sidecar
     #[serde(default)]
     pub local_voice_profile_id: String,
+    /// Sidecar registry key of the engine local conversions use; empty until the user picks one
+    #[serde(default)]
+    pub local_engine: String,
     /// Whisper model to use for transcription
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
@@ -132,6 +135,7 @@ impl Default for AppConfig {
             provider: Provider::default(),
             local_endpoint: default_local_endpoint(),
             local_voice_profile_id: String::new(),
+            local_engine: String::new(),
             whisper_model: default_whisper_model(),
         }
     }
@@ -398,6 +402,7 @@ mod tests {
             provider: Provider::ElevenLabs,
             local_endpoint: "http://localhost:17493".to_string(),
             local_voice_profile_id: String::new(),
+            local_engine: "qwen-tts-1.7B".to_string(),
             whisper_model: "whisper-large-v3-turbo".to_string(),
         };
 
@@ -416,6 +421,7 @@ mod tests {
         assert_eq!(deserialized.google_drive.connected, true);
         assert_eq!(deserialized.google_drive.expires_at, 1700000000);
         assert_eq!(deserialized.whisper_model, "whisper-large-v3-turbo");
+        assert_eq!(deserialized.local_engine, "qwen-tts-1.7B");
     }
 
     #[test]
@@ -432,6 +438,7 @@ mod tests {
         assert_eq!(config.preferences.webcam_position, WebcamPosition::BottomRight);
         assert!(!config.google_drive.connected);
         assert_eq!(config.whisper_model, "whisper-large-v3-turbo");
+        assert_eq!(config.local_engine, "", "nothing is preselected for a config saved before engines");
     }
 
     #[test]

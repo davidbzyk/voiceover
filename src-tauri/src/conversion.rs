@@ -18,22 +18,44 @@ const ELEVENLABS_MAX_PIECE_SECS: f64 = 290.0;
 /// How far back from each piece limit to look for a pause to cut in.
 const CUT_SEARCH_SECS: f64 = 20.0;
 
-/// The voice a conversion should use: an ElevenLabs voice or a local voice profile.
+/// The voice a conversion should use: an ElevenLabs voice, or a local voice profile spoken by a local engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceChoice {
     pub provider: Provider,
     pub voice_id: String,
+    /// Sidecar registry key of the local engine (speech-to-speech or text-to-speech); None for ElevenLabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
 }
 
 /// Pick the voice for a conversion: the explicit choice, else the Settings default for the active provider.
+///
+/// A local voice also needs an engine: the choice's own, else the one saved on the home screen; nothing defaults.
 pub fn resolve_voice(
     config: &AppConfig,
     choice: Option<VoiceChoice>,
 ) -> Result<VoiceChoice, String> {
-    if let Some(choice) = choice.filter(|c| !c.voice_id.is_empty()) {
-        return Ok(choice);
-    }
+    let mut resolved = match choice.filter(|c| !c.voice_id.is_empty()) {
+        Some(choice) => choice,
+        None => settings_voice(config)?,
+    };
+    resolved.engine = match resolved.provider {
+        Provider::ElevenLabs => None,
+        Provider::Local => Some(
+            resolved
+                .engine
+                .take()
+                .filter(|e| !e.is_empty())
+                .or_else(|| Some(config.local_engine.clone()).filter(|e| !e.is_empty()))
+                .ok_or("No local engine chosen — pick one under Local on the home screen")?,
+        ),
+    };
+    Ok(resolved)
+}
+
+/// The Settings default voice for the active provider, without an engine.
+fn settings_voice(config: &AppConfig) -> Result<VoiceChoice, String> {
     let voice_id = match config.provider {
         Provider::ElevenLabs => config
             .voices
@@ -54,7 +76,40 @@ pub fn resolve_voice(
     Ok(VoiceChoice {
         provider: config.provider.clone(),
         voice_id,
+        engine: None,
     })
+}
+
+/// Display name of the engine a resolved choice uses: the sidecar's name for a local engine, else "ElevenLabs".
+///
+/// Falls back to the registry key when the sidecar cannot be asked.
+pub async fn engine_name(app: &tauri::AppHandle, choice: &VoiceChoice) -> String {
+    let key = match (&choice.provider, &choice.engine) {
+        (Provider::Local, Some(key)) => key,
+        _ => return "ElevenLabs".to_string(),
+    };
+    match local_tts::check_model_status(app.clone()).await {
+        Ok(models) => models
+            .into_iter()
+            .find(|m| &m.model_name == key)
+            .map(|m| m.display_name)
+            .unwrap_or_else(|| key.clone()),
+        Err(e) => {
+            log::warn!("[conversion] Could not resolve engine name: {}", e);
+            key.clone()
+        }
+    }
+}
+
+/// The progress label for a local job in sidecar `status`, naming the engine doing the work.
+pub(crate) fn local_stage_label(status: &str, engine_name: &str) -> String {
+    match status {
+        "queued" => "Waiting for the local engine".to_string(),
+        "loading_model" => format!("Loading {engine_name}"),
+        "transcribing" => "Transcribing".to_string(),
+        "preparing_voice" => "Preparing the voice".to_string(),
+        _ => format!("Converting voice ({engine_name})"),
+    }
 }
 
 /// Human-readable name of a voice, for the library's metadata.
@@ -112,34 +167,43 @@ pub fn cancel_conversion(app: tauri::AppHandle) {
     log::info!("[conversion] Cancel requested");
 }
 
-/// Convert `source_wav` (16kHz mono PCM) into `choice`'s voice, writing files under `work_dir`.
+/// Convert `source_wav` (16kHz mono PCM) into `choice`'s voice (resolved, so a local choice has its engine),
+/// writing files under `work_dir`.
 ///
-/// Returns the converted audio's path. `on_progress` receives 0.0..=1.0; the run stops when `is_cancelled` turns true.
+/// Returns the converted audio's path. `on_progress` receives a stage label naming `engine_name` and 0.0..=1.0;
+/// the run stops when `is_cancelled` turns true.
 #[allow(clippy::too_many_arguments)]
 pub async fn convert(
     app: &tauri::AppHandle,
     config: &AppConfig,
     choice: &VoiceChoice,
+    engine_name: &str,
     source_wav: &Path,
     work_dir: &Path,
     stamp: &str,
     duration: Option<f64>,
-    on_progress: &(dyn Fn(f32) + Send + Sync),
+    on_progress: &(dyn Fn(&str, f32) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<PathBuf, String> {
     match choice.provider {
         Provider::Local => {
+            let engine = choice.engine.as_deref().ok_or("No local engine chosen")?;
             let output = work_dir.join(format!("transformed-{stamp}.wav"));
             let port = sidecar::ensure_running(app).await?;
             let http = app.state::<local_tts::HttpClient>();
             local_tts::voice_convert(
                 &http.client,
                 port,
+                engine,
                 &choice.voice_id,
+                &config.whisper_model,
                 source_wav,
                 &output,
                 duration,
-                &|p| on_progress(p.done as f32 / p.total.max(1) as f32),
+                &|status, p| {
+                    let fraction = if p.total > 0 { p.done as f32 / p.total as f32 } else { 0.0 };
+                    on_progress(&local_stage_label(status, engine_name), fraction)
+                },
                 is_cancelled,
             )
             .await?;
@@ -156,7 +220,7 @@ pub async fn convert(
                 source_wav,
                 work_dir,
                 stamp,
-                on_progress,
+                &|fraction| on_progress("Converting voice (ElevenLabs)", fraction),
                 is_cancelled,
             )
             .await
@@ -275,19 +339,59 @@ mod tests {
                 },
             ],
             local_voice_profile_id: "local-9".into(),
+            local_engine: "cosyvoice3-0.5B".into(),
             ..AppConfig::default()
+        }
+    }
+
+    fn local(voice_id: &str, engine: Option<&str>) -> VoiceChoice {
+        VoiceChoice {
+            provider: Provider::Local,
+            voice_id: voice_id.into(),
+            engine: engine.map(Into::into),
         }
     }
 
     #[test]
     fn explicit_choice_wins_over_settings() {
-        let choice = VoiceChoice {
-            provider: Provider::Local,
-            voice_id: "other".into(),
-        };
+        let choice = local("other", Some("voxcpm2"));
         let resolved =
             resolve_voice(&config_with(Provider::ElevenLabs), Some(choice.clone())).unwrap();
         assert_eq!(resolved, choice);
+    }
+
+    #[test]
+    fn a_local_choice_without_an_engine_uses_the_saved_engine() {
+        let resolved =
+            resolve_voice(&config_with(Provider::ElevenLabs), Some(local("other", None))).unwrap();
+        assert_eq!(resolved, local("other", Some("cosyvoice3-0.5B")));
+    }
+
+    #[test]
+    fn a_local_conversion_with_no_engine_anywhere_asks_for_one() {
+        let mut config = config_with(Provider::Local);
+        config.local_engine.clear();
+        let err = resolve_voice(&config, Some(local("p1", Some("")))).unwrap_err();
+        assert!(err.contains("engine"), "{err}");
+        assert!(resolve_voice(&config, None).is_err());
+    }
+
+    #[test]
+    fn an_elevenlabs_choice_carries_no_engine() {
+        let choice = VoiceChoice {
+            provider: Provider::ElevenLabs,
+            voice_id: "el-1".into(),
+            engine: Some("qwen-tts-1.7B".into()),
+        };
+        let resolved = resolve_voice(&config_with(Provider::Local), Some(choice)).unwrap();
+        assert_eq!(resolved.engine, None);
+    }
+
+    #[test]
+    fn local_progress_names_the_step_and_the_engine() {
+        assert_eq!(local_stage_label("transcribing", "Qwen3-TTS 1.7B"), "Transcribing");
+        assert_eq!(local_stage_label("loading_model", "VoxCPM2"), "Loading VoxCPM2");
+        assert_eq!(local_stage_label("generating", "Qwen3-TTS 1.7B"), "Converting voice (Qwen3-TTS 1.7B)");
     }
 
     #[test]
@@ -297,7 +401,8 @@ mod tests {
             resolved,
             VoiceChoice {
                 provider: Provider::ElevenLabs,
-                voice_id: "el-2".into()
+                voice_id: "el-2".into(),
+                engine: None,
             }
         );
     }
@@ -305,21 +410,12 @@ mod tests {
     #[test]
     fn falls_back_to_local_profile() {
         let resolved = resolve_voice(&config_with(Provider::Local), None).unwrap();
-        assert_eq!(
-            resolved,
-            VoiceChoice {
-                provider: Provider::Local,
-                voice_id: "local-9".into()
-            }
-        );
+        assert_eq!(resolved, local("local-9", Some("cosyvoice3-0.5B")));
     }
 
     #[test]
     fn empty_choice_is_treated_as_no_choice() {
-        let empty = VoiceChoice {
-            provider: Provider::Local,
-            voice_id: String::new(),
-        };
+        let empty = local("", None);
         let resolved = resolve_voice(&config_with(Provider::ElevenLabs), Some(empty)).unwrap();
         assert_eq!(resolved.voice_id, "el-2");
     }
@@ -335,13 +431,10 @@ mod tests {
     fn voice_choice_uses_camel_case_json() {
         let choice: VoiceChoice =
             serde_json::from_str(r#"{"provider":"local","voiceId":"p1"}"#).unwrap();
-        assert_eq!(
-            choice,
-            VoiceChoice {
-                provider: Provider::Local,
-                voice_id: "p1".into()
-            }
-        );
+        assert_eq!(choice, local("p1", None));
+        let choice: VoiceChoice =
+            serde_json::from_str(r#"{"provider":"local","voiceId":"p1","engine":"qwen-tts-1.7B"}"#).unwrap();
+        assert_eq!(choice, local("p1", Some("qwen-tts-1.7B")));
     }
 
     #[tokio::test]

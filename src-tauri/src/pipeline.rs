@@ -64,7 +64,7 @@ pub async fn process_recording(
     if !voice_replacement {
         progress(&on_event, "Saving", 50.0);
         ffmpeg::normalize_to_mp4(&recording, &final_path).await?;
-        update_meta(&final_path, None, None);
+        update_meta(&final_path, None, None, None);
         on_event
             .send(PipelineEvent::Complete { output_path: final_path.to_string_lossy().to_string() })
             .ok();
@@ -73,6 +73,7 @@ pub async fn process_recording(
     }
 
     let choice = conversion::resolve_voice(&config, voice_choice)?;
+    let engine_name = conversion::engine_name(&app, &choice).await;
     let temp_dir = recording.parent().unwrap_or(Path::new("/tmp")).to_path_buf();
 
     // Kept first: the source recording is deleted on success, so a converted save without
@@ -80,8 +81,10 @@ pub async fn process_recording(
     let original = original_voice_path(&final_path);
     ffmpeg::keep_original_voice(&recording, &original).await?;
     let saved = async {
-        let transformed =
-            convert_voice(&app, &config, &choice, &recording, &recording, &temp_dir, &timestamp, token, &on_event).await?;
+        let transformed = convert_voice(
+            &app, &config, &choice, &engine_name, &recording, &recording, &temp_dir, &timestamp, token, &on_event,
+        )
+        .await?;
         progress(&on_event, "Assembling video", 90.0);
         log::info!("[pipeline] Splicing audio into video");
         let assembled = ffmpeg::replace_audio(&recording, &transformed, &final_path).await;
@@ -106,7 +109,7 @@ pub async fn process_recording(
         cleanup_temp(&original);
         return Err(e);
     }
-    update_meta(&final_path, Some(&choice), name.as_deref());
+    update_meta(&final_path, Some(&choice), name.as_deref(), Some(&engine_name));
 
     log::info!(
         "[pipeline] Complete: {} (total {:.1}s)",
@@ -154,9 +157,12 @@ pub async fn reconvert_recording(
     }
 
     let choice = conversion::resolve_voice(&config, voice_choice)?;
+    let engine_name = conversion::engine_name(&app, &choice).await;
     let temp_dir = crate::commands::recording::temp_recording_dir();
     let stamp = unix_timestamp();
-    let transformed = convert_voice(&app, &config, &choice, &original, &mp4, &temp_dir, &stamp, token, &on_event).await?;
+    let transformed =
+        convert_voice(&app, &config, &choice, &engine_name, &original, &mp4, &temp_dir, &stamp, token, &on_event)
+            .await?;
 
     progress(&on_event, "Assembling video", 90.0);
     // Staged beside the mp4 so the final rename is atomic: the saved video is never half-written.
@@ -171,7 +177,7 @@ pub async fn reconvert_recording(
     }
     replace_file(&staged, &mp4)?;
 
-    update_meta(&mp4, Some(&choice), name.as_deref());
+    update_meta(&mp4, Some(&choice), name.as_deref(), Some(&engine_name));
     log::info!("[pipeline] Reconverted {} with {:?}", mp4.display(), choice);
     on_event
         .send(PipelineEvent::Complete { output_path: path.clone() })
@@ -181,12 +187,14 @@ pub async fn reconvert_recording(
 
 /// Extract `audio_source`'s audio and convert it into `choice`'s voice, reporting progress 5-85%.
 ///
-/// `video` is the file whose length the result must match; `token` is the caller's run. Returns the converted audio's path.
+/// `video` is the file whose length the result must match; `engine_name` labels the progress; `token` is the
+/// caller's run. Returns the converted audio's path.
 #[allow(clippy::too_many_arguments)]
 async fn convert_voice(
     app: &tauri::AppHandle,
     config: &config::AppConfig,
     choice: &VoiceChoice,
+    engine_name: &str,
     audio_source: &Path,
     video: &Path,
     temp_dir: &Path,
@@ -212,10 +220,8 @@ async fn convert_voice(
         return Err(e);
     }
 
-    let stage = match choice.provider {
-        crate::tts_provider::Provider::Local => "Converting voice (local)",
-        crate::tts_provider::Provider::ElevenLabs => "Converting voice (ElevenLabs)",
-    };
+    let stage = format!("Converting voice ({engine_name})");
+    let stage = stage.as_str();
     progress(on_event, stage, 10.0);
     log::info!("[pipeline] Converting with {:?}, duration={:?}", choice, duration);
 
@@ -224,11 +230,12 @@ async fn convert_voice(
         app,
         config,
         choice,
+        engine_name,
         &extracted,
         temp_dir,
         stamp,
         duration,
-        &|fraction| progress(on_event, stage, 10.0 + 75.0 * fraction),
+        &|label, fraction| progress(on_event, label, 10.0 + 75.0 * fraction),
         &|| runs.is_stale(token),
     )
     .await;
@@ -294,12 +301,19 @@ fn read_meta(output_path: &Path) -> serde_json::Map<String, serde_json::Value> {
         .unwrap_or_default()
 }
 
-/// Record which voice a recording now uses, keeping other fields (Drive link, creation time).
-/// `voice_name` should be the resolved human-readable name, not an opaque ID.
-fn update_meta(output_path: &Path, choice: Option<&VoiceChoice>, voice_name: Option<&str>) {
+/// Record which voice and engine a recording now uses, keeping other fields (Drive link, creation time).
+/// `voice_name` and `engine_name` should be the resolved human-readable names, not opaque IDs.
+fn update_meta(
+    output_path: &Path,
+    choice: Option<&VoiceChoice>,
+    voice_name: Option<&str>,
+    engine_name: Option<&str>,
+) {
     let mut meta = read_meta(output_path);
     meta.insert("voiceProfile".into(), serde_json::json!(voice_name));
     meta.insert("provider".into(), serde_json::json!(choice.map(|c| &c.provider)));
+    meta.insert("engine".into(), serde_json::json!(choice.and_then(|c| c.engine.as_deref())));
+    meta.insert("engineName".into(), serde_json::json!(engine_name));
     meta.insert("voiceReplacement".into(), serde_json::json!(choice.is_some()));
     meta.entry("createdAt")
         .or_insert_with(|| serde_json::json!(unix_timestamp().parse::<u64>().unwrap_or(0)));
@@ -392,23 +406,30 @@ mod tests {
     #[test]
     fn update_meta_records_unconverted_recording() {
         let mp4 = temp_mp4("meta-raw");
-        update_meta(&mp4, None, None);
+        update_meta(&mp4, None, None, None);
         let v = serde_json::Value::Object(read_meta(&mp4));
         assert_eq!(v["voiceReplacement"], false);
         assert!(v["voiceProfile"].is_null());
+        assert!(v["engineName"].is_null());
         assert!(v["createdAt"].as_u64().unwrap() > 0);
         std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
 
     #[test]
-    fn update_meta_stores_voice_name_and_provider() {
+    fn update_meta_stores_voice_engine_and_provider() {
         let mp4 = temp_mp4("meta-local");
-        let choice = VoiceChoice { provider: crate::tts_provider::Provider::Local, voice_id: "4ad88b19".into() };
-        update_meta(&mp4, Some(&choice), Some("MJ"));
+        let choice = VoiceChoice {
+            provider: crate::tts_provider::Provider::Local,
+            voice_id: "4ad88b19".into(),
+            engine: Some("qwen-tts-1.7B".into()),
+        };
+        update_meta(&mp4, Some(&choice), Some("MJ"), Some("Qwen3-TTS 1.7B"));
         let v = serde_json::Value::Object(read_meta(&mp4));
         assert_eq!(v["voiceReplacement"], true);
         assert_eq!(v["voiceProfile"], "MJ", "should store human-readable name, not UUID");
         assert_eq!(v["provider"], "local");
+        assert_eq!(v["engine"], "qwen-tts-1.7B");
+        assert_eq!(v["engineName"], "Qwen3-TTS 1.7B");
         std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
     }
 
@@ -417,13 +438,19 @@ mod tests {
         let mp4 = temp_mp4("meta-reconvert");
         std::fs::write(
             mp4.with_extension("meta.json"),
-            r#"{"voiceProfile":"MJ","provider":"local","voiceReplacement":true,"createdAt":1740000000,"driveUrl":"https://drive/x","uploadedAt":1740000100}"#,
+            r#"{"voiceProfile":"MJ","provider":"local","engine":"qwen-tts-1.7B","engineName":"Qwen3-TTS 1.7B","voiceReplacement":true,"createdAt":1740000000,"driveUrl":"https://drive/x","uploadedAt":1740000100}"#,
         ).unwrap();
-        let choice = VoiceChoice { provider: crate::tts_provider::Provider::ElevenLabs, voice_id: "el".into() };
-        update_meta(&mp4, Some(&choice), Some("Rachel"));
+        let choice = VoiceChoice {
+            provider: crate::tts_provider::Provider::ElevenLabs,
+            voice_id: "el".into(),
+            engine: None,
+        };
+        update_meta(&mp4, Some(&choice), Some("Rachel"), Some("ElevenLabs"));
         let v = serde_json::Value::Object(read_meta(&mp4));
         assert_eq!(v["voiceProfile"], "Rachel");
         assert_eq!(v["provider"], "elevenlabs");
+        assert!(v["engine"].is_null(), "the old local engine must not stick to an ElevenLabs conversion");
+        assert_eq!(v["engineName"], "ElevenLabs");
         assert_eq!(v["driveUrl"], "https://drive/x");
         assert_eq!(v["createdAt"], 1740000000);
         std::fs::remove_dir_all(mp4.parent().unwrap()).ok();
