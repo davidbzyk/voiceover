@@ -153,7 +153,7 @@ async fn cancel_generation(client: &reqwest::Client, base_url: &str, generation_
 ///
 /// `on_progress` gets the job's status and chunk counts whenever either changes, from the first poll.
 /// Fails only when the job errors, is cancelled, stops making chunk progress for `timing.stall_after`, or the
-/// sidecar cannot be reached for that long; never on total length.
+/// status polls keep failing for that long (a refused connection fails at once); never on total length.
 pub(crate) async fn poll_and_download(
     client: &reqwest::Client,
     base_url: &str,
@@ -166,6 +166,8 @@ pub(crate) async fn poll_and_download(
     let status_url = format!("{}/generate/{}/status", base_url, generation_id);
     let mut last_seen: Option<(String, JobProgress)> = None;
     let mut last_change = std::time::Instant::now();
+    // When the current run of failed status polls began; None while polls succeed.
+    let mut failing_since: Option<std::time::Instant> = None;
     // Set once the sidecar job has ended or been told to stop; any other early exit cancels it,
     // so a job nobody is waiting for never keeps the serial queue busy.
     let mut job_settled = false;
@@ -182,12 +184,15 @@ pub(crate) async fn poll_and_download(
 
             let sent = tokio::time::timeout(std::time::Duration::from_secs(120), client.get(&status_url).send()).await;
             let poll_resp = match sent {
-                Ok(Ok(resp)) => resp,
+                Ok(Ok(resp)) => {
+                    failing_since = None;
+                    resp
+                }
                 // Refused: nothing is listening, so the sidecar is gone and waiting cannot help.
                 Ok(Err(e)) if e.is_connect() => return Err(format!("Failed to poll generation status: {e}")),
-                // A dropped connection or a slow answer is not a failed job: poll again, and give up only once
-                // nothing has changed for the stall window. An answer with an error status fails at once, below.
-                failed if last_change.elapsed() <= timing.stall_after => {
+                // A dropped connection or a slow answer is not a failed job: poll again, and give up once polls
+                // have failed for the stall window. An answer with an error status fails at once, below.
+                failed if failing_since.get_or_insert_with(std::time::Instant::now).elapsed() <= timing.stall_after => {
                     log::warn!("[local_tts] Status poll failed ({failed:?}); polling again");
                     continue;
                 }
@@ -938,6 +943,26 @@ mod tests {
         ).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn a_dropped_poll_after_a_long_status_is_still_retried() {
+        // Loading a 13 GB engine holds one status far past the stall window; a dropped poll then must not
+        // fail the job, since the window counts from the first failed poll, not the last status change.
+        let loading = r#"{"status":"loading_model","error":null,"progress":{"done":0,"total":0}}"#;
+        let mut statuses = vec![loading; 60];
+        statuses.extend([
+            "RESET",
+            r#"{"status":"completed","error":null,"progress":{"done":1,"total":1}}"#,
+        ]);
+        let fake = fake_sidecar(statuses).await;
+        let out = std::env::temp_dir().join("vo-test-poll-long-status.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-9", &out, fast_timing(100),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
         std::fs::remove_file(&out).ok();
     }
 
