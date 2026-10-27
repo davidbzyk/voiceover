@@ -180,7 +180,7 @@ def test_a_voice_sample_over_30_s_converts(monkeypatch, tmp_path):
     monkeypatch.setattr(loader, "load_cosyvoice3", lambda repo: _FakeCosyVoice())
     monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: [{"audio_path": str(sample), "reference_text": "Hi."}])
     audio, sr, _ = asyncio.run(server._do_voice_convert(
-        set_status=lambda s: None, data_dir=tmp_path, profile_id="p",
+        set_status=lambda s: None, data_dir=tmp_path, engine="cosyvoice3-0.5B", profile_id="p",
         source_audio_path=str(source), original_duration=5.0,
     ))
     assert sr == SR and len(audio) == 5 * SR

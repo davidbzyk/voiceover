@@ -95,7 +95,9 @@ logger = logging.getLogger("voiceover-tts")
 
 # TTS rows: ``ref_text`` says whether the engine gets the sample's transcript. Qwen clones from
 # the speaker embedding alone (x-vector mode), which stops the transcript leaking into the output.
-# ``license`` is the model card's licence id, sent by /models/status. ``module`` is the code that
+# ``license`` is the model card's licence id (the upstream card's when the MLX copy has none), and
+# ``size_gb`` the download size from the Hub, extra repos included; /models/status sends both, and
+# ``non_commercial`` marks weights the user may not use commercially. ``module`` is the code that
 # loads the repo; ``--check-imports`` imports each one so a frozen build missing a module fails at
 # build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
 # time; they are downloaded, counted and deleted with the row. Find them by generating once with
@@ -108,6 +110,8 @@ MODEL_REGISTRY = {
         "display_name": "Whisper Medium",
         "category": "transcription",
         "recommended": False,
+        "size_gb": 1.5,
+        "license": "apache-2.0",
     },
     "whisper-large-v3-turbo": {
         "repo_id": "mlx-community/whisper-large-v3-turbo-asr-fp16",
@@ -115,6 +119,8 @@ MODEL_REGISTRY = {
         "display_name": "Whisper Large v3 Turbo",
         "category": "transcription",
         "recommended": True,
+        "size_gb": 1.6,
+        "license": "mit",
     },
     # TTS
     "qwen-tts-1.7B": {
@@ -125,6 +131,7 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": False,
         "license": "apache-2.0",
+        "size_gb": 4.5,
     },
     "voxcpm2": {
         "repo_id": "mlx-community/VoxCPM2-bf16",
@@ -134,6 +141,7 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "apache-2.0",
+        "size_gb": 5.0,
     },
     "moss-tts-local-v1.5": {
         "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
@@ -144,6 +152,7 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "apache-2.0",
+        "size_gb": 13.4,
     },
     "omnivoice": {
         "repo_id": "mlx-community/OmniVoice-bf16",
@@ -153,6 +162,8 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "cc-by-nc",
+        "size_gb": 1.6,
+        "non_commercial": True,
     },
     "fish-s2-pro": {
         "repo_id": "mlx-community/fish-audio-s2-pro-bf16",
@@ -162,6 +173,8 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "fish-audio-research",
+        "size_gb": 11.0,
+        "non_commercial": True,
     },
     "chatterbox": {
         "repo_id": "mlx-community/Chatterbox-TTS-fp16",
@@ -172,6 +185,7 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "mit",
+        "size_gb": 3.2,
     },
     # Voice conversion
     "cosyvoice3-0.5B": {
@@ -181,6 +195,8 @@ MODEL_REGISTRY = {
         "display_name": "CosyVoice3 0.5B",
         "category": "voice-conversion",
         "recommended": False,
+        "size_gb": 2.4,
+        "license": "apache-2.0",
     },
 }
 
@@ -619,6 +635,46 @@ async def _do_generate(
     return audio, sample_rate, "Generation"
 
 
+async def _do_tts_replace(
+    *,
+    set_status,
+    set_progress=lambda done, total: None,
+    should_cancel=lambda: False,
+    data_dir: Path,
+    engine: str,
+    profile_id: str,
+    source_audio_path: str,
+    original_duration: float,
+    whisper_model: str | None,
+):
+    """Replace a recording's voice with the text-to-speech engine ``engine``: transcribe it, then speak each phrase.
+
+    Returns what _do_generate returns, audio ``original_duration`` long (the source's when 0). Whisper runs whole,
+    so a cancel during transcription takes effect when it finishes, before any speech.
+    """
+    from chunked_tts import ConversionCancelled
+    from tts import run_mlx, transcribe
+
+    set_status("transcribing")
+    kwargs = {"model_name": whisper_model} if whisper_model else {}
+    transcript = await run_mlx(transcribe, source_audio_path, **kwargs)
+    if should_cancel():
+        raise ConversionCancelled()
+    if not transcript["text"].strip() or not transcript["segments"]:
+        raise ValueError("No speech found in the recording")
+    return await _do_generate(
+        set_status=set_status,
+        set_progress=set_progress,
+        should_cancel=should_cancel,
+        data_dir=data_dir,
+        engine=engine,
+        profile_id=profile_id,
+        text=transcript["text"],
+        segments=transcript["segments"],
+        original_duration=original_duration or transcript["duration"],
+    )
+
+
 _vc_model = None
 _vc_model_name = None
 
@@ -629,11 +685,12 @@ async def _do_voice_convert(
     set_progress=lambda done, total: None,
     should_cancel=lambda: False,
     data_dir: Path,
+    engine: str,
     profile_id: str,
     source_audio_path: str,
     original_duration: float,
 ):
-    """Convert source audio to target voice using CosyVoice3.
+    """Convert source audio to target voice with the speech-to-speech engine named by ``engine`` (CosyVoice3).
 
     Returns (audio_data, sample_rate, log_label) for _run_generation.
     Calls set_status(str) to report progress.
@@ -651,7 +708,7 @@ async def _do_voice_convert(
     set_status("loading_model")
     global _vc_model, _vc_model_name
 
-    vc_model_id = MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"]
+    vc_model_id = MODEL_REGISTRY[engine]["repo_id"]
     if _vc_model is None or _vc_model_name != vc_model_id:
         logger.info(f"Loading voice conversion model: {vc_model_id}")
 
@@ -1026,21 +1083,30 @@ async def get_audio(gen_id: str):
 # ---------------------------------------------------------------------------
 
 
+# Registry categories that can replace a recording's voice.
+_REPLACE_CATEGORIES = ("voice-conversion", "tts")
+
+
 @app.post("/voice-convert")
 async def voice_convert(request: dict):
-    """Start voice conversion (speech-to-speech). Preserves original timing.
+    """Start replacing the voice in a recording with ``engine`` (a registry key). Returns a generation ID.
 
-    Uses CosyVoice3 via mlx-audio to convert the source audio to the target
-    voice while keeping the exact pacing, pauses, and prosody of the original.
-    For recordings longer than 25s, processes in overlapping chunks.
+    The engine's row decides how: a ``voice-conversion`` engine (CosyVoice3) converts the speech itself, keeping
+    its pacing; a ``tts`` engine transcribes the recording with ``whisper_model`` and speaks each phrase at its
+    original timestamp. Either result is ``original_duration`` long, reports progress and can be cancelled.
     """
     _cleanup_generations()
+    engine = request.get("engine", "")
     profile_id = request.get("profile_id", "")
     source_audio_path = request.get("source_audio_path", "")
     original_duration = float(request.get("original_duration", 0))
 
     if not profile_id or not source_audio_path:
         return error_response(400, "profile_id and source_audio_path are required")
+    category = MODEL_REGISTRY.get(engine, {}).get("category")
+    if category not in _REPLACE_CATEGORIES:
+        keys = [k for k, v in MODEL_REGISTRY.items() if v["category"] in _REPLACE_CATEGORIES]
+        return error_response(400, f"engine must be one of {keys}, got {engine!r}")
 
     try:
         _validate_path(source_audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
@@ -1051,13 +1117,17 @@ async def voice_convert(request: dict):
 
     gen_id = _new_generation()
 
-    convert_fn = functools.partial(
-        _do_voice_convert,
+    job_args = dict(
         data_dir=DATA_DIR,
+        engine=engine,
         profile_id=profile_id,
         source_audio_path=source_audio_path,
         original_duration=original_duration,
     )
+    if category == "voice-conversion":
+        convert_fn = functools.partial(_do_voice_convert, **job_args)
+    else:
+        convert_fn = functools.partial(_do_tts_replace, whisper_model=request.get("whisper_model"), **job_args)
     await _generation_queue.put((gen_id, _run_generation(gen_id, convert_fn)))
     return {"id": gen_id}
 
@@ -1273,7 +1343,7 @@ async def models_status():
         elif category == "tts":
             loaded = get_loaded_tts_engine() == model_name
         elif category == "voice-conversion":
-            loaded = _vc_model is not None
+            loaded = _vc_model is not None and _vc_model_name == entry["repo_id"]
         else:
             loaded = False
 
@@ -1285,6 +1355,8 @@ async def models_status():
             "downloaded": downloaded,
             "loaded": loaded,
             "license": entry.get("license"),
+            "size_gb": entry.get("size_gb"),
+            "non_commercial": entry.get("non_commercial", False),
         })
 
     return {"models": result}
