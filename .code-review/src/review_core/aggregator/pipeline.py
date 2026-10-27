@@ -1,4 +1,4 @@
-"""The two aggregator passes: gate and merge, then fold in the validator's verdicts."""
+"""The two aggregator passes: gate and group by place, then fold in the validator's verdicts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from review_core.aggregator.confidence import DEFAULT_FLOOR, passes_floor
-from review_core.aggregator.dedup import dedup
+from review_core.aggregator.dedup import group_by_place
 from review_core.aggregator.gates import (
     GitReader,
     Reader,
@@ -49,10 +49,10 @@ def gate_and_merge(
     floor: int = DEFAULT_FLOOR,
     window: int = MERGE_WINDOW,
 ) -> tuple[list[dict], dict, list[dict]]:
-    """Apply the path gate, the quote gate, the confidence floor and the merge.
+    """Apply the path gate, the quote gate and the confidence floor, then group by place.
 
     `collected` is what `collect_findings` returns: the sound findings, and one reviewer name
-    per finding already dropped as malformed. Returns the merged findings in a fixed order,
+    per finding already dropped as malformed. Returns the kept findings in a fixed order,
     the count of drops by reason, and one row per dropped finding. Pure: it reads code and
     writes nothing.
     """
@@ -77,14 +77,13 @@ def gate_and_merge(
         drop([x for x in gated if x["reason"] == reason], reason)
     strong = [x for x in kept if passes_floor(x, floor)]
     drop([x for x in kept if not passes_floor(x, floor)], "confidence_floor")
-    merged, removed = dedup(strong, window)
-    drop(removed, "duplicate")
+    merged = group_by_place(strong, window)
     merged.sort(key=lambda x: (x["file"], x["line_start"], x["side"], x["reviewer"]))
     return merged, dropped, detail
 
 
 def validator_input(merged: list[dict]) -> dict:
-    """What the validator is handed: the merged findings severe enough to need a verdict."""
+    """What the validator is handed: the kept findings severe enough to need a verdict."""
     to_check = [x for x in merged if x["severity"] in VALIDATED_SEVERITIES]
     return {
         "findings": [{"id": verdict_id(x), **{k: x[k] for k in VALIDATOR_FIELDS}} for x in to_check]
@@ -110,7 +109,7 @@ def first_pass(
     floor: int = DEFAULT_FLOOR,
     window: int = MERGE_WINDOW,
 ) -> dict:
-    """Gate, filter and dedup the findings; write candidates.json and validator-input.json.
+    """Gate, filter and group the findings; write candidates.json and validator-input.json.
 
     Raises ContractError when the output folder, repository or a ref is unusable.
     """
@@ -166,7 +165,8 @@ def rebuild(
         collect_findings(out, list(planned), ran), reader, floor, window
     )
     verdicts = (read_verdicts(out / "validation.json") if validator_ran else None) or {}
-    findings, declined = apply_verdicts(merged, verdicts)
+    kept, declined = apply_verdicts(merged, verdicts)
+    findings = group_by_place(kept, window)
     dropped["validator_declined"] += len(declined)
     run = build_envelope(out, list(planned), run_meta, ran)
     loose = unvalidated(findings, verdicts)
@@ -193,7 +193,7 @@ def _read_candidates(out: Path) -> dict:
     return doc
 
 
-def finalize(out_dir: Path | str, run_meta: dict) -> dict:
+def finalize(out_dir: Path | str, run_meta: dict, window: int = MERGE_WINDOW) -> dict:
     """Apply validation.json to the candidates and write the final findings.json.
 
     A P0 or P1 finding stays unless it is declined. If any is left without an upheld verdict
@@ -208,7 +208,8 @@ def finalize(out_dir: Path | str, run_meta: dict) -> dict:
     findings = candidates["findings"]
     verdicts = read_verdicts(out / "validation.json") or {}
     dropped = dict(candidates["dropped"])
-    findings, declined = apply_verdicts(findings, verdicts)
+    kept, declined = apply_verdicts(findings, verdicts)
+    findings = group_by_place(kept, window)
     dropped["validator_declined"] += len(declined)
     if declined:
         append_declined(out / "declined.json", declined)

@@ -90,21 +90,23 @@ fi
 prior=()
 if [ -s "$prior_file" ]; then prior=(--prior-review "$prior_file"); fi
 
+# The run's credentials: blanked in any agent error the review prints, refused in what it posts.
+guard=(--secret-env OPENAI_API_KEY)
+if [ -n "${CODEX_HOME:-}" ]; then
+  guard+=(--secret-file "$CODEX_HOME/auth.json" --secret-file "$work/auth.seed.json")
+fi
+
 # The review never sees the GitHub token; only the post below gets it.
 status=0
 (cd "$here" && env -u GITHUB_TOKEN "${py[@]}" -m review_core.cli review --repo "$repo" --base "$base" \
   --head "$CR_HEAD" --runner "$runner" --model "${CR_MODEL:-gpt-6-luna}" \
-  --effort "${CR_EFFORT:-high}" --out "$out" --runs "$work/runs" "${registry[@]}" \
+  --effort "${CR_EFFORT:-high}" --out "$out" --runs "$work/runs" "${registry[@]}" "${guard[@]}" \
   ${prior[@]+"${prior[@]}"} "${paths[@]}") || status=$?
 
 # A failed run still has a review.json; post it so the pull request shows the failure.
 # The agents could read the login; the poster refuses to post any of its values.
 post=("${py[@]}" -m review_core.ci.github --runs "$work/runs" --repo-dir "$repo" --base "$base"
-      --head "$CR_HEAD" --repo "$CR_REPO" --pr "$CR_PR" --summary "$out/pr-summary.md"
-      --secret-env OPENAI_API_KEY)
-if [ -n "${CODEX_HOME:-}" ]; then
-  post+=(--secret-file "$CODEX_HOME/auth.json" --secret-file "$work/auth.seed.json")
-fi
+      --head "$CR_HEAD" --repo "$CR_REPO" --pr "$CR_PR" --summary "$out/pr-summary.md" "${guard[@]}")
 if [ -n "${CR_DRY_RUN:-}" ]; then post+=(--dry-run "$CR_DRY_RUN"); fi
 if [ -n "${CR_TITLE:-}" ]; then post+=(--title "$CR_TITLE"); fi
 if [ -n "${CR_BOT:-}" ]; then post+=(--bot "$CR_BOT"); fi

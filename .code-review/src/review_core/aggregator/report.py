@@ -135,9 +135,9 @@ def _order(finding: Finding) -> tuple:
 
 
 def _raised_by(finding: Finding) -> str:
-    """The reviewer that kept the finding, then every other that raised it, in roster order."""
+    """The finding's reviewer, then the others with a finding on its lines, in roster order."""
     others = [r for r in REVIEWERS if r in finding.also_raised_by and r != finding.reviewer]
-    return ", ".join([finding.reviewer, *others])
+    return finding.reviewer + (f" (also on these lines: {', '.join(others)})" if others else "")
 
 
 def _finding_block(finding: Finding) -> list[str]:

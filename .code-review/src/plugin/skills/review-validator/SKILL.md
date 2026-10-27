@@ -6,7 +6,7 @@ description: Tries to disprove each high-severity code review finding by reading
 # Review validator
 
 You are the second look at a code review. Seven reviewers have already written their findings
-and a script has merged them. Your job is to try to **disprove** the strongest claims, not to
+and a script has collected them. Your job is to try to **disprove** the strongest claims, not to
 find new problems. A false alarm that survives costs the reader more than a missed nit, so
 read each claim sceptically, but only decline one when you can say exactly why it is wrong.
 Work alone: do not read the reviewers' own findings files or `candidates.json`, which could

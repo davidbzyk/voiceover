@@ -1,41 +1,43 @@
-"""Merge findings that point at the same code.
+"""Group findings that point at the same code; no finding is dropped for its place.
 
-Two findings are duplicates when they share a file and side and their line ranges overlap or
+Two findings share a place when they share a file and side and their line ranges overlap or
 lie within `window` lines. Groups are anchored on their first member, so a long run of close
 findings never chains into one group. A finding that claims more than MAX_SPAN lines stands
-alone: otherwise one reviewer could claim a whole file and absorb everyone else's findings.
+alone, so one reviewer claiming a whole file cannot gather everyone else's findings.
 """
 
 from __future__ import annotations
 
-from review_core.aggregator.confidence import severity_rank
+from collections.abc import Callable, Sequence
+from typing import Any
+
 from review_core.contracts.models import MAX_SPAN
 from review_core.envelope import MERGE_WINDOW
 
-
-def _preference(finding: dict) -> tuple:
-    """Sort key that puts the finding to keep first: severity, confidence, line, reviewer."""
-    return (
-        severity_rank(finding["severity"]),
-        -finding["confidence"],
-        finding["line_start"],
-        finding["reviewer"],
-    )
+Place = tuple[str, str, int, int]
 
 
-def _groups(findings: list[dict], window: int) -> list[list[dict]]:
-    """Split findings into duplicate groups."""
-    by_place: dict[tuple[str, str], list[dict]] = {}
+def _at(finding: dict) -> Place:
+    """A finding document's file, side, first line and last line."""
+    return finding["file"], finding["side"], finding["line_start"], finding["line_end"]
+
+
+def place_groups(
+    findings: Sequence[Any], window: int = MERGE_WINDOW, at: Callable[[Any], Place] = _at
+) -> list[list[Any]]:
+    """Split findings into groups at one place, in file, side and line order; `at` reads a
+    finding's place, so CI groups its `Finding` objects by the same rule."""
+    by_place: dict[tuple[str, str], list] = {}
     for finding in findings:
-        by_place.setdefault((finding["file"], finding["side"]), []).append(finding)
+        by_place.setdefault(at(finding)[:2], []).append(finding)
     groups = []
     for place in sorted(by_place):
-        ordered = sorted(by_place[place], key=lambda x: (x["line_start"], x["line_end"]))
-        open_group: list[dict] | None = None
+        ordered = sorted(by_place[place], key=lambda x: at(x)[2:])
+        open_group: list | None = None
         for finding in ordered:
-            if _too_wide(finding):
+            if _too_wide(at(finding)):
                 groups.append([finding])
-            elif open_group and finding["line_start"] <= open_group[0]["line_end"] + window:
+            elif open_group and at(finding)[2] <= at(open_group[0])[3] + window:
                 open_group.append(finding)
             else:
                 open_group = [finding]
@@ -43,17 +45,16 @@ def _groups(findings: list[dict], window: int) -> list[list[dict]]:
     return groups
 
 
-def _too_wide(finding: dict) -> bool:
+def _too_wide(place: Place) -> bool:
     """True when the finding claims more lines than any single place holds."""
-    return finding["line_end"] - finding["line_start"] + 1 > MAX_SPAN
+    return place[3] - place[2] + 1 > MAX_SPAN
 
 
-def dedup(findings: list[dict], window: int = MERGE_WINDOW) -> tuple[list[dict], list[dict]]:
-    """Return (kept, removed). Each kept finding lists the other reviewers of its group."""
-    kept, removed = [], []
-    for group in _groups(findings, window):
-        winner = min(group, key=_preference)
-        others = sorted({x["reviewer"] for x in group if x is not winner} - {winner["reviewer"]})
-        kept.append({**winner, "also_raised_by": others})
-        removed.extend(x for x in group if x is not winner)
-    return kept, removed
+def group_by_place(findings: list[dict], window: int = MERGE_WINDOW) -> list[dict]:
+    """Every finding, in the order given, each listing the other reviewers with a finding at its
+    place; run again after verdicts so a declined finding's reviewer is no longer listed."""
+    others: dict[int, list[str]] = {}
+    for group in place_groups(findings, window):
+        reviewers = {x["reviewer"] for x in group}
+        others.update({id(x): sorted(reviewers - {x["reviewer"]}) for x in group})
+    return [{**x, "also_raised_by": others[id(x)]} for x in findings]

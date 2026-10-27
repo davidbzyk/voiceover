@@ -124,7 +124,7 @@
             },
             "duplicate": {
               "type": "integer",
-              "description": "Findings dropped: duplicate."
+              "description": "Findings dropped as duplicates; always 0, findings at one place are kept."
             },
             "validator_declined": {
               "type": "integer",
@@ -166,7 +166,7 @@
     },
     "findings": {
       "type": "array",
-      "description": "Merged findings, fingerprints set.",
+      "description": "Findings grouped by place, each kept as its own item, fingerprints set.",
       "items": {
         "type": "object",
         "properties": {
@@ -263,7 +263,7 @@
             "description": "Stable hash of the finding, set by the aggregator."
           },
           "also_raised_by": {
-            "description": "Other reviewers whose findings were merged into this one.",
+            "description": "Other reviewers with a finding at the same place (overlapping lines); each is its own finding.",
             "type": "array",
             "items": {
               "type": "string",
