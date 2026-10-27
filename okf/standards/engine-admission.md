@@ -9,7 +9,7 @@ tags:
   - standard
   - sidecar
   - dependencies
-freshness: "2026-10-25T22:35:00Z"
+freshness: "2026-10-27T18:00:00Z"
 version: 0.1.0
 status: draft
 standard_scope: src-tauri/sidecar
@@ -57,6 +57,12 @@ relations:
 6. Every MLX computation an engine needs (load, reference decode, generate, transcribe) runs on the
    sidecar's one MLX thread: `tts.run_mlx` from async code, `tts.call_mlx` from a worker thread. The
    thread tests in `test_engines.py` and `test_server_integration.py` cover the shared paths.
+7. A text-to-speech row states `tokens_per_second`: generate a long sentence with `max_tokens=40` and
+   divide 40 by the seconds of audio; it is None only for an engine that sets its length from the text
+   (OmniVoice). The replace job uses it to stop a phrase that runs on. When the engine takes a target
+   length, the row names it in `length_hint` (MOSS: `tokens`). To find out whether a new engine needs
+   one, speak a short phrase ("My fellow Americans,") with eight seeds under the phrase bound: if any
+   run reaches the bound, name the engine's target-length argument in `length_hint`.
 
 ## Why
 The April seven-backend sidecar died on exactly these conflicts; see the
@@ -64,7 +70,9 @@ The April seven-backend sidecar died on exactly these conflicts; see the
 months on a fork nobody had listed; see the
 [fork evidence](../lineage/evidence/cosyvoice-from-mlx-audio-plus.md). Rule 6 comes from mlx 0.32,
 where an array not yet evaluated fails on any thread but the one that made it; see the
-[bump evidence](../lineage/evidence/mlx-0324-mlx-audio-061-bump.md).
+[bump evidence](../lineage/evidence/mlx-0324-mlx-audio-061-bump.md). Rule 7 comes from MOSS speaking on
+past a short phrase until the sidecar's memory passed 40 GB; see the
+[runaway evidence](../lineage/evidence/tts-runaway-and-mlx-cache.md).
 
 ## Status
 Draft from the 2026-10-22 restore-Qwen plan; becomes stable when that plan's PR merges.

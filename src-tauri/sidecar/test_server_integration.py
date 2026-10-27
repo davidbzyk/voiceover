@@ -5,6 +5,8 @@ ASGI transport. These verify route behavior, input validation, and error
 handling without loading any ML models.
 """
 
+import json
+
 import pytest
 from pathlib import Path
 from starlette.testclient import TestClient
@@ -141,6 +143,30 @@ class TestVoiceConvertEndpoint:
     def test_missing_profile_id_returns_400(self, client):
         response = client.post("/voice-convert", json={
             "source_audio_path": "/tmp/some-audio.wav",
+        })
+        assert response.status_code == 400
+
+    def test_missing_engine_is_refused(self, client, temp_data_dir):
+        response = client.post("/voice-convert", json={
+            "profile_id": "p1",
+            "source_audio_path": str(_stub_source(temp_data_dir)),
+        })
+        assert response.status_code == 400
+        assert "engine" in response.json()["error"]
+
+    def test_unknown_engine_is_refused(self, client, temp_data_dir):
+        response = client.post("/voice-convert", json={
+            "engine": "nope",
+            "profile_id": "p1",
+            "source_audio_path": str(_stub_source(temp_data_dir)),
+        })
+        assert response.status_code == 400
+
+    def test_transcription_row_is_refused_as_engine(self, client, temp_data_dir):
+        response = client.post("/voice-convert", json={
+            "engine": "whisper-medium",
+            "profile_id": "p1",
+            "source_audio_path": str(_stub_source(temp_data_dir)),
         })
         assert response.status_code == 400
 
@@ -403,13 +429,45 @@ class TestHappyPaths:
         assert licences["omnivoice"] == "cc-by-nc"
         assert licences["fish-s2-pro"] == "fish-audio-research"
 
+    def test_model_status_gives_the_models_page_size_and_licence(self, client):
+        """Every card shows its download size and licence, and marks non-commercial weights."""
+        models = {m["model_name"]: m for m in client.get("/models/status").json()["models"]}
+        assert models["moss-tts-local-v1.5"]["size_gb"] == 13.4  # its 8.5 GB tokenizer included
+        assert models["cosyvoice3-0.5B"]["license"] == "apache-2.0"
+        assert {k for k, m in models.items() if m["non_commercial"]} == {"omnivoice", "fish-s2-pro"}
+
 
 # ---------------------------------------------------------------------------
 # MODEL_REGISTRY
 # ---------------------------------------------------------------------------
 
 
+class TestMlxMemory:
+    def test_the_sidecar_caps_mlxs_cache_of_freed_buffers_at_startup(self, client):
+        """Uncapped, VoxCPM2 (5 GB of weights) reached 34.5 GB over seven phrases and MOSS and Fish passed 40 GB."""
+        import mlx.core as mx
+
+        import tts
+
+        previous = mx.set_cache_limit(0)
+        mx.set_cache_limit(previous)
+        assert previous == tts.MLX_CACHE_LIMIT_BYTES
+
+
 class TestModelRegistry:
+    def test_every_autoregressive_engine_declares_its_token_rate(self):
+        """The phrase budget needs each engine's tokens per second of audio; only OmniVoice sets its own length."""
+        unbounded = set()
+        for name, entry in MODEL_REGISTRY.items():
+            if entry["category"] != "tts":
+                continue
+            rate = entry["tokens_per_second"]
+            if rate is None:
+                unbounded.add(name)
+            else:
+                assert isinstance(rate, float) and rate > 0, name
+        assert unbounded == {"omnivoice"}
+
     def test_registry_contains_expected_models(self):
         expected = {
             "whisper-medium",
@@ -429,6 +487,11 @@ class TestModelRegistry:
             if entry["category"] == "tts":
                 assert isinstance(entry["ref_text"], bool), model_name
                 assert isinstance(entry["license"], str) and entry["license"], model_name
+
+    def test_every_row_has_a_download_size_and_licence(self):
+        for model_name, entry in MODEL_REGISTRY.items():
+            assert isinstance(entry["size_gb"], float) and entry["size_gb"] > 0, model_name
+            assert isinstance(entry["license"], str) and entry["license"], model_name
 
     def test_each_entry_has_required_fields(self):
         required_fields = {"repo_id", "display_name", "category", "recommended"}
@@ -519,14 +582,21 @@ def _fake_voice_convert(chunk_delay: float, converted: list):
     return fake
 
 
-def _submit_convert(client, temp_data_dir):
-    """Queue a voice conversion for a stub source file and return its generation id."""
+def _stub_source(temp_data_dir) -> Path:
+    """A placeholder recording inside the data dir, where the route accepts source paths."""
     source = Path(temp_data_dir) / "source.wav"
     source.write_bytes(b"RIFF")
+    return source
+
+
+def _submit_convert(client, temp_data_dir, engine="cosyvoice3-0.5B", **fields):
+    """Queue a voice replacement of a stub source file with `engine` and return its generation id."""
     response = client.post("/voice-convert", json={
+        "engine": engine,
         "profile_id": "p1",
-        "source_audio_path": str(source),
+        "source_audio_path": str(_stub_source(temp_data_dir)),
         "original_duration": 100.0,
+        **fields,
     })
     assert response.status_code == 200, response.text
     return response.json()["id"]
@@ -748,3 +818,135 @@ def test_cosyvoice_loader_loads_network_and_tokenizers_before_returning(tmp_path
     model = loader.load_cosyvoice3("mlx-community/Fun-CosyVoice3-0.5B-2512-8bit")
     assert loaded == ["network", "tokenizers"]
     assert model.config.model_path == str(tmp_path)
+
+
+def _recorded_transcript() -> dict:
+    """What tts.transcribe returned for a real 30 s clip (Whisper large-v3-turbo, word timestamps)."""
+    return json.loads((Path(__file__).parent / "test_fixtures" / "transcribe-30s.json").read_text())
+
+
+class TestReplaceVoiceRoutesByEngine:
+    """/voice-convert runs whatever the engine's registry row is: speech-to-speech, or speech from a transcript."""
+
+    def test_a_speech_engine_transcribes_then_speaks_each_phrase_at_its_timestamp(
+        self, client, temp_data_dir, monkeypatch
+    ):
+        import numpy as np
+
+        import server
+        import tts
+
+        heard, spoken = [], {}
+
+        def fake_transcribe(path, **kwargs):
+            heard.append((path, kwargs))
+            return _recorded_transcript()
+
+        async def fake_generate(**kwargs):
+            spoken.update(kwargs)
+            return np.zeros(16000, dtype=np.float32), 16000, "Generation"
+
+        monkeypatch.setattr(tts, "transcribe", fake_transcribe)
+        monkeypatch.setattr(server, "_do_generate", fake_generate)
+        gen_id = _submit_convert(
+            client, temp_data_dir, engine="qwen-tts-1.7B", whisper_model="whisper-medium", original_duration=31.0
+        )
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("completed", "error", "cancelled"))
+
+        assert data["status"] == "completed", data
+        assert heard == [(str(Path(temp_data_dir) / "source.wav"), {"model_name": "whisper-medium"})]
+        transcript = _recorded_transcript()
+        assert spoken["engine"] == "qwen-tts-1.7B"
+        assert spoken["profile_id"] == "p1"
+        assert spoken["text"] == transcript["text"]
+        assert spoken["segments"] == transcript["segments"]
+        assert spoken["original_duration"] == 31.0
+
+    def test_a_conversion_engine_converts_without_transcribing(self, client, temp_data_dir, monkeypatch):
+        import numpy as np
+
+        import server
+        import tts
+
+        converted = {}
+
+        async def fake_convert(**kwargs):
+            converted.update(kwargs)
+            return np.zeros(16000, dtype=np.float32), 16000, "Voice conversion"
+
+        monkeypatch.setattr(server, "_do_voice_convert", fake_convert)
+        monkeypatch.setattr(tts, "transcribe", lambda *a, **k: pytest.fail("speech-to-speech never transcribes"))
+        gen_id = _submit_convert(client, temp_data_dir, engine="cosyvoice3-0.5B")
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("completed", "error", "cancelled"))
+
+        assert data["status"] == "completed", data
+        assert converted["engine"] == "cosyvoice3-0.5B"
+
+    def test_the_conversion_path_loads_its_own_rows_weights(self, temp_data_dir, monkeypatch):
+        """A second speech-to-speech row must load its own repo, not CosyVoice's."""
+        import asyncio
+
+        from cosyvoice_mlx import loader
+
+        import server
+
+        other = {**MODEL_REGISTRY["cosyvoice3-0.5B"], "repo_id": "example/other-vc"}
+        monkeypatch.setitem(server.MODEL_REGISTRY, "other-vc", other)
+        monkeypatch.setattr(server, "_vc_model", None)
+        monkeypatch.setattr(server, "_vc_model_name", None)
+        loaded = []
+
+        def fake_load(repo_id):
+            loaded.append(repo_id)
+            raise RuntimeError("stop after load")
+
+        monkeypatch.setattr(loader, "load_cosyvoice3", fake_load)
+        with pytest.raises(RuntimeError, match="stop after load"):
+            asyncio.run(server._do_voice_convert(
+                set_status=lambda s: None,
+                data_dir=Path(temp_data_dir),
+                engine="other-vc",
+                profile_id="p1",
+                source_audio_path=str(_stub_source(temp_data_dir)),
+                original_duration=1.0,
+            ))
+        assert loaded == ["example/other-vc"]
+
+    def test_cancel_during_transcription_ends_cancelled_without_speaking(self, client, temp_data_dir, monkeypatch):
+        import threading
+
+        import server
+        import tts
+
+        release = threading.Event()
+        spoke = []
+
+        def slow_transcribe(path, **kwargs):
+            release.wait(10)
+            return _recorded_transcript()
+
+        async def fake_generate(**kwargs):
+            spoke.append(kwargs)
+            raise AssertionError("a cancelled job must not speak")
+
+        monkeypatch.setattr(tts, "transcribe", slow_transcribe)
+        monkeypatch.setattr(server, "_do_generate", fake_generate)
+        gen_id = _submit_convert(client, temp_data_dir, engine="qwen-tts-1.7B")
+        _wait_for(client, gen_id, lambda d: d["status"] == "transcribing")
+        assert client.post(f"/generate/{gen_id}/cancel").status_code == 200
+        release.set()
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
+
+        assert data["status"] == "cancelled", data
+        assert spoke == []
+
+    def test_a_recording_with_no_speech_fails_with_a_plain_reason(self, client, temp_data_dir, monkeypatch):
+        import tts
+
+        # What tts.transcribe returns for silence: no text and no phrases.
+        monkeypatch.setattr(tts, "transcribe", lambda path, **kw: {"text": "", "duration": 30.0, "segments": []})
+        gen_id = _submit_convert(client, temp_data_dir, engine="qwen-tts-1.7B")
+        data = _wait_for(client, gen_id, lambda d: d["status"] in ("cancelled", "completed", "error"))
+
+        assert data["status"] == "error"
+        assert "No speech" in data["error"]

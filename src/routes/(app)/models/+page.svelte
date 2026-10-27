@@ -2,11 +2,13 @@
 	import { goto } from '$app/navigation';
 	import { appState } from '$lib/state.svelte';
 	import { logger } from '$lib/logger';
-	import { voicebox, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { voicebox } from '$lib/voicebox';
+	import { localVoices } from '$lib/localVoice.svelte';
 	import ModelCard from '$lib/ModelCard.svelte';
 	import { onMount } from 'svelte';
 
-	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
+	/** From the shared store, so a download or delete here updates every engine picker. */
+	const modelStatuses = $derived(localVoices.models);
 	let modelsLoading = $state(false);
 	let modelsError = $state('');
 	let downloadingModel = $state<string | null>(null);
@@ -18,7 +20,8 @@
 		modelsLoading = true;
 		modelsError = '';
 		try {
-			modelStatuses = await voicebox.getModelStatus();
+			await localVoices.refresh();
+			if (localVoices.error) throw new Error(localVoices.error);
 		} catch (err) {
 			modelsError = 'Failed to check model status. Is the TTS engine running?';
 			logger.error('models', 'Failed to load model statuses', err);
@@ -122,12 +125,12 @@
 			</div>
 		</div>
 
-		<!-- Text-to-Speech (Qwen) -->
+		<!-- Text-to-speech engines -->
 		<div class="section">
 			<div class="section-title">Text-to-Speech</div>
 			<div class="card">
 				<div class="hint-text" style="margin-bottom: 8px">
-					Qwen generates speech from text using your cloned voice.
+					These engines speak a transcript of your recording in your cloned voice, phrase by phrase at the original timing.
 				</div>
 				{#each modelStatuses.filter((m) => m.category === 'tts') as model}
 					<ModelCard

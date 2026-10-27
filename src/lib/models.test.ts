@@ -2,14 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { getRequiredModelNames } from './models';
 
 describe('getRequiredModelNames', () => {
-	it('voice replacement needs CosyVoice speech-to-speech, never Qwen text-to-speech', () => {
-		const required = getRequiredModelNames({ whisper_model: 'whisper-large-v3-turbo' });
-		expect(required).toContain('cosyvoice3-0.5B');
-		expect(required).not.toContain('qwen-tts-1.7B');
+	it('needs only Whisper until an engine is picked', () => {
+		expect(getRequiredModelNames({ whisper_model: 'whisper-large-v3-turbo' })).toEqual(['whisper-large-v3-turbo']);
+		expect(getRequiredModelNames({ whisper_model: 'whisper-large-v3-turbo' }, null)).toEqual([
+			'whisper-large-v3-turbo'
+		]);
 	});
 
-	it('creating a voice needs Qwen for the test sentence', () => {
-		const required = getRequiredModelNames({ whisper_model: 'whisper-medium' }, 'create-voice');
-		expect(required).toEqual(['whisper-medium', 'qwen-tts-1.7B']);
+	it('needs the picked engine as well, whichever it is', () => {
+		expect(getRequiredModelNames({ whisper_model: 'whisper-medium' }, 'voxcpm2')).toEqual([
+			'whisper-medium',
+			'voxcpm2'
+		]);
 	});
 });

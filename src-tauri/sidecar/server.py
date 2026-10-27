@@ -66,6 +66,7 @@ import asyncio
 import functools
 import gc
 import logging
+import math
 import signal
 import threading
 import time
@@ -95,11 +96,18 @@ logger = logging.getLogger("voiceover-tts")
 
 # TTS rows: ``ref_text`` says whether the engine gets the sample's transcript. Qwen clones from
 # the speaker embedding alone (x-vector mode), which stops the transcript leaking into the output.
-# ``license`` is the model card's licence id, sent by /models/status. ``module`` is the code that
+# ``license`` is the model card's licence id (the upstream card's when the MLX copy has none), and
+# ``size_gb`` the download size from the Hub, extra repos included; /models/status sends both, and
+# ``non_commercial`` marks weights the user may not use commercially. ``module`` is the code that
 # loads the repo; ``--check-imports`` imports each one so a frozen build missing a module fails at
 # build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
 # time; they are downloaded, counted and deleted with the row. Find them by generating once with
 # HF_HUB_OFFLINE=1 and only the row's repos in the models folder (okf/standards/engine-admission.md).
+# ``tokens_per_second`` is how many of the engine's ``max_tokens`` units make one second of audio
+# (measured: max_tokens=40 on a long sentence), or None for an engine that sets its length from the
+# text and cannot run on (OmniVoice). ``length_hint`` names the engine's own target-length argument
+# and its unit ("token" or "second"); the replace job sets it to each phrase's spoken length, and to
+# no less than ``min``, the shortest target the engine was measured to follow.
 MODEL_REGISTRY = {
     # Whisper variants (transcription)
     "whisper-medium": {
@@ -108,6 +116,8 @@ MODEL_REGISTRY = {
         "display_name": "Whisper Medium",
         "category": "transcription",
         "recommended": False,
+        "size_gb": 1.5,
+        "license": "apache-2.0",
     },
     "whisper-large-v3-turbo": {
         "repo_id": "mlx-community/whisper-large-v3-turbo-asr-fp16",
@@ -115,6 +125,8 @@ MODEL_REGISTRY = {
         "display_name": "Whisper Large v3 Turbo",
         "category": "transcription",
         "recommended": True,
+        "size_gb": 1.6,
+        "license": "mit",
     },
     # TTS
     "qwen-tts-1.7B": {
@@ -125,6 +137,8 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": False,
         "license": "apache-2.0",
+        "size_gb": 4.5,
+        "tokens_per_second": 12.5,
     },
     "voxcpm2": {
         "repo_id": "mlx-community/VoxCPM2-bf16",
@@ -134,6 +148,8 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "apache-2.0",
+        "size_gb": 5.0,
+        "tokens_per_second": 6.25,
     },
     "moss-tts-local-v1.5": {
         "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
@@ -144,6 +160,10 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "apache-2.0",
+        "size_gb": 13.4,
+        "tokens_per_second": 12.5,
+        # MOSS ignores a target under 10 tokens (0.8 s) and runs on: 4 of 6 seeds at 8, every seed at 6.
+        "length_hint": {"kwarg": "tokens", "unit": "token", "min": 10},
     },
     "omnivoice": {
         "repo_id": "mlx-community/OmniVoice-bf16",
@@ -153,6 +173,9 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "cc-by-nc",
+        "size_gb": 1.6,
+        "non_commercial": True,
+        "tokens_per_second": None,
     },
     "fish-s2-pro": {
         "repo_id": "mlx-community/fish-audio-s2-pro-bf16",
@@ -162,6 +185,9 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "fish-audio-research",
+        "size_gb": 11.0,
+        "non_commercial": True,
+        "tokens_per_second": 21.53,
     },
     "chatterbox": {
         "repo_id": "mlx-community/Chatterbox-TTS-fp16",
@@ -172,6 +198,8 @@ MODEL_REGISTRY = {
         "recommended": False,
         "ref_text": True,
         "license": "mit",
+        "size_gb": 3.2,
+        "tokens_per_second": 25.0,
     },
     # Voice conversion
     "cosyvoice3-0.5B": {
@@ -181,6 +209,8 @@ MODEL_REGISTRY = {
         "display_name": "CosyVoice3 0.5B",
         "category": "voice-conversion",
         "recommended": False,
+        "size_gb": 2.4,
+        "license": "apache-2.0",
     },
 }
 
@@ -272,6 +302,9 @@ async def _periodic_cleanup():
 
 @asynccontextmanager
 async def lifespan(app):
+    from tts import cap_mlx_cache, run_mlx
+
+    await run_mlx(cap_mlx_cache)
     _cleanup_generations()  # Sweep stale generations from prior session
     asyncio.create_task(_generation_worker())
     cleanup_task = asyncio.create_task(_periodic_cleanup())
@@ -462,6 +495,20 @@ async def _generation_worker():
 # ---------------------------------------------------------------------------
 
 
+# A phrase may run to SPEECH_BUDGET_RATIO times its expected length plus SPEECH_BUDGET_PAD_S before the
+# engine is stopped. Healthy phrases from all six engines came out at most 2.1x their original speech
+# (Chatterbox, "My fellow Americans,": 2.16 s for 1.02 s); MOSS with no length target spoke 48 s for it
+# and, unbounded, ran toward its 4,096-frame default while memory passed 40 GB (2026-10-27).
+SPEECH_BUDGET_RATIO = 3.0
+SPEECH_BUDGET_PAD_S = 2.0
+# Expected length of text with no timing (Create Voice's test sentence): the 30 s fixture speaker's
+# 386 characters over 26.2 s of phrases. Engines spoke the same phrases at 9.3-15.3 characters a second.
+SPEECH_CHARS_PER_S = 14.0
+# A phrase that runs to its bound is spoken again with a new seed: MOSS with no length target ran to it
+# on 2 or 3 of 8 seeds for a short phrase. Two runs to the bound fail the job naming the engine.
+SPEECH_ATTEMPTS = 2
+
+
 async def _do_generate(
     *,
     set_status,
@@ -487,6 +534,7 @@ async def _do_generate(
         concatenate_audio_chunks,
         pad_audio_to_match_timing,
         pad_or_truncate_to_duration,
+        reinserted_gap_seconds,
         split_text_into_chunks,
     )
 
@@ -507,9 +555,36 @@ async def _do_generate(
         if should_cancel():
             raise ConversionCancelled()
 
-    async def speak(chunk_text: str, seed: int | None = None):
-        check_cancel()  # also between the sub-chunks of a long segment
-        return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+    tokens_per_second = row["tokens_per_second"]
+    length_hint = row.get("length_hint")
+
+    async def speak(chunk_text: str, expected_s: float, seed: int | None = None):
+        """Speak ``chunk_text``, stopping the engine past its budget for ``expected_s`` seconds of speech."""
+        if tokens_per_second is None:  # the engine sets its own length from the text
+            check_cancel()
+            return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+        bound_s = SPEECH_BUDGET_RATIO * expected_s + SPEECH_BUDGET_PAD_S
+        limits = {"max_tokens": math.ceil(tokens_per_second * bound_s)}
+        if length_hint:
+            target = math.ceil(expected_s * tokens_per_second) if length_hint["unit"] == "token" else expected_s
+            limits[length_hint["kwarg"]] = max(target, length_hint.get("min", 0))
+        for attempt in range(SPEECH_ATTEMPTS):
+            check_cancel()  # also between the sub-chunks of a long segment
+            if attempt:
+                set_status("retrying")
+            audio, sr = await generate_speech(
+                chunk_text, ref_audio, ref_text,
+                seed=None if seed is None else seed + attempt * 10_000, **limits,
+            )
+            if attempt:
+                set_status("generating")
+            if len(audio) / sr * tokens_per_second < limits["max_tokens"] - 1:
+                return audio, sr
+            logger.warning("%s ran to its %.0f s bound on a %.1f s phrase (try %d)", engine, bound_s, expected_s, attempt + 1)
+        raise ValueError(
+            f"{row['display_name']} kept speaking past {bound_s:.0f} s on a {expected_s:.1f} s phrase "
+            f"in {SPEECH_ATTEMPTS} tries; choose another engine"
+        )
 
     def step(done: int, total: int) -> None:
         check_cancel()
@@ -541,10 +616,16 @@ async def _do_generate(
                 f"({len(seg_text)} chars)"
             )
 
+            # The engine speaks the words; the pauses between them are put back from word_timing below.
+            word_timing = seg.get("words", [])
+            speech_s = seg_end - seg_start - reinserted_gap_seconds(word_timing)
+            if speech_s <= 0:  # degenerate word timing
+                speech_s = seg_end - seg_start
+
             # Sub-chunk long segments (>800 chars) and crossfade
             sub_chunks = split_text_into_chunks(seg_text)
             if len(sub_chunks) <= 1:
-                seg_audio, seg_sr = await speak(seg_text, seed=i)
+                seg_audio, seg_sr = await speak(seg_text, speech_s, seed=i)
             else:
                 logger.info(
                     f"  Sub-chunking segment {i + 1}: "
@@ -553,7 +634,9 @@ async def _do_generate(
                 sub_audios = []
                 seg_sr = None
                 for j, sub_text in enumerate(sub_chunks):
-                    sub_audio, sub_sr = await speak(sub_text, seed=i * 100 + j)
+                    sub_audio, sub_sr = await speak(
+                        sub_text, speech_s * len(sub_text) / len(seg_text), seed=i * 100 + j
+                    )
                     sub_audios.append(sub_audio)
                     if seg_sr is None:
                         seg_sr = sub_sr
@@ -561,7 +644,6 @@ async def _do_generate(
 
             # Insert proportional silences between words to match
             # original speaker's pacing (TTS always runs faster)
-            word_timing = seg.get("words", [])
             if word_timing and seg_sr:
                 seg_audio = pad_audio_to_match_timing(
                     seg_audio, seg_sr, word_timing
@@ -584,7 +666,7 @@ async def _do_generate(
 
         if len(chunks) <= 1:
             step(0, 1)
-            audio, sample_rate = await speak(text)
+            audio, sample_rate = await speak(text, len(text) / SPEECH_CHARS_PER_S)
             set_progress(1, 1)
         else:
             logger.info(f"Chunked generation: {len(chunks)} chunks")
@@ -592,7 +674,7 @@ async def _do_generate(
             sample_rate = None
             for i, chunk_text in enumerate(chunks):
                 step(i, len(chunks))
-                chunk_audio, chunk_sr = await speak(chunk_text, seed=i)  # deterministic per chunk
+                chunk_audio, chunk_sr = await speak(chunk_text, len(chunk_text) / SPEECH_CHARS_PER_S, seed=i)
                 audio_chunks.append(chunk_audio)
                 if sample_rate is None:
                     sample_rate = chunk_sr
@@ -619,6 +701,48 @@ async def _do_generate(
     return audio, sample_rate, "Generation"
 
 
+async def _do_tts_replace(
+    *,
+    set_status,
+    set_progress=lambda done, total: None,
+    should_cancel=lambda: False,
+    data_dir: Path,
+    engine: str,
+    profile_id: str,
+    source_audio_path: str,
+    original_duration: float,
+    whisper_model: str | None,
+):
+    """Replace a recording's voice with the text-to-speech engine ``engine``: transcribe it, then speak each phrase.
+
+    Returns what _do_generate returns, audio ``original_duration`` long (the source's when 0). Whisper runs whole,
+    so a cancel during transcription takes effect when it finishes, before any speech.
+    """
+    from chunked_tts import ConversionCancelled
+    from tts import run_mlx, transcribe
+
+    set_status("transcribing")
+    kwargs = {"model_name": whisper_model} if whisper_model else {}
+    transcript = await run_mlx(transcribe, source_audio_path, **kwargs)
+    if should_cancel():
+        raise ConversionCancelled()
+    # mlx-audio 0.6.1's Whisper always returns an STTOutput whose text is decoded from its segments' tokens
+    # (whisper.py: all_tokens extends from current_segments), so text without segments means no speech.
+    if not transcript["text"].strip() or not transcript["segments"]:
+        raise ValueError("No speech found in the recording")
+    return await _do_generate(
+        set_status=set_status,
+        set_progress=set_progress,
+        should_cancel=should_cancel,
+        data_dir=data_dir,
+        engine=engine,
+        profile_id=profile_id,
+        text=transcript["text"],
+        segments=transcript["segments"],
+        original_duration=original_duration or transcript["duration"],
+    )
+
+
 _vc_model = None
 _vc_model_name = None
 
@@ -629,11 +753,12 @@ async def _do_voice_convert(
     set_progress=lambda done, total: None,
     should_cancel=lambda: False,
     data_dir: Path,
+    engine: str,
     profile_id: str,
     source_audio_path: str,
     original_duration: float,
 ):
-    """Convert source audio to target voice using CosyVoice3.
+    """Convert source audio to target voice with the speech-to-speech engine named by ``engine`` (CosyVoice3).
 
     Returns (audio_data, sample_rate, log_label) for _run_generation.
     Calls set_status(str) to report progress.
@@ -651,7 +776,7 @@ async def _do_voice_convert(
     set_status("loading_model")
     global _vc_model, _vc_model_name
 
-    vc_model_id = MODEL_REGISTRY["cosyvoice3-0.5B"]["repo_id"]
+    vc_model_id = MODEL_REGISTRY[engine]["repo_id"]
     if _vc_model is None or _vc_model_name != vc_model_id:
         logger.info(f"Loading voice conversion model: {vc_model_id}")
 
@@ -1026,21 +1151,30 @@ async def get_audio(gen_id: str):
 # ---------------------------------------------------------------------------
 
 
+# Registry categories that can replace a recording's voice.
+_REPLACE_CATEGORIES = ("voice-conversion", "tts")
+
+
 @app.post("/voice-convert")
 async def voice_convert(request: dict):
-    """Start voice conversion (speech-to-speech). Preserves original timing.
+    """Start replacing the voice in a recording with ``engine`` (a registry key). Returns a generation ID.
 
-    Uses CosyVoice3 via mlx-audio to convert the source audio to the target
-    voice while keeping the exact pacing, pauses, and prosody of the original.
-    For recordings longer than 25s, processes in overlapping chunks.
+    The engine's row decides how: a ``voice-conversion`` engine (CosyVoice3) converts the speech itself, keeping
+    its pacing; a ``tts`` engine transcribes the recording with ``whisper_model`` and speaks each phrase at its
+    original timestamp. Either result is ``original_duration`` long, reports progress and can be cancelled.
     """
     _cleanup_generations()
+    engine = request.get("engine", "")
     profile_id = request.get("profile_id", "")
     source_audio_path = request.get("source_audio_path", "")
     original_duration = float(request.get("original_duration", 0))
 
     if not profile_id or not source_audio_path:
         return error_response(400, "profile_id and source_audio_path are required")
+    category = MODEL_REGISTRY.get(engine, {}).get("category")
+    if category not in _REPLACE_CATEGORIES:
+        keys = [k for k, v in MODEL_REGISTRY.items() if v["category"] in _REPLACE_CATEGORIES]
+        return error_response(400, f"engine must be one of {keys}, got {engine!r}")
 
     try:
         _validate_path(source_audio_path, [DATA_DIR, Path(tempfile.gettempdir())])
@@ -1051,13 +1185,17 @@ async def voice_convert(request: dict):
 
     gen_id = _new_generation()
 
-    convert_fn = functools.partial(
-        _do_voice_convert,
+    job_args = dict(
         data_dir=DATA_DIR,
+        engine=engine,
         profile_id=profile_id,
         source_audio_path=source_audio_path,
         original_duration=original_duration,
     )
+    if category == "voice-conversion":
+        convert_fn = functools.partial(_do_voice_convert, **job_args)
+    else:
+        convert_fn = functools.partial(_do_tts_replace, whisper_model=request.get("whisper_model"), **job_args)
     await _generation_queue.put((gen_id, _run_generation(gen_id, convert_fn)))
     return {"id": gen_id}
 
@@ -1273,7 +1411,7 @@ async def models_status():
         elif category == "tts":
             loaded = get_loaded_tts_engine() == model_name
         elif category == "voice-conversion":
-            loaded = _vc_model is not None
+            loaded = _vc_model is not None and _vc_model_name == entry["repo_id"]
         else:
             loaded = False
 
@@ -1285,6 +1423,8 @@ async def models_status():
             "downloaded": downloaded,
             "loaded": loaded,
             "license": entry.get("license"),
+            "size_gb": entry.get("size_gb"),
+            "non_commercial": entry.get("non_commercial", False),
         })
 
     return {"models": result}

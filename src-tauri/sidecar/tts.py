@@ -22,6 +22,21 @@ logger = logging.getLogger("voiceover-tts.engine")
 _mlx_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
 
+# MLX keeps the buffers of freed arrays for reuse, with no limit by default. MOSS appends to its output
+# array on every step, so each step frees one buffer and asks for a slightly larger one, and the kept
+# buffers grew past 40 GB on one phrase; VoxCPM2 (5 GB of weights) reached 34.5 GB over seven phrases.
+# With 2 GB kept, VoxCPM2 peaked at 10.1 GB at the same speed; with none kept it peaked at 8.5 GB but
+# ran 2.5x slower (2026-10-27).
+MLX_CACHE_LIMIT_BYTES = 2_000_000_000
+
+
+def cap_mlx_cache() -> None:
+    """Limit the memory MLX keeps for reuse after arrays are freed to MLX_CACHE_LIMIT_BYTES."""
+    import mlx.core as mx
+
+    mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
+
+
 async def run_mlx(fn, /, *args, **kwargs):
     """Await ``fn(*args, **kwargs)`` run on the sidecar's MLX thread."""
     loop = asyncio.get_running_loop()
@@ -332,11 +347,13 @@ async def generate_speech(
     ref_audio,
     ref_text: str | None,
     seed: int | None = None,
+    **limits,
 ) -> tuple[np.ndarray, int]:
     """Speak ``text`` in the voice of ``ref_audio`` (from ``load_reference``) with the loaded
     engine's own sampling defaults.
 
     ``ref_text`` is None for engines that clone from the audio alone (Qwen x-vector mode).
+    ``limits`` are the engine's own length arguments (``max_tokens``, a target length), passed as given.
     """
     if _tts_model is None:
         raise RuntimeError("No TTS engine loaded")
@@ -349,7 +366,7 @@ async def generate_speech(
             mx.random.seed(seed)
         parts = [
             to_mono(r.audio)
-            for r in model.generate(text=text, ref_audio=ref_audio, ref_text=ref_text)
+            for r in model.generate(text=text, ref_audio=ref_audio, ref_text=ref_text, **limits)
         ]
         if not parts:
             raise RuntimeError("TTS engine produced no audio")

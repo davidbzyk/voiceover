@@ -20,6 +20,9 @@ pub struct RecordingInfo {
 pub struct RecordingMeta {
     pub voice_profile: Option<String>,
     pub provider: Option<String>,
+    /// Display name of the engine that made the voice; None on recordings made before engines were recorded.
+    #[serde(default)]
+    pub engine_name: Option<String>,
     pub drive_url: Option<String>,
     pub uploaded_at: Option<u64>,
     #[serde(default)]
@@ -440,6 +443,7 @@ mod tests {
             drive_url: Some("https://drive.google.com/file/123".to_string()),
             uploaded_at: Some(1740000000),
             voice_replacement: true,
+            engine_name: Some("ElevenLabs".to_string()),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let deserialized: RecordingMeta = serde_json::from_str(&json).unwrap();
@@ -547,8 +551,18 @@ mod tests {
         assert_eq!(meta.voice_profile.as_deref(), Some("MJ"));
         assert_eq!(meta.provider.as_deref(), Some("local"));
         assert!(meta.voice_replacement);
+        assert_eq!(meta.engine_name, None, "recordings from before engines were recorded have none");
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn the_library_reads_the_engine_a_conversion_recorded() {
+        // The shape pipeline::update_meta writes.
+        let json = r#"{"voiceProfile":"MJ","provider":"local","engine":"qwen-tts-1.7B","engineName":"Qwen3-TTS 1.7B","voiceReplacement":true,"createdAt":1740000000}"#;
+        let meta: RecordingMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.engine_name.as_deref(), Some("Qwen3-TTS 1.7B"));
+        assert_eq!(serde_json::to_value(&meta).unwrap()["engineName"], "Qwen3-TTS 1.7B");
     }
 
     // --- rename_recording tests (unit-level, no AppHandle) ---

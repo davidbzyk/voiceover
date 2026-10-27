@@ -353,3 +353,21 @@ class TestConvertInOverlappingChunks:
         out = convert_in_overlapping_chunks(source, SR, convert)
         assert abs(len(out) - len(source)) <= 1
         assert abs(int(np.argmax(out)) - marker) <= SR // 100
+
+
+def test_reinserted_gap_seconds_is_what_the_padder_adds():
+    """The replace job tells MOSS to speak a phrase's length minus these gaps; if the two disagreed the
+    padded phrase would overrun its slot and be cut."""
+    from chunked_tts import pad_audio_to_match_timing, reinserted_gap_seconds
+
+    sr = 24000
+    words = [
+        {"word": "one", "start": 0.0, "end": 0.3},
+        {"word": "two", "start": 0.5, "end": 0.8},  # 0.2 s pause
+        {"word": "three", "start": 0.805, "end": 1.2},  # 0.005 s, below the padder's 0.01 s floor
+        {"word": "four", "start": 1.3, "end": 1.6},  # 0.1 s pause
+    ]
+    audio = np.ones(sr, dtype=np.float32)
+    added = (len(pad_audio_to_match_timing(audio, sr, words)) - len(audio)) / sr
+    assert reinserted_gap_seconds(words) == pytest.approx(added, abs=2 / sr)
+    assert reinserted_gap_seconds(words[:1]) == 0.0

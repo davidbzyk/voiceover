@@ -5,55 +5,71 @@
 		buildVoiceOptions,
 		choiceKey,
 		defaultVoiceChoice,
-		loadLocalVoices,
-		parseChoiceKey,
+		pickVoice,
 		shouldLoadLocalVoices,
 		type VoiceChoice
 	} from '$lib/conversion';
+	import { localVoices } from '$lib/localVoice.svelte';
+	import EnginePicker from '$lib/EnginePicker.svelte';
 
 	let {
 		value = $bindable<VoiceChoice | null>(null),
 		disabled = false
 	}: { value?: VoiceChoice | null; disabled?: boolean } = $props();
 
-	let localVoices = $state<{ id: string; name: string }[]>([]);
-	const options = $derived(buildVoiceOptions(appState.config, localVoices));
+	const options = $derived(buildVoiceOptions(appState.config, localVoices.profiles));
 	const eleven = $derived(options.filter((o) => o.provider === 'elevenlabs'));
 	const local = $derived(options.filter((o) => o.provider === 'local'));
 
-	onMount(async () => {
+	onMount(() => {
 		value ??= defaultVoiceChoice(appState.config);
-		if (shouldLoadLocalVoices(appState.config)) localVoices = await loadLocalVoices();
+		if (shouldLoadLocalVoices(appState.config)) localVoices.refresh();
 	});
 </script>
 
-<select
-	class="voice-picker"
-	aria-label="Voice"
-	{disabled}
-	value={value ? choiceKey(value) : ''}
-	onchange={(e) => (value = parseChoiceKey((e.target as HTMLSelectElement).value))}
->
-	{#if !value}
-		<option value="" disabled>Choose a voice</option>
+<div class="voice-picker-row">
+	<select
+		class="voice-picker"
+		aria-label="Voice"
+		{disabled}
+		value={value ? choiceKey(value) : ''}
+		onchange={(e) => (value = pickVoice((e.target as HTMLSelectElement).value, value, appState.config))}
+	>
+		{#if !value}
+			<option value="" disabled>Choose a voice</option>
+		{/if}
+		{#if eleven.length > 0}
+			<optgroup label="ElevenLabs">
+				{#each eleven as option (choiceKey(option))}
+					<option value={choiceKey(option)}>{option.name}</option>
+				{/each}
+			</optgroup>
+		{/if}
+		{#if local.length > 0}
+			<optgroup label="Local">
+				{#each local as option (choiceKey(option))}
+					<option value={choiceKey(option)}>{option.name}</option>
+				{/each}
+			</optgroup>
+		{/if}
+	</select>
+	{#if value?.provider === 'local'}
+		<EnginePicker
+			{disabled}
+			value={value.engine ?? null}
+			onchange={(engine) => value && (value = { ...value, engine })}
+		/>
 	{/if}
-	{#if eleven.length > 0}
-		<optgroup label="ElevenLabs">
-			{#each eleven as option (choiceKey(option))}
-				<option value={choiceKey(option)}>{option.name}</option>
-			{/each}
-		</optgroup>
-	{/if}
-	{#if local.length > 0}
-		<optgroup label="Local (CosyVoice)">
-			{#each local as option (choiceKey(option))}
-				<option value={choiceKey(option)}>{option.name}</option>
-			{/each}
-		</optgroup>
-	{/if}
-</select>
+</div>
 
 <style>
+	.voice-picker-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		align-items: center;
+		min-width: 0;
+	}
 	.voice-picker {
 		background: #0f172a;
 		color: #e2e8f0;

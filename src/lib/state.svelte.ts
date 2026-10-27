@@ -61,6 +61,8 @@ export type AppConfig = {
 	/** @deprecated Kept for backward compatibility with old config files. Not used — sidecar runs on managed port. */
 	local_endpoint?: string;
 	local_voice_profile_id: string;
+	/** Sidecar registry key of the engine local conversions use; empty until the user picks one. */
+	local_engine: string;
 	whisper_model: string;
 };
 
@@ -97,6 +99,7 @@ class AppState {
 		},
 		provider: 'elevenlabs',
 		local_voice_profile_id: '',
+		local_engine: '',
 		whisper_model: 'whisper-large-v3-turbo'
 	});
 

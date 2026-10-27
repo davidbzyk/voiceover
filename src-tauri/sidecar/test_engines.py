@@ -1,6 +1,7 @@
 """Tests for the text-to-speech engine path: one generic mlx-audio path for every TTS row."""
 
 import asyncio
+import math
 import threading
 from pathlib import Path
 
@@ -28,8 +29,8 @@ def calls(monkeypatch):
     async def fake_load(engine, repo_id):
         recorded.append(("load", engine, repo_id))
 
-    async def fake_speak(text, ref_audio, ref_text, seed=None):
-        recorded.append(("speak", text, ref_audio, ref_text, seed))
+    async def fake_speak(text, ref_audio, ref_text, seed=None, **limits):
+        recorded.append(("speak", text, ref_audio, ref_text, seed, limits))
         return np.zeros(SR // 10, dtype=np.float32), SR
 
     monkeypatch.setattr(tts, "load_tts_engine", fake_load)
@@ -103,6 +104,112 @@ def test_the_voice_sample_is_decoded_once_per_generation(monkeypatch):
     segments = [{"text": f"Line {i}.", "start": float(i), "end": i + 0.5} for i in range(3)]
     run_generate("qwen-tts-1.7B", segments=segments)
     assert decoded == [SAMPLES[-1]["audio_path"]]
+
+
+def _budget_tokens(engine, expected_s):
+    """The max_tokens a phrase expected to last ``expected_s`` gets from ``engine``."""
+    tps = server.MODEL_REGISTRY[engine]["tokens_per_second"]
+    return math.ceil(tps * (server.SPEECH_BUDGET_RATIO * expected_s + server.SPEECH_BUDGET_PAD_S))
+
+
+def test_each_phrase_is_bounded_by_its_own_length(calls):
+    """MOSS spoke "My fellow Americans," (1.02 s) for 48 s and on, nearly exhausting a 137 GB Mac;
+    every phrase now gets a token budget from its own length."""
+    segments = [
+        {"text": "My fellow Americans,", "start": 0.0, "end": 1.02},
+        {"text": "I'm speaking to you tonight from the Oval Office.", "start": 1.2, "end": 4.18},
+    ]
+    run_generate("qwen-tts-1.7B", segments=segments)
+    budgets = [c[5]["max_tokens"] for c in calls if c[0] == "speak"]
+    assert budgets == [_budget_tokens("qwen-tts-1.7B", 1.02), _budget_tokens("qwen-tts-1.7B", 2.98)]
+
+
+def test_moss_is_told_each_phrases_spoken_length(calls):
+    """Told nothing, MOSS ran to its bound on 2-3 of 8 seeds; told the length, it stopped there 16 of 16.
+    The target leaves out the pauses the padder puts back, so the phrase still fits its slot."""
+    words = [
+        {"word": " My", "start": 0.0, "end": 0.2},
+        {"word": " fellow", "start": 0.4, "end": 0.7},  # 0.2 s pause before
+        {"word": " Americans,", "start": 0.7, "end": 1.02},
+    ]
+    run_generate("moss-tts-local-v1.5", segments=[{"text": "My fellow Americans,", "start": 0.0, "end": 1.02, "words": words}])
+    speak = next(c for c in calls if c[0] == "speak")
+    assert speak[5]["tokens"] == math.ceil((1.02 - 0.2) * 12.5)
+    assert speak[5]["max_tokens"] == _budget_tokens("moss-tts-local-v1.5", 1.02 - 0.2)
+
+
+def test_moss_is_never_told_less_than_the_target_it_follows(calls):
+    """Whisper timed "you know," at 0.3 s; told 4 tokens MOSS ran to its bound on 6 of 6 seeds and failed
+    the 410 s recording. It never ran on with a target of 10 tokens or more (52 of 52 runs, four phrases)."""
+    run_generate("moss-tts-local-v1.5", segments=[{"text": "you know,", "start": 0.0, "end": 0.3}])
+    speak = next(c for c in calls if c[0] == "speak")
+    assert speak[5]["tokens"] == server.MODEL_REGISTRY["moss-tts-local-v1.5"]["length_hint"]["min"] == 10
+
+
+def test_text_without_timing_is_bounded_by_its_length(calls):
+    run_generate("fish-s2-pro")  # "Thanks for watching.", the Create Voice shape: no segments
+    expected_s = len("Thanks for watching.") / server.SPEECH_CHARS_PER_S
+    assert [c[5] for c in calls if c[0] == "speak"] == [{"max_tokens": _budget_tokens("fish-s2-pro", expected_s)}]
+
+
+def test_an_engine_that_sets_its_own_length_gets_no_budget(calls):
+    """OmniVoice is not autoregressive: its length comes from the text, so it cannot run on."""
+    run_generate("omnivoice")
+    assert [c[5] for c in calls if c[0] == "speak"] == [{}]
+
+
+def _runaway_speaker(monkeypatch, runaways):
+    """Make the engine run to its bound on the first ``runaways`` attempts, then stop normally."""
+    attempts = []
+
+    async def speak(text, ref_audio, ref_text, seed=None, **limits):
+        attempts.append((seed, limits["max_tokens"]))
+        tps = server.MODEL_REGISTRY["moss-tts-local-v1.5"]["tokens_per_second"]
+        seconds = limits["max_tokens"] / tps if len(attempts) <= runaways else 1.0
+        return np.zeros(int(seconds * SR), dtype=np.float32), SR
+
+    monkeypatch.setattr(tts, "generate_speech", speak)
+    return attempts
+
+
+def test_a_phrase_that_runs_to_its_bound_is_spoken_again_with_a_new_seed(calls, monkeypatch):
+    attempts = _runaway_speaker(monkeypatch, runaways=1)
+    segments = [{"text": "My fellow Americans,", "start": 0.0, "end": 1.02}]
+    statuses = []
+    audio, sr, _ = asyncio.run(
+        server._do_generate(
+            set_status=statuses.append, data_dir=Path("/data"), engine="moss-tts-local-v1.5", profile_id="p",
+            text="My fellow Americans,", segments=segments, original_duration=2.0,
+        )
+    )
+    assert len(attempts) == 2 and attempts[0][0] != attempts[1][0], attempts
+    assert "retrying" in statuses  # a status change, so the app does not read the retry as a stall
+    assert len(audio) == 2 * sr  # the phrase is placed in the 2 s recording
+
+
+def test_a_phrase_that_never_stops_fails_the_job_naming_the_engine(calls, monkeypatch):
+    attempts = _runaway_speaker(monkeypatch, runaways=99)
+    segments = [{"text": "My fellow Americans,", "start": 0.0, "end": 1.02}]
+    with pytest.raises(ValueError, match="MOSS-TTS Local v1.5 kept speaking past"):
+        run_generate("moss-tts-local-v1.5", segments=segments)
+    assert len(attempts) == server.SPEECH_ATTEMPTS
+
+
+def test_a_runaway_phrase_keeps_its_words_out_of_the_log_and_the_error(calls, monkeypatch, caplog):
+    # The sidecar logs transcripts by length only; the error reaches the app's log too.
+    _runaway_speaker(monkeypatch, runaways=99)
+    segments = [{"text": "My fellow Americans,", "start": 0.0, "end": 1.02}]
+    with caplog.at_level("INFO"), pytest.raises(ValueError) as failure:
+        run_generate("moss-tts-local-v1.5", segments=segments)
+    assert "fellow" not in str(failure.value)
+    assert "fellow" not in caplog.text
+
+
+def test_generate_speech_passes_the_budget_to_the_model(monkeypatch):
+    model = _FakeModel()
+    monkeypatch.setattr(tts, "_tts_model", model)
+    asyncio.run(tts.generate_speech("Hi.", np.zeros(10), None, max_tokens=63, tokens=13))
+    assert model.kwargs["max_tokens"] == 63 and model.kwargs["tokens"] == 13
 
 
 def test_progress_counts_segments(calls):
@@ -180,7 +287,7 @@ def test_a_voice_sample_over_30_s_converts(monkeypatch, tmp_path):
     monkeypatch.setattr(loader, "load_cosyvoice3", lambda repo: _FakeCosyVoice())
     monkeypatch.setattr(profiles, "get_samples", lambda data_dir, pid: [{"audio_path": str(sample), "reference_text": "Hi."}])
     audio, sr, _ = asyncio.run(server._do_voice_convert(
-        set_status=lambda s: None, data_dir=tmp_path, profile_id="p",
+        set_status=lambda s: None, data_dir=tmp_path, engine="cosyvoice3-0.5B", profile_id="p",
         source_audio_path=str(source), original_duration=5.0,
     ))
     assert sr == SR and len(audio) == 5 * SR

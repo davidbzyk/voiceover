@@ -37,9 +37,12 @@
 			{#if model.recommended}
 				<span class="recommended-badge">Recommended</span>
 			{/if}
+			{#if model.non_commercial}
+				<span class="noncommercial-badge" title="These weights may not be used commercially">Non-commercial</span>
+			{/if}
 		</div>
 		<div class="model-status-text">
-			{model.downloaded ? 'Downloaded' : 'Not downloaded'}
+			{model.downloaded ? 'Downloaded' : 'Not downloaded'}{#if model.size_gb}&nbsp;· {model.size_gb.toFixed(1)} GB{/if}{#if model.license}&nbsp;· Licence: {model.license}{/if}
 		</div>
 	</div>
 	<div class="model-actions">
@@ -116,6 +119,14 @@
 		display: flex;
 		gap: 6px;
 		align-items: center;
+	}
+	.noncommercial-badge {
+		font-size: 9px;
+		background: rgba(245, 158, 11, 0.15);
+		color: #fbbf24;
+		padding: 1px 6px;
+		border-radius: 3px;
+		font-weight: 500;
 	}
 	.recommended-badge {
 		font-size: 9px;

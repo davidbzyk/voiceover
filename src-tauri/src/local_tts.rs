@@ -5,9 +5,10 @@ use tauri::Manager;
 /// Polling interval while waiting for a sidecar job to finish.
 const POLL_INTERVAL_MS: u64 = 500;
 /// After its first chunk, a job that reports no new chunk for this long is treated as hung and cancelled.
-/// Measured 2026-10-21 on the 410s recording (M5 Max): chunks after the first take ~2.2s (max 2.5s).
-/// 60s leaves room for Macs many times slower; loading and the first chunk wait for the user's Cancel.
-const STALL_AFTER_SECS: u64 = 60;
+/// The slowest chunk measured is a Fish S2 Pro phrase: 37.9 s on the 410 s recording (M5 Max, 2026-10-27);
+/// CosyVoice chunks take about 2.5 s. 240 s is about 6x that phrase, an estimate of room for the slower
+/// Macs with the memory to load Fish. The sidecar bounds each phrase, so a long wait means a hung engine.
+const STALL_AFTER_SECS: u64 = 240;
 
 /// Shared HTTP client for all sidecar communication.
 /// Registered as Tauri managed state — no default timeout so each call site
@@ -54,6 +55,15 @@ pub struct ModelInfo {
     pub downloaded: bool,
     #[serde(default)]
     pub loaded: bool,
+    /// The model card's licence id.
+    #[serde(default)]
+    pub license: Option<String>,
+    /// Download size from the Hub, extra repos included.
+    #[serde(default)]
+    pub size_gb: Option<f64>,
+    /// True when the weights may not be used commercially.
+    #[serde(default)]
+    pub non_commercial: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,19 +151,23 @@ async fn cancel_generation(client: &reqwest::Client, base_url: &str, generation_
 
 /// Poll a sidecar job until it finishes, then download its audio to `output_wav`.
 ///
-/// Fails only when the job errors, is cancelled, or stops making chunk progress for `timing.stall_after`; never on total length.
+/// `on_progress` gets the job's status and chunk counts whenever either changes, from the first poll.
+/// Fails only when the job errors, is cancelled, stops making chunk progress for `timing.stall_after`, or the
+/// status polls keep failing for that long (a refused connection fails at once); never on total length.
 pub(crate) async fn poll_and_download(
     client: &reqwest::Client,
     base_url: &str,
     generation_id: &str,
     output_wav: &Path,
     timing: PollTiming,
-    on_progress: &(dyn Fn(JobProgress) + Send + Sync),
+    on_progress: &(dyn Fn(&str, JobProgress) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<PathBuf, String> {
     let status_url = format!("{}/generate/{}/status", base_url, generation_id);
     let mut last_seen: Option<(String, JobProgress)> = None;
     let mut last_change = std::time::Instant::now();
+    // When the current run of failed status polls began; None while polls succeed.
+    let mut failing_since: Option<std::time::Instant> = None;
     // Set once the sidecar job has ended or been told to stop; any other early exit cancels it,
     // so a job nobody is waiting for never keeps the serial queue busy.
     let mut job_settled = false;
@@ -168,12 +182,23 @@ pub(crate) async fn poll_and_download(
                 return Err(CANCELLED.to_string());
             }
 
-            let poll_resp = send_with_timeout(
-                client.get(&status_url).send(),
-                120,
-                "Failed to poll generation status",
-            )
-            .await?;
+            let sent = tokio::time::timeout(std::time::Duration::from_secs(120), client.get(&status_url).send()).await;
+            let poll_resp = match sent {
+                Ok(Ok(resp)) => {
+                    failing_since = None;
+                    resp
+                }
+                // Refused: nothing is listening, so the sidecar is gone and waiting cannot help.
+                Ok(Err(e)) if e.is_connect() => return Err(format!("Failed to poll generation status: {e}")),
+                // A dropped connection or a slow answer is not a failed job: poll again, and give up once polls
+                // have failed for the stall window. An answer with an error status fails at once, below.
+                failed if failing_since.get_or_insert_with(std::time::Instant::now).elapsed() <= timing.stall_after => {
+                    log::warn!("[local_tts] Status poll failed ({failed:?}); polling again");
+                    continue;
+                }
+                Ok(Err(e)) => return Err(format!("Failed to poll generation status: {e}")),
+                Err(_) => return Err("Failed to poll generation status: timed out after 120s".to_string()),
+            };
 
             if !poll_resp.status().is_success() {
                 let body = poll_resp.text().await.unwrap_or_default();
@@ -187,9 +212,7 @@ pub(crate) async fn poll_and_download(
 
             let seen = (gen_status.status.clone(), gen_status.progress);
             if last_seen.as_ref() != Some(&seen) {
-                if gen_status.progress.total > 0 {
-                    on_progress(gen_status.progress);
-                }
+                on_progress(&gen_status.status, gen_status.progress);
                 last_seen = Some(seen);
                 last_change = std::time::Instant::now();
             }
@@ -211,7 +234,8 @@ pub(crate) async fn poll_and_download(
                     return Err(CANCELLED.to_string());
                 }
                 // Before the first chunk the model may still be downloading; only a stop after progress is a stall.
-                "generating"
+                // A retry speaks a phrase again, so it stalls the same way; the switch to it restarts the clock.
+                "generating" | "retrying"
                     if gen_status.progress.done > 0 && last_change.elapsed() > timing.stall_after =>
                 {
                     return Err(format!(
@@ -267,32 +291,48 @@ use crate::tts_provider::CANCELLED;
 // Voice conversion (speech-to-speech, same contract as ElevenLabs)
 // ---------------------------------------------------------------------------
 
-/// Convert `input_wav` to the profile's voice with CosyVoice3, keeping the original timing.
+/// One replace-voice job for the sidecar, by name so no two of its strings can be passed in each other's place.
+#[derive(Clone, Copy, Debug)]
+pub struct ConvertJob<'a> {
+    /// Sidecar registry key of the engine that speaks.
+    pub engine: &'a str,
+    /// Local voice profile whose voice it speaks in.
+    pub profile_id: &'a str,
+    /// Whisper model a text-to-speech engine transcribes the recording with.
+    pub whisper_model: &'a str,
+    pub input_wav: &'a Path,
+    pub output_wav: &'a Path,
+    /// The video's length, which the output matches; the sidecar uses the recording's when absent.
+    pub video_duration: Option<f64>,
+}
+
+/// Replace the voice in `job.input_wav` with the profile's, spoken by `job.engine`, at the video's length.
 ///
-/// Reports chunk progress through `on_progress` and stops (cancelling the sidecar job) when `is_cancelled` turns true.
-#[allow(clippy::too_many_arguments)]
+/// A speech-to-speech engine converts the speech; a text-to-speech engine first transcribes it with the job's
+/// Whisper model. Reports the job's status and chunk progress through `on_progress`, and stops (cancelling the
+/// sidecar job) when `is_cancelled` turns true.
 pub async fn voice_convert(
     client: &reqwest::Client,
     port: u16,
-    profile_id: &str,
-    input_wav: &Path,
-    output_wav: &Path,
-    video_duration: Option<f64>,
-    on_progress: &(dyn Fn(JobProgress) + Send + Sync),
+    job: ConvertJob<'_>,
+    on_progress: &(dyn Fn(&str, JobProgress) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(), String> {
+    let ConvertJob { engine, profile_id, whisper_model, input_wav, output_wav, video_duration } = job;
     let base = format!("http://127.0.0.1:{}", port);
     let start = std::time::Instant::now();
 
     log::info!(
-        "[local_tts] Voice conversion: profile={}, input={:?}, port={}",
-        profile_id, input_wav, port,
+        "[local_tts] Voice conversion: engine={}, profile={}, input={:?}, port={}",
+        engine, profile_id, input_wav, port,
     );
 
     let input_path_str = input_wav.to_str()
         .ok_or_else(|| "Input audio path contains non-UTF8 characters".to_string())?;
     let body = serde_json::json!({
+        "engine": engine,
         "profile_id": profile_id,
+        "whisper_model": whisper_model,
         "source_audio_path": input_path_str,
         "original_duration": video_duration.unwrap_or(0.0),
     });
@@ -694,6 +734,17 @@ mod tests {
     }
 
     #[test]
+    fn model_info_keeps_the_size_and_licence_the_models_page_shows() {
+        // One row of a real /models/status body (2026-10-27).
+        let json = r#"{"model_name": "fish-s2-pro", "display_name": "Fish S2 Pro", "category": "tts", "recommended": false, "downloaded": true, "loaded": false, "license": "fish-audio-research", "size_gb": 11.0, "non_commercial": true}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+        let out = serde_json::to_value(&info).unwrap();
+        assert_eq!(out["license"], "fish-audio-research");
+        assert_eq!(out["size_gb"], 11.0);
+        assert_eq!(out["non_commercial"], true);
+    }
+
+    #[test]
     fn local_voice_serializes_correctly() {
         let voice = LocalVoice {
             id: "prof_1".to_string(),
@@ -707,10 +758,38 @@ mod tests {
         assert_eq!(v["language"], "en");
     }
 
-    /// A scripted stand-in for the sidecar: serves status bodies in order, then audio; records cancel calls.
+    /// A scripted stand-in for the sidecar: serves status bodies in order, then audio; records cancel calls
+    /// and the body of each job request.
     struct FakeSidecar {
         base_url: String,
         cancels: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        jobs: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    /// Read one HTTP request: headers, then as many body bytes as Content-Length says.
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
     }
 
     async fn fake_sidecar(statuses: Vec<&'static str>) -> FakeSidecar {
@@ -721,30 +800,37 @@ mod tests {
     async fn fake_sidecar_with(statuses: Vec<&'static str>, failing_cancels: usize) -> FakeSidecar {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let cancels = Arc::new(AtomicUsize::new(0));
+        let jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
         let polls = Arc::new(AtomicUsize::new(0));
         let statuses = Arc::new(statuses);
-        let cancels_srv = cancels.clone();
+        let (cancels_srv, jobs_srv) = (cancels.clone(), jobs.clone());
         tokio::spawn(async move {
             loop {
                 let (mut sock, _) = listener.accept().await.unwrap();
-                let (cancels, polls, statuses) = (cancels_srv.clone(), polls.clone(), statuses.clone());
+                let (cancels, jobs, polls, statuses) =
+                    (cancels_srv.clone(), jobs_srv.clone(), polls.clone(), statuses.clone());
                 tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let n = sock.read(&mut buf).await.unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let req = read_request(&mut sock).await;
                     let mut code = "200 OK";
-                    let (ctype, body): (&str, Vec<u8>) = if req.contains("/cancel") {
+                    let (ctype, body): (&str, Vec<u8>) = if req.starts_with("POST /voice-convert") {
+                        let json = req.split("\r\n\r\n").nth(1).unwrap_or("");
+                        jobs.lock().unwrap().push(serde_json::from_str(json).unwrap_or_default());
+                        ("application/json", br#"{"id":"gen-9"}"#.to_vec())
+                    } else if req.contains("/cancel") {
                         if cancels.fetch_add(1, Ordering::SeqCst) < failing_cancels {
                             code = "500 Internal Server Error";
                         }
                         ("application/json", br#"{"status":"generating"}"#.to_vec())
                     } else if req.contains("/status") {
                         let i = polls.fetch_add(1, Ordering::SeqCst).min(statuses.len() - 1);
+                        if statuses[i] == "RESET" {
+                            return; // close the connection without an answer, as a reset or a busy sidecar does
+                        }
                         if statuses[i] == "HTTP 500" {
                             code = "500 Internal Server Error";
                         }
@@ -761,7 +847,7 @@ mod tests {
                 });
             }
         });
-        FakeSidecar { base_url, cancels }
+        FakeSidecar { base_url, cancels, jobs }
     }
 
     fn fast_timing(stall_ms: u64) -> PollTiming {
@@ -785,7 +871,7 @@ mod tests {
         let seen = std::sync::Mutex::new(Vec::new());
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(200),
-            &|p| seen.lock().unwrap().push(p.done), &|| false,
+            &|_, p| seen.lock().unwrap().push(p.done), &|| false,
         ).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(std::fs::read(&out).unwrap(), b"RIFFfake");
@@ -795,16 +881,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_status_is_reported_before_any_chunk_is_done() {
+        // A text-to-speech engine transcribes first: no chunks yet, but the label must move on.
+        let fake = fake_sidecar(vec![
+            r#"{"status":"loading_model","error":null,"progress":{"done":0,"total":0}}"#,
+            r#"{"status":"transcribing","error":null,"progress":{"done":0,"total":0}}"#,
+            r#"{"status":"completed","error":null,"progress":{"done":7,"total":7}}"#,
+        ])
+        .await;
+        let out = std::env::temp_dir().join("vo-test-poll-status.wav");
+        let seen = std::sync::Mutex::new(Vec::new());
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-7", &out, fast_timing(1_000),
+            &|status, p| seen.lock().unwrap().push((status.to_string(), p.done)), &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(
+            seen.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>(),
+            ["loading_model", "transcribing", "completed"]
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn voice_convert_asks_the_sidecar_for_the_chosen_engine() {
+        let fake = fake_sidecar(vec![r#"{"status":"completed","error":null,"progress":{"done":1,"total":1}}"#]).await;
+        let port: u16 = fake.base_url.rsplit(':').next().unwrap().parse().unwrap();
+        let out = std::env::temp_dir().join("vo-test-convert-engine.wav");
+        let job = ConvertJob {
+            engine: "qwen-tts-1.7B",
+            profile_id: "4ad88b19",
+            whisper_model: "whisper-large-v3-turbo",
+            input_wav: Path::new("/tmp/extracted-1.wav"),
+            output_wav: &out,
+            video_duration: Some(29.993),
+        };
+        voice_convert(&reqwest::Client::new(), port, job, &|_, _| {}, &|| false)
+        .await
+        .unwrap();
+        let jobs = fake.jobs.lock().unwrap().clone();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["engine"], "qwen-tts-1.7B");
+        assert_eq!(jobs[0]["profile_id"], "4ad88b19");
+        assert_eq!(jobs[0]["whisper_model"], "whisper-large-v3-turbo");
+        assert_eq!(jobs[0]["original_duration"], 29.993);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
     async fn job_with_no_new_chunk_for_the_stall_window_fails_and_is_cancelled() {
         let fake = fake_sidecar(vec![generating(3)]).await;
         let out = std::env::temp_dir().join("vo-test-poll-stall.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-2", &out, fast_timing(100),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         let err = result.unwrap_err();
         assert!(err.contains("stopped making progress"), "{err}");
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_nothing_new_for_the_stall_window_fails_the_job() {
+        // A retry speaks the phrase again, so a retry that hangs is the same stall as a first try that hangs.
+        let retrying = r#"{"status":"retrying","error":null,"progress":{"done":3,"total":200}}"#;
+        let fake = fake_sidecar(vec![generating(3), retrying]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-retry-stall.wav");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            poll_and_download(
+                &reqwest::Client::new(), &fake.base_url, "gen-10", &out, fast_timing(100),
+                &|_, _| {}, &|| false,
+            ),
+        ).await;
+        let err = result.expect("a hung retry must fail the job, not poll forever").unwrap_err();
+        assert!(err.contains("stopped making progress"), "{err}");
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_status_poll_is_retried_not_fatal() {
+        // One connection reset on a status poll must not cost the whole conversion.
+        let fake = fake_sidecar(vec![
+            generating(1),
+            "RESET",
+            generating(2),
+            r#"{"status":"completed","error":null,"progress":{"done":2,"total":2}}"#,
+        ])
+        .await;
+        let out = std::env::temp_dir().join("vo-test-poll-reset.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-6", &out, fast_timing(10_000),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn a_dropped_poll_after_a_long_status_is_still_retried() {
+        // Loading a 13 GB engine holds one status far past the stall window; a dropped poll then must not
+        // fail the job, since the window counts from the first failed poll, not the last status change.
+        let loading = r#"{"status":"loading_model","error":null,"progress":{"done":0,"total":0}}"#;
+        let mut statuses = vec![loading; 60];
+        statuses.extend([
+            "RESET",
+            r#"{"status":"completed","error":null,"progress":{"done":1,"total":1}}"#,
+        ]);
+        let fake = fake_sidecar(statuses).await;
+        let out = std::env::temp_dir().join("vo-test-poll-long-status.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-9", &out, fast_timing(100),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.is_ok(), "{result:?}");
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_unreachable_for_the_stall_window_fails_the_job() {
+        let fake = fake_sidecar(vec![generating(1), "RESET"]).await;
+        let out = std::env::temp_dir().join("vo-test-poll-gone.wav");
+        let result = poll_and_download(
+            &reqwest::Client::new(), &fake.base_url, "gen-7", &out, fast_timing(100),
+            &|_, _| {}, &|| false,
+        ).await;
+        let err = result.unwrap_err();
+        assert!(err.contains("Failed to poll generation status"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_that_refuses_the_connection_fails_at_once() {
+        // Nothing listening means the sidecar is gone; waiting out the stall window cannot bring it back.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let out = std::env::temp_dir().join("vo-test-poll-refused.wav");
+        let started = std::time::Instant::now();
+        let result = poll_and_download(
+            &reqwest::Client::new(), &base_url, "gen-8", &out, fast_timing(10_000),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.unwrap_err().contains("Failed to poll generation status"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", started.elapsed());
     }
 
     #[tokio::test]
@@ -813,7 +1034,7 @@ mod tests {
         let out = std::env::temp_dir().join("vo-test-poll-500.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-5", &out, fast_timing(10_000),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         assert!(result.is_err());
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1, "job must not keep blocking the queue");
@@ -827,7 +1048,7 @@ mod tests {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-6", &out, fast_timing(20),
-            &|_| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 40,
+            &|_, _| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 40,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED, "should wait for the user, not report a stall");
     }
@@ -840,7 +1061,7 @@ mod tests {
         let out = std::env::temp_dir().join("vo-test-poll-loading.wav");
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-3", &out, fast_timing(50),
-            &|_| {}, &|| false,
+            &|_, _| {}, &|| false,
         ).await;
         assert!(result.is_ok(), "{result:?}");
         std::fs::remove_file(&out).ok();
@@ -851,7 +1072,7 @@ mod tests {
         let fake = fake_sidecar_with(vec![generating(1)], 1).await;
         let out = std::env::temp_dir().join("vo-test-poll-cancel-retry.wav");
         let result = poll_and_download(
-            &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(5_000), &|_| {}, &|| true,
+            &reqwest::Client::new(), &fake.base_url, "gen-1", &out, fast_timing(5_000), &|_, _| {}, &|| true,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 2, "a 500 is not a cancel");
@@ -864,7 +1085,7 @@ mod tests {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let result = poll_and_download(
             &reqwest::Client::new(), &fake.base_url, "gen-4", &out, fast_timing(10_000),
-            &|_| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3,
+            &|_, _| {}, &|| calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3,
         ).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert_eq!(fake.cancels.load(std::sync::atomic::Ordering::SeqCst), 1);

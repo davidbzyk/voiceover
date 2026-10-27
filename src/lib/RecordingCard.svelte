@@ -6,7 +6,7 @@
 	import { libraryState, type RecordingInfo } from '$lib/library.svelte';
 	import { logger } from '$lib/logger';
 	import VoicePicker from '$lib/VoicePicker.svelte';
-	import { cancelConversion, runConversion, type VoiceChoice } from '$lib/conversion';
+	import { cancelConversion, choiceReady, runConversion, type VoiceChoice } from '$lib/conversion';
 	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 
 	let { recording }: { recording: RecordingInfo } = $props();
@@ -248,7 +248,9 @@
 		{#if recording.meta}
 			<div class="meta-row">
 				{#if recording.meta.voiceProfile}
-					<span class="voice-badge">🎤 {recording.meta.voiceProfile}</span>
+					<span class="voice-badge">
+						🎤 {recording.meta.voiceProfile}{recording.meta.engineName ? ` · ${recording.meta.engineName}` : ''}
+					</span>
 				{/if}
 				{#if recording.meta.driveUrl}
 					<a href={recording.meta.driveUrl} target="_blank" rel="noopener" class="drive-badge uploaded">
@@ -265,7 +267,7 @@
 					<span class="convert-progress">{activeConversion.progress}</span>
 					<button class="text-btn" onclick={cancelConversion}>Cancel</button>
 				{:else}
-					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!voiceChoice || busyElsewhere}>
+					<button class="text-btn accent" onclick={handleConvertAgain} disabled={!choiceReady(voiceChoice) || busyElsewhere}>
 						{busyElsewhere ? 'Busy…' : 'Convert'}
 					</button>
 				{/if}

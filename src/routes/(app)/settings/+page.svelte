@@ -3,8 +3,9 @@
 	import { appState, isTauri, type Voice } from '$lib/state.svelte';
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
-	import { voicebox, type VoiceboxProfile, type VoiceboxModelStatus } from '$lib/voicebox';
 	import { getRequiredModelNames } from '$lib/models';
+	import { localVoices } from '$lib/localVoice.svelte';
+	import EnginePicker from '$lib/EnginePicker.svelte';
 	import { onMount } from 'svelte';
 
 	let newVoiceName = $state('');
@@ -13,45 +14,25 @@
 	let testingKey = $state(false);
 	let keyValid = $state<boolean | null>(null);
 
-	// Local TTS state
-	let localVoices = $state<VoiceboxProfile[]>([]);
+	// Local profiles and models come from the shared store, so a change here shows on every screen.
 	let localLoading = $state(false);
-	let localError = $state('');
+	const localError = $derived(localVoices.error ? 'TTS engine unavailable. Try restarting the app.' : '');
 
-	// Model status for smart button
-	let modelStatuses = $state<VoiceboxModelStatus[]>([]);
-
-	let requiredModelsReady = $derived.by(() => {
-		const required = getRequiredModelNames(appState.config, 'create-voice');
-		return required.every((name) =>
-			modelStatuses.some((m) => m.model_name === name && m.downloaded)
-		);
-	});
-
-	async function loadModelStatuses() {
-		try {
-			modelStatuses = await voicebox.getModelStatus();
-		} catch (err) {
-			logger.error('settings', 'Failed to check model status', err);
-		}
-	}
+	// Creating a voice needs Whisper to transcribe the sample.
+	let requiredModelsReady = $derived(
+		getRequiredModelNames(appState.config).every((name) =>
+			localVoices.models.some((m) => m.model_name === name && m.downloaded)
+		)
+	);
 
 	onMount(() => {
 		loadLocalVoices();
-		if (appState.config.provider === 'local') {
-			loadModelStatuses();
-		}
 	});
 
 	async function loadLocalVoices() {
 		localLoading = true;
-		localError = '';
-		try {
-			localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices');
-		} catch (err) {
-			localError = 'TTS engine unavailable. Try restarting the app.';
-			logger.error('settings', 'Failed to load local voices', err);
-		}
+		await localVoices.refresh();
+		if (localVoices.error) logger.error('settings', 'Failed to load local voices', localVoices.error);
 		localLoading = false;
 	}
 
@@ -250,6 +231,20 @@
 		</div>
 
 		{#if appState.config.provider === 'local'}
+			<!-- Local engine: CosyVoice converts speech; the text-to-speech engines speak from a transcript -->
+			<div class="section">
+				<div class="section-title">Engine</div>
+				<div class="card">
+					<EnginePicker
+						value={appState.config.local_engine || null}
+						onchange={(engine) => {
+							appState.config.local_engine = engine;
+							appState.saveConfig();
+						}}
+					/>
+				</div>
+			</div>
+
 			<!-- Local Voice Collection -->
 			<div class="section">
 				<div class="section-header">
@@ -260,8 +255,8 @@
 						<div class="hint-text">Loading voices...</div>
 					{:else if localError}
 						<div class="status invalid">{localError}</div>
-					{:else if localVoices.length > 0}
-						{#each localVoices as voice}
+					{:else if localVoices.profiles.length > 0}
+						{#each localVoices.profiles as voice}
 							<div class="voice-item" class:default={voice.id === appState.config.local_voice_profile_id}>
 								<div class="voice-info">
 									<div class="voice-name">{voice.name}</div>
