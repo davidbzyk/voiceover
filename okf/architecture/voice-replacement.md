@@ -68,14 +68,18 @@ The sidecar's `/voice-convert` decides what the engine does from its registry ro
 
 Either job is one entry in the sidecar's serial queue, so transcription waits its turn, shows as status
 `transcribing`, and is cancelled like the rest. The app's progress label follows the job's status
-(Loading, Transcribing, Converting voice) and its chunk counts. A job fails only when it stops reporting
-new chunks for the stall window (`local_tts::STALL_AFTER_SECS`), never on total length. A dropped or slow
-status poll is polled again until that window; a refused connection means the sidecar is gone and fails at once.
+(Loading, Transcribing, Converting voice) and its chunk counts. A job fails when the sidecar reports an
+error (an engine that kept speaking past its bound, for example) or when it is cancelled. Time alone fails it
+only through the stall window (`local_tts::STALL_AFTER_SECS`): while the job is `generating` and has finished a
+chunk, its status and progress stay unchanged that long; never on total length. A dropped or slow status poll
+is polled again until polls have failed for that window; a refused connection means the sidecar is gone and
+fails at once. A request `/voice-convert` refuses (a missing engine, a disallowed path) creates no job.
 
 ## Bounds on each phrase and on memory
 A text-to-speech engine samples one token at a time and stops when it samples an end token, so a phrase
-can run on. Each phrase gets a budget of `SPEECH_BUDGET_RATIO` times its spoken length plus
-`SPEECH_BUDGET_PAD_S`, passed as the engine's `max_tokens` through the row's `tokens_per_second`. A
+can run on. Each phrase from an engine whose row has a `tokens_per_second` gets a budget of
+`SPEECH_BUDGET_RATIO` times its spoken length plus `SPEECH_BUDGET_PAD_S`, passed as its `max_tokens`; a row
+with `tokens_per_second: None` (OmniVoice, which sets its length from the text) gets none. A
 phrase that reaches the budget is spoken again with a new seed (status `retrying`), and a second run to
 the budget fails the job naming the engine. Engines that take a target length get the phrase's spoken
 length, which leaves out the pauses `pad_audio_to_match_timing` puts back
