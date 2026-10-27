@@ -580,10 +580,10 @@ async def _do_generate(
                 set_status("generating")
             if len(audio) / sr * tokens_per_second < limits["max_tokens"] - 1:
                 return audio, sr
-            logger.warning("%s ran to its %.0f s bound on %r (try %d)", engine, bound_s, chunk_text, attempt + 1)
+            logger.warning("%s ran to its %.0f s bound on a %.1f s phrase (try %d)", engine, bound_s, expected_s, attempt + 1)
         raise ValueError(
-            f"{row['display_name']} kept speaking past {bound_s:.0f} s on the {expected_s:.1f} s phrase "
-            f"\"{chunk_text}\" in {SPEECH_ATTEMPTS} tries; choose another engine"
+            f"{row['display_name']} kept speaking past {bound_s:.0f} s on a {expected_s:.1f} s phrase "
+            f"in {SPEECH_ATTEMPTS} tries; choose another engine"
         )
 
     def step(done: int, total: int) -> None:
@@ -726,6 +726,8 @@ async def _do_tts_replace(
     transcript = await run_mlx(transcribe, source_audio_path, **kwargs)
     if should_cancel():
         raise ConversionCancelled()
+    # mlx-audio 0.6.1's Whisper always returns an STTOutput whose text is decoded from its segments' tokens
+    # (whisper.py: all_tokens extends from current_segments), so text without segments means no speech.
     if not transcript["text"].strip() or not transcript["segments"]:
         raise ValueError("No speech found in the recording")
     return await _do_generate(

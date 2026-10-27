@@ -195,6 +195,16 @@ def test_a_phrase_that_never_stops_fails_the_job_naming_the_engine(calls, monkey
     assert len(attempts) == server.SPEECH_ATTEMPTS
 
 
+def test_a_runaway_phrase_keeps_its_words_out_of_the_log_and_the_error(calls, monkeypatch, caplog):
+    # The sidecar logs transcripts by length only; the error reaches the app's log too.
+    _runaway_speaker(monkeypatch, runaways=99)
+    segments = [{"text": "My fellow Americans,", "start": 0.0, "end": 1.02}]
+    with caplog.at_level("INFO"), pytest.raises(ValueError) as failure:
+        run_generate("moss-tts-local-v1.5", segments=segments)
+    assert "fellow" not in str(failure.value)
+    assert "fellow" not in caplog.text
+
+
 def test_generate_speech_passes_the_budget_to_the_model(monkeypatch):
     model = _FakeModel()
     monkeypatch.setattr(tts, "_tts_model", model)
