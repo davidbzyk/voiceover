@@ -10,3 +10,4 @@ Distilled probe summaries and execution traces.
 * [mlx 0.32.4 and mlx-audio 0.6.1: faster engines, one MLX thread](./mlx-0324-mlx-audio-061-bump.md) - The bump's bench, A/B and the thread fix it needed.
 * [CosyVoice came from an undeclared fork; the sidecar now carries its code](./cosyvoice-from-mlx-audio-plus.md) - Where Replace Voice's model code lives and why.
 * [Models loaded from ~/.cache/huggingface, not the app's models folder](./hf-cache-set-after-import.md) - Why HF_HUB_CACHE is set before imports.
+* [A MOSS phrase that never stopped, and MLX's unbounded buffer cache](./tts-runaway-and-mlx-cache.md) - The near out-of-memory run, the phrase bound and the cache cap.

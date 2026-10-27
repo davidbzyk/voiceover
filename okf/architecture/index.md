@@ -4,5 +4,4 @@ System blueprints, runtime execution models, and pipeline specifications.
 
 ## Documents
 
-_No concepts yet. `okf_migrate --apply` fills this in; `okf_verify` fails the
-local profile if a sibling concept is missing from this list._
+* [How Replace Voice picks and runs an engine](./voice-replacement.md) - The path from the engine picker to the sidecar job that replaces a recording's voice, and what a new engine costs.
