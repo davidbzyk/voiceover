@@ -22,6 +22,8 @@ export default defineConfig({
 		}
 	},
 	resolve: {
-		conditions: ['browser']
+		conditions: ['browser'],
+		// Components import through SvelteKit's $lib alias, which only the kit plugin sets up.
+		alias: { $lib: new URL('./src/lib', import.meta.url).pathname }
 	}
 });

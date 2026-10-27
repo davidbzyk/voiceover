@@ -2,16 +2,10 @@
  * Shared model utilities used across settings, models, and create-voice pages.
  */
 
-/** What the models are needed for: replacing a recording's voice, or creating a voice profile. */
-export type ModelPurpose = 'replace' | 'create-voice';
-
 /**
- * Returns the model names a purpose needs. Replacement is speech-to-speech through CosyVoice;
- * creating a voice also speaks a test sentence, which Qwen generates from text.
+ * The models a task needs: the chosen Whisper model, which transcribes voice samples and recordings,
+ * plus `engine` (a sidecar registry key) when one has been picked.
  */
-export function getRequiredModelNames(
-	config: { whisper_model: string },
-	purpose: ModelPurpose = 'replace'
-): string[] {
-	return [config.whisper_model, purpose === 'replace' ? 'cosyvoice3-0.5B' : 'qwen-tts-1.7B'];
+export function getRequiredModelNames(config: { whisper_model: string }, engine?: string | null): string[] {
+	return engine ? [config.whisper_model, engine] : [config.whisper_model];
 }

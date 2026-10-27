@@ -1,0 +1,101 @@
+[
+	{
+		"model_name": "whisper-medium",
+		"display_name": "Whisper Medium",
+		"category": "transcription",
+		"recommended": false,
+		"downloaded": false,
+		"loaded": false,
+		"license": "apache-2.0",
+		"size_gb": 1.5,
+		"non_commercial": false
+	},
+	{
+		"model_name": "whisper-large-v3-turbo",
+		"display_name": "Whisper Large v3 Turbo",
+		"category": "transcription",
+		"recommended": true,
+		"downloaded": true,
+		"loaded": false,
+		"license": "mit",
+		"size_gb": 1.6,
+		"non_commercial": false
+	},
+	{
+		"model_name": "qwen-tts-1.7B",
+		"display_name": "Qwen3-TTS 1.7B",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "apache-2.0",
+		"size_gb": 4.5,
+		"non_commercial": false
+	},
+	{
+		"model_name": "voxcpm2",
+		"display_name": "VoxCPM2",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "apache-2.0",
+		"size_gb": 5.0,
+		"non_commercial": false
+	},
+	{
+		"model_name": "moss-tts-local-v1.5",
+		"display_name": "MOSS-TTS Local v1.5",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "apache-2.0",
+		"size_gb": 13.4,
+		"non_commercial": false
+	},
+	{
+		"model_name": "omnivoice",
+		"display_name": "OmniVoice",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "cc-by-nc",
+		"size_gb": 1.6,
+		"non_commercial": true
+	},
+	{
+		"model_name": "fish-s2-pro",
+		"display_name": "Fish S2 Pro",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "fish-audio-research",
+		"size_gb": 11.0,
+		"non_commercial": true
+	},
+	{
+		"model_name": "chatterbox",
+		"display_name": "Chatterbox",
+		"category": "tts",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "mit",
+		"size_gb": 3.2,
+		"non_commercial": false
+	},
+	{
+		"model_name": "cosyvoice3-0.5B",
+		"display_name": "CosyVoice3 0.5B",
+		"category": "voice-conversion",
+		"recommended": false,
+		"downloaded": true,
+		"loaded": false,
+		"license": "apache-2.0",
+		"size_gb": 2.4,
+		"non_commercial": false
+	}
+]

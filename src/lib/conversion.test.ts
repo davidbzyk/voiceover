@@ -4,6 +4,8 @@ import {
 	choiceKey,
 	defaultVoiceChoice,
 	parseChoiceKey,
+	choiceReady,
+	pickVoice,
 	releaseObjectUrl,
 	runConversion,
 	type VoiceChoice,
@@ -33,22 +35,61 @@ describe('buildVoiceOptions', () => {
 });
 
 describe('defaultVoiceChoice', () => {
-	it('uses the local profile when the provider is local', () => {
-		expect(defaultVoiceChoice({ provider: 'local', voices, local_voice_profile_id: 'p1' })).toEqual({
-			provider: 'local',
-			voiceId: 'p1'
-		});
+	it('uses the local profile and saved engine when the provider is local', () => {
+		expect(
+			defaultVoiceChoice({ provider: 'local', voices, local_voice_profile_id: 'p1', local_engine: 'voxcpm2' })
+		).toEqual({ provider: 'local', voiceId: 'p1', engine: 'voxcpm2' });
+	});
+
+	it('leaves the engine unpicked when none is saved', () => {
+		expect(
+			defaultVoiceChoice({ provider: 'local', voices, local_voice_profile_id: 'p1', local_engine: '' })
+		).toEqual({ provider: 'local', voiceId: 'p1', engine: null });
 	});
 
 	it('uses the default ElevenLabs voice otherwise', () => {
-		expect(defaultVoiceChoice({ provider: 'elevenlabs', voices, local_voice_profile_id: '' })).toEqual({
-			provider: 'elevenlabs',
-			voiceId: 'el-2'
-		});
+		expect(
+			defaultVoiceChoice({ provider: 'elevenlabs', voices, local_voice_profile_id: '', local_engine: 'voxcpm2' })
+		).toEqual({ provider: 'elevenlabs', voiceId: 'el-2' });
 	});
 
 	it('is null when nothing is configured', () => {
-		expect(defaultVoiceChoice({ provider: 'local', voices: [], local_voice_profile_id: '' })).toBeNull();
+		expect(
+			defaultVoiceChoice({ provider: 'local', voices: [], local_voice_profile_id: '', local_engine: '' })
+		).toBeNull();
+	});
+});
+
+describe('choiceReady', () => {
+	it('needs an engine for a local voice, and nothing more for ElevenLabs', () => {
+		expect(choiceReady({ provider: 'local', voiceId: 'p1', engine: null })).toBe(false);
+		expect(choiceReady({ provider: 'local', voiceId: 'p1', engine: 'voxcpm2' })).toBe(true);
+		expect(choiceReady({ provider: 'elevenlabs', voiceId: 'el-1' })).toBe(true);
+		expect(choiceReady(null)).toBe(false);
+	});
+});
+
+describe('pickVoice', () => {
+	it('keeps the engine already picked when switching between local voices', () => {
+		const current = { provider: 'local' as const, voiceId: 'p1', engine: 'fish-s2-pro' };
+		expect(pickVoice('local:p2', current, { local_engine: 'voxcpm2' })).toEqual({
+			provider: 'local',
+			voiceId: 'p2',
+			engine: 'fish-s2-pro'
+		});
+	});
+
+	it('takes the saved engine when coming from ElevenLabs', () => {
+		const current = { provider: 'elevenlabs' as const, voiceId: 'el-2' };
+		expect(pickVoice('local:p2', current, { local_engine: 'voxcpm2' }).engine).toBe('voxcpm2');
+	});
+
+	it('drops the engine for an ElevenLabs voice', () => {
+		const current = { provider: 'local' as const, voiceId: 'p1', engine: 'fish-s2-pro' };
+		expect(pickVoice('elevenlabs:el-1', current, { local_engine: '' })).toEqual({
+			provider: 'elevenlabs',
+			voiceId: 'el-1'
+		});
 	});
 });
 

@@ -54,6 +54,15 @@ pub struct ModelInfo {
     pub downloaded: bool,
     #[serde(default)]
     pub loaded: bool,
+    /// The model card's licence id.
+    #[serde(default)]
+    pub license: Option<String>,
+    /// Download size from the Hub, extra repos included.
+    #[serde(default)]
+    pub size_gb: Option<f64>,
+    /// True when the weights may not be used commercially.
+    #[serde(default)]
+    pub non_commercial: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +705,17 @@ mod tests {
         assert!(info.recommended);
         assert!(info.downloaded);
         assert!(info.loaded);
+    }
+
+    #[test]
+    fn model_info_keeps_the_size_and_licence_the_models_page_shows() {
+        // One row of a real /models/status body (2026-10-27).
+        let json = r#"{"model_name": "fish-s2-pro", "display_name": "Fish S2 Pro", "category": "tts", "recommended": false, "downloaded": true, "loaded": false, "license": "fish-audio-research", "size_gb": 11.0, "non_commercial": true}"#;
+        let info: ModelInfo = serde_json::from_str(json).unwrap();
+        let out = serde_json::to_value(&info).unwrap();
+        assert_eq!(out["license"], "fish-audio-research");
+        assert_eq!(out["size_gb"], 11.0);
+        assert_eq!(out["non_commercial"], true);
     }
 
     #[test]

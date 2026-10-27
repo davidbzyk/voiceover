@@ -14,8 +14,8 @@
 	} from '$lib/recorder.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { logger } from '$lib/logger';
-	import { tauriInvoke } from '$lib/tauri';
-	import type { VoiceboxProfile } from '$lib/voicebox';
+	import { describeChoice, localVoices, settingsChoice } from '$lib/localVoice.svelte';
+	import EnginePicker from '$lib/EnginePicker.svelte';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
 	import RegionSelector from '$lib/RegionSelector.svelte';
 
@@ -27,18 +27,10 @@
 	let totalPausedMs = $state(0);
 	let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
-	// Local voice profiles
-	let localVoices = $state<VoiceboxProfile[]>([]);
-
-	async function loadLocalVoicesIfNeeded() {
-		if (appState.config.provider === 'local' && isTauri() && localVoices.length === 0) {
-			try {
-				localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices');
-			} catch {
-				// Sidecar might not be ready yet
-			}
-		}
-	}
+	// The config usually loads after this page mounts, so this runs again once it says the voice is local.
+	$effect(() => {
+		if (appState.config.provider === 'local' && isTauri() && !localVoices.loaded) localVoices.refresh();
+	});
 
 	onMount(async () => {
 		// If there's a pending recording, redirect to preview
@@ -55,11 +47,6 @@
 		} catch (err) {
 			logger.debug('audio', 'Could not enumerate devices at mount', err);
 		}
-
-		// Config may not be loaded yet at mount — load voices after a short delay
-		await loadLocalVoicesIfNeeded();
-		// Retry after config has had time to load from Tauri
-		setTimeout(loadLocalVoicesIfNeeded, 1500);
 	});
 
 	onDestroy(() => {
@@ -213,10 +200,8 @@
 				<div class="toggle-hint">
 					{#if !appState.config.preferences.voice_replacement_enabled}
 						Disabled — raw recording only
-					{:else if appState.config.provider === 'local'}
-						Local: {localVoices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? 'None selected'}
 					{:else}
-						ElevenLabs: {appState.selectedVoice?.name ?? 'None'}
+						{describeChoice(settingsChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)}
 					{/if}
 				</div>
 			</div>
@@ -245,12 +230,10 @@
 				<button
 					class="provider-btn"
 					class:active={appState.config.provider === 'local'}
-					onclick={async () => {
+					onclick={() => {
 						appState.config.provider = 'local';
 						appState.saveConfig();
-						if (isTauri()) {
-							try { localVoices = await tauriInvoke<VoiceboxProfile[]>('list_local_voices'); } catch {}
-						}
+						if (isTauri()) localVoices.refresh();
 					}}
 				>
 					Local
@@ -284,8 +267,19 @@
 				</div>
 			{:else}
 				<div class="option-card">
+					<span class="option-icon">⚙️</span>
+					<span class="option-label">Engine</span>
+					<EnginePicker
+						value={appState.config.local_engine || null}
+						onchange={(engine) => {
+							appState.config.local_engine = engine;
+							appState.saveConfig();
+						}}
+					/>
+				</div>
+				<div class="option-card">
 					<span class="option-icon">🎙️</span>
-					{#if localVoices.length > 0}
+					{#if localVoices.profiles.length > 0}
 						<select
 							class="option-select"
 							value={appState.config.local_voice_profile_id}
@@ -295,7 +289,7 @@
 							}}
 						>
 							<option value="">Select a voice...</option>
-							{#each localVoices as voice}
+							{#each localVoices.profiles as voice}
 								<option value={voice.id}>{voice.name} ({voice.language})</option>
 							{/each}
 						</select>
@@ -433,6 +427,9 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+	}
+	.option-label {
+		color: #94a3b8;
 	}
 	.option-card.clickable {
 		cursor: pointer;

@@ -3,9 +3,10 @@
 	import { appState, isTauri } from '$lib/state.svelte';
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
+	import { shouldLoadLocalVoices } from '$lib/conversion';
+	import { describeChoice, localVoices, settingsChoice } from '$lib/localVoice.svelte';
 
 	let sidecarHealthy = $state(false);
-	let localVoiceName = $state('');
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 
 	async function checkSidecar() {
@@ -19,19 +20,13 @@
 		}
 	}
 
-	async function resolveLocalVoiceName() {
-		if (!isTauri() || !appState.config.local_voice_profile_id) return;
-		try {
-			const voices = await tauriInvoke<{ id: string; name: string }[]>('list_local_voices');
-			localVoiceName = voices.find(v => v.id === appState.config.local_voice_profile_id)?.name ?? '';
-		} catch (err) {
-			logger.debug('statusbar', 'Failed to resolve local voice name', err);
-		}
-	}
+	// The config usually loads after the bar mounts, so this runs again once it says the voice is local.
+	$effect(() => {
+		if (isTauri() && shouldLoadLocalVoices(appState.config) && !localVoices.loaded) localVoices.refresh();
+	});
 
 	onMount(() => {
 		checkSidecar();
-		resolveLocalVoiceName();
 		pollHandle = setInterval(checkSidecar, 30_000);
 	});
 
@@ -39,18 +34,9 @@
 		if (pollHandle) clearInterval(pollHandle);
 	});
 
-	const providerLabel = $derived(
-		appState.config.provider === 'local' ? 'Local TTS' : 'ElevenLabs'
+	const voiceLabel = $derived(
+		describeChoice(settingsChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)
 	);
-
-	const voiceLabel = $derived.by(() => {
-		if (appState.config.provider === 'local') {
-			return localVoiceName || 'No profile';
-		}
-		const voice = appState.config.voices?.find((v: { is_default: boolean }) => v.is_default)
-			?? appState.config.voices?.[0];
-		return voice?.name || 'No voice';
-	});
 </script>
 
 <div class="status-bar">
@@ -59,7 +45,7 @@
 		<span class="status-text">TTS {sidecarHealthy ? 'Ready' : 'Offline'}</span>
 	</div>
 	<div class="status-center">
-		<span class="status-text">{providerLabel} · {voiceLabel}</span>
+		<span class="status-text">{voiceLabel}</span>
 	</div>
 	<div class="status-right">
 		<span class="status-text output-dir" title={appState.config.output_dir}>

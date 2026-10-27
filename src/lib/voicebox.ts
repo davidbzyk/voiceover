@@ -20,6 +20,12 @@ export interface VoiceboxModelStatus {
 	recommended: boolean;
 	downloaded: boolean;
 	loaded: boolean;
+	/** The model card's licence id. */
+	license: string | null;
+	/** Download size from the Hub, extra repos included. */
+	size_gb: number | null;
+	/** True when the weights may not be used commercially. */
+	non_commercial: boolean;
 }
 
 export interface VoiceboxGeneration {
@@ -106,13 +112,14 @@ export class VoiceboxClient {
 		return JSON.parse(result);
 	}
 
-	/** Start a test generation with Qwen, the engine create-voice requires until the picker lands. */
+	/** Start speaking `text` in the profile's voice with the text-to-speech `engine` (a sidecar registry key). */
 	async testGenerate(
 		profileId: string,
-		text: string
+		text: string,
+		engine: string
 	): Promise<VoiceboxGeneration> {
 		return this.jsonRequest<VoiceboxGeneration>('/generate', 'POST', {
-			engine: 'qwen-tts-1.7B', profile_id: profileId, text
+			engine, profile_id: profileId, text
 		});
 	}
 

@@ -9,6 +9,8 @@ export type VoiceProvider = 'elevenlabs' | 'local';
 export interface VoiceChoice {
 	provider: VoiceProvider;
 	voiceId: string;
+	/** Sidecar registry key of the local engine; unset for ElevenLabs, and for a local voice nothing picks one yet. */
+	engine?: string | null;
 }
 
 /** One entry in the voice picker. */
@@ -41,11 +43,11 @@ export function buildVoiceOptions(
 
 /** The Settings default for the active provider, or null when none is configured. */
 export function defaultVoiceChoice(
-	config: Pick<AppConfig, 'provider' | 'voices' | 'local_voice_profile_id'>
+	config: Pick<AppConfig, 'provider' | 'voices' | 'local_voice_profile_id' | 'local_engine'>
 ): VoiceChoice | null {
 	if (config.provider === 'local') {
 		return config.local_voice_profile_id
-			? { provider: 'local', voiceId: config.local_voice_profile_id }
+			? { provider: 'local', voiceId: config.local_voice_profile_id, engine: config.local_engine || null }
 			: null;
 	}
 	const voice = config.voices.find((v) => v.is_default) ?? config.voices[0];
@@ -59,14 +61,21 @@ export function shouldLoadLocalVoices(
 	return config.provider === 'local' || !!config.local_voice_profile_id;
 }
 
-/** Local voice profiles from the sidecar; empty when it is not reachable. */
-export async function loadLocalVoices(): Promise<{ id: string; name: string }[]> {
-	try {
-		const { invoke } = await import('@tauri-apps/api/core');
-		return await invoke<{ id: string; name: string }[]>('list_local_voices');
-	} catch {
-		return [];
-	}
+/** Whether a choice can be converted to: a voice, and for a local voice an engine too. */
+export function choiceReady(choice: VoiceChoice | null): choice is VoiceChoice {
+	return !!choice && !!choice.voiceId && (choice.provider !== 'local' || !!choice.engine);
+}
+
+/** The choice after picking `key` in the voice select: a local voice keeps the engine already picked, else the saved one. */
+export function pickVoice(
+	key: string,
+	current: VoiceChoice | null,
+	config: Pick<AppConfig, 'local_engine'>
+): VoiceChoice {
+	const { provider, voiceId } = parseChoiceKey(key);
+	if (provider === 'elevenlabs') return { provider, voiceId };
+	const engine = (current?.provider === 'local' ? current.engine : null) || config.local_engine || null;
+	return { provider, voiceId, engine };
 }
 
 type PipelineEvent =

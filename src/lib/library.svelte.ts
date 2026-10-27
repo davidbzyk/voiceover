@@ -5,6 +5,8 @@ import { logger } from './logger';
 export type RecordingMeta = {
 	voiceProfile: string | null;
 	provider: string | null;
+	/** Display name of the engine that made the voice ("ElevenLabs" for ElevenLabs); absent on older recordings. */
+	engineName?: string | null;
 	driveUrl: string | null;
 	uploadedAt: number | null;
 	voiceReplacement: boolean;

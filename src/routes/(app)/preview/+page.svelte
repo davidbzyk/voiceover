@@ -10,11 +10,13 @@
 	import { activeConversion, runExclusive } from '$lib/activeConversion.svelte';
 	import {
 		cancelConversion,
+		choiceReady,
 		releaseObjectUrl,
 		fileObjectUrl,
 		runConversion,
 		type VoiceChoice
 	} from '$lib/conversion';
+	import { describeChoice, localVoices } from '$lib/localVoice.svelte';
 
 	let isProcessing = $state(false);
 	let processingError = $state('');
@@ -496,6 +498,12 @@
 		<div class="saved-info">
 			<div class="saved-label">Saved to:</div>
 			<div class="saved-path">{appState.outputPath}</div>
+			{#if savedVoice}
+				<div class="saved-label">Converted with:</div>
+				<div class="saved-path">
+					{describeChoice(savedVoice, appState.config, localVoices.profiles, localVoices.engines)}
+				</div>
+			{/if}
 		</div>
 
 		{#if isTauri()}
@@ -506,7 +514,7 @@
 				</div>
 				<div class="convert-again">
 					<VoicePicker bind:value={voiceChoice} disabled={isProcessing} />
-					<button class="btn primary small" onclick={convertAgain} disabled={isProcessing || busyElsewhere || !voiceChoice}>
+					<button class="btn primary small" onclick={convertAgain} disabled={isProcessing || busyElsewhere || !choiceReady(voiceChoice)}>
 						{isProcessing ? 'Converting...' : 'Convert'}
 					</button>
 				</div>
@@ -535,7 +543,13 @@
 	{:else}
 		<!-- Action buttons -->
 		<div class="actions">
-			<button class="btn primary" onclick={processAndSave} disabled={isProcessing || busyElsewhere}>
+			<button
+				class="btn primary"
+				onclick={processAndSave}
+				disabled={isProcessing ||
+					busyElsewhere ||
+					(isTauri() && appState.config.preferences.voice_replacement_enabled && !choiceReady(voiceChoice))}
+			>
 				{isProcessing ? 'Processing...' : '💾 Save MP4'}
 			</button>
 			<button class="btn secondary" onclick={discard} disabled={isProcessing}>🗑️ Discard</button>

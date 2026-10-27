@@ -3,6 +3,8 @@
 	import { appState } from '$lib/state.svelte';
 	import { voicebox, type VoiceboxModelStatus } from '$lib/voicebox';
 	import { getRequiredModelNames } from '$lib/models';
+	import { engineOptions, localVoices } from '$lib/localVoice.svelte';
+	import EnginePicker from '$lib/EnginePicker.svelte';
 	import { onMount } from 'svelte';
 
 	// Wizard step (1-5)
@@ -40,6 +42,8 @@
 	let extractedAudioPath = $state('');
 
 	// Step 4: Test voice
+	/** The text-to-speech engine that speaks the test; the saved engine when it reads text, else unpicked. */
+	let testEngine = $state<string | null>(null);
 	let testText = $state('Hello, this is a test of my cloned voice.');
 	let generating = $state(false);
 	let generateError = $state('');
@@ -66,6 +70,12 @@
 
 	onMount(() => {
 		checkPrerequisites();
+		localVoices.refresh().then(() => {
+			const saved = appState.config.local_engine;
+			if (engineOptions(localVoices.models, true).some((e) => e.key === saved && e.downloaded)) {
+				testEngine ??= saved;
+			}
+		});
 	});
 
 	async function checkPrerequisites() {
@@ -82,8 +92,8 @@
 
 			models = await client.getModelStatus();
 
-			// Only check models required for the current mode
-			const requiredModels = getRequiredModelNames(appState.config, 'create-voice');
+			// Whisper transcribes the sample; the engine for the test sentence is picked in step 4.
+			const requiredModels = getRequiredModelNames(appState.config);
 			const allDownloaded = requiredModels.every((reqName) =>
 				models.some((m) => m.model_name === reqName && m.downloaded)
 			);
@@ -104,8 +114,7 @@
 		downloadError = '';
 		const client = voicebox;
 
-		// Only download models required for the current mode
-		const requiredModels = getRequiredModelNames(appState.config, 'create-voice');
+		const requiredModels = getRequiredModelNames(appState.config);
 		const missing = models.filter(
 			(m) => !m.downloaded && requiredModels.includes(m.model_name)
 		);
@@ -254,8 +263,12 @@
 		generatedAudioUrl = '';
 		const client = voicebox;
 
+		if (!testEngine) {
+			generating = false;
+			return;
+		}
 		try {
-			const gen = await client.testGenerate(profileId, testText.trim());
+			const gen = await client.testGenerate(profileId, testText.trim(), testEngine);
 			await client.pollGenerationStatus(gen.id);
 			generatedAudioUrl = await client.getAudioUrl(gen.id);
 		} catch (err) {
@@ -267,7 +280,10 @@
 	async function finishWizard() {
 		appState.config.local_voice_profile_id = profileId;
 		appState.config.provider = 'local';
+		// The engine the user just tested with, unless they already picked one for conversions.
+		if (!appState.config.local_engine && testEngine) appState.config.local_engine = testEngine;
 		await appState.saveConfig();
+		await localVoices.refresh();
 		goto('/settings');
 	}
 
@@ -320,7 +336,7 @@
 					</div>
 
 					<!-- Show status of required models only -->
-					{@const requiredModelNames = getRequiredModelNames(appState.config, 'create-voice')}
+					{@const requiredModelNames = getRequiredModelNames(appState.config)}
 					{#each models.filter((m) => requiredModelNames.includes(m.model_name)) as model}
 						<div class="status-row">
 							<span class="status-dot" class:connected={model.downloaded}></span>
@@ -330,12 +346,13 @@
 
 					{@const missing = models.filter((m) => !m.downloaded && requiredModelNames.includes(m.model_name))}
 					{#if missing.length > 0}
+						{@const totalGb = missing.reduce((sum, m) => sum + (m.size_gb ?? 0), 0).toFixed(1)}
 						<div class="hint-text">
 							{#if missing.length === 1}
-								{missing[0].display_name} needs to be downloaded.
+								{missing[0].display_name} needs to be downloaded ({totalGb} GB).
 							{:else}
 								{@const names = missing.map((m) => m.display_name)}
-								{names.slice(0, -1).join(', ')} and {names[names.length - 1]} need to be downloaded (~5GB total).
+								{names.slice(0, -1).join(', ')} and {names[names.length - 1]} need to be downloaded ({totalGb} GB total).
 							{/if}
 						</div>
 						<button
@@ -536,6 +553,9 @@
 		<div class="section">
 			<div class="section-title">Test Your Voice</div>
 			<div class="card">
+				<span class="field-label">Engine</span>
+				<EnginePicker textOnly bind:value={testEngine} disabled={generating} />
+
 				<label class="field-label" for="test-text">Text to speak</label>
 				<textarea
 					id="test-text"
@@ -552,7 +572,7 @@
 					<button
 						class="small-btn accent"
 						onclick={testGenerate}
-						disabled={!testText.trim() || generating}
+						disabled={!testText.trim() || !testEngine || generating}
 					>
 						{generating ? 'Generating...' : 'Generate Test'}
 					</button>
