@@ -19,6 +19,8 @@
 	const speech = $derived(engines.filter((e) => e.kind === 'speech-to-speech'));
 	const text = $derived(engines.filter((e) => e.kind === 'text-to-speech'));
 	const noneDownloaded = $derived(localVoices.loaded && !engines.some((e) => e.downloaded));
+	/** A saved pick whose weights were deleted since: converting with it would download them first. */
+	const pickedMissing = $derived(engines.find((e) => e.key === value && !e.downloaded));
 </script>
 
 <select
@@ -55,6 +57,8 @@
 </select>
 {#if noneDownloaded}
 	<a class="engine-hint" href="/models">Download an engine on the Models page</a>
+{:else if pickedMissing}
+	<a class="engine-hint" href="/models">{pickedMissing.name} is not downloaded: get it on the Models page</a>
 {/if}
 
 <style>

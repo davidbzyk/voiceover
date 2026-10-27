@@ -130,7 +130,7 @@
 			<div class="section-title">Text-to-Speech</div>
 			<div class="card">
 				<div class="hint-text" style="margin-bottom: 8px">
-					Qwen generates speech from text using your cloned voice.
+					These engines speak a transcript of your recording in your cloned voice, phrase by phrase at the original timing.
 				</div>
 				{#each modelStatuses.filter((m) => m.category === 'tts') as model}
 					<ModelCard
