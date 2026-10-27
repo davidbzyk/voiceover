@@ -9,13 +9,13 @@
 - **Pick the engine for every local conversion** — CosyVoice (speech to speech, keeps your pacing) or a text-to-speech engine that speaks each phrase at its original time. Pick it on the Record screen, in Settings, in the voice picker on Preview and the Library, and in Create Voice (#34)
 - **Five more text-to-speech engines** — VoxCPM2, MOSS-TTS Local v1.5, OmniVoice, Fish S2 Pro and Chatterbox, beside Qwen3-TTS 1.7B (#31)
 - **The engine shows wherever the voice does** — Preview, Convert again and Library cards read "voice · engine", and the progress bar names the engine at work (#34)
-- **Models cards show size and licence**, with a Non-commercial mark on OmniVoice and Fish S2 Pro (#34)
+- **Cards on the Models page show size and licence**, with a Non-commercial mark on OmniVoice and Fish S2 Pro (#34)
 
 ### 🐛 Bug Fixes
 
 - **A conversion could use up the Mac's memory** — an engine could keep speaking past the end of a phrase while MLX held on to freed memory, past 40 GB on one phrase. Each phrase now stops at 3× its length plus 2 s and is spoken again once if it runs that long, and MLX keeps at most 2 GB of freed memory. All seven engines replaced a 6m50s recording at 10–31 GB peak (#34)
 - **The status bar said "No profile"** with a profile picked (#34)
-- **One dropped connection failed a whole conversion** — the status check now tries again; a job with nothing new for 240 s still fails (#34)
+- **One dropped connection failed a whole conversion** — the status check now tries again. Once a conversion has finished a chunk, 240 s with no new chunk still fails it; a first-time model download or a transcription has no time limit and can be cancelled (#34)
 - **Create Voice** stayed stuck after Retry Connection found the engine, and had no way forward when no text-to-speech engine was downloaded (#34)
 
 ### 🛠️ Other Improvements
