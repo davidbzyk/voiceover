@@ -442,7 +442,32 @@ class TestHappyPaths:
 # ---------------------------------------------------------------------------
 
 
+class TestMlxMemory:
+    def test_the_sidecar_caps_mlxs_cache_of_freed_buffers_at_startup(self, client):
+        """Uncapped, VoxCPM2 (5 GB of weights) reached 34.5 GB over seven phrases and MOSS and Fish passed 40 GB."""
+        import mlx.core as mx
+
+        import tts
+
+        previous = mx.set_cache_limit(0)
+        mx.set_cache_limit(previous)
+        assert previous == tts.MLX_CACHE_LIMIT_BYTES
+
+
 class TestModelRegistry:
+    def test_every_autoregressive_engine_declares_its_token_rate(self):
+        """The phrase budget needs each engine's tokens per second of audio; only OmniVoice sets its own length."""
+        unbounded = set()
+        for name, entry in MODEL_REGISTRY.items():
+            if entry["category"] != "tts":
+                continue
+            rate = entry["tokens_per_second"]
+            if rate is None:
+                unbounded.add(name)
+            else:
+                assert isinstance(rate, float) and rate > 0, name
+        assert unbounded == {"omnivoice"}
+
     def test_registry_contains_expected_models(self):
         expected = {
             "whisper-medium",

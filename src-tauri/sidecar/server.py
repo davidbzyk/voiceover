@@ -66,6 +66,7 @@ import asyncio
 import functools
 import gc
 import logging
+import math
 import signal
 import threading
 import time
@@ -102,6 +103,11 @@ logger = logging.getLogger("voiceover-tts")
 # build time. ``extra_repos`` lists other Hub repos the engine fetches by itself at load or generate
 # time; they are downloaded, counted and deleted with the row. Find them by generating once with
 # HF_HUB_OFFLINE=1 and only the row's repos in the models folder (okf/standards/engine-admission.md).
+# ``tokens_per_second`` is how many of the engine's ``max_tokens`` units make one second of audio
+# (measured: max_tokens=40 on a long sentence), or None for an engine that sets its length from the
+# text and cannot run on (OmniVoice). ``length_hint`` names the engine's own target-length argument
+# and its unit ("token" or "second"); the replace job sets it to each phrase's spoken length, and to
+# no less than ``min``, the shortest target the engine was measured to follow.
 MODEL_REGISTRY = {
     # Whisper variants (transcription)
     "whisper-medium": {
@@ -132,6 +138,7 @@ MODEL_REGISTRY = {
         "ref_text": False,
         "license": "apache-2.0",
         "size_gb": 4.5,
+        "tokens_per_second": 12.5,
     },
     "voxcpm2": {
         "repo_id": "mlx-community/VoxCPM2-bf16",
@@ -142,6 +149,7 @@ MODEL_REGISTRY = {
         "ref_text": True,
         "license": "apache-2.0",
         "size_gb": 5.0,
+        "tokens_per_second": 6.25,
     },
     "moss-tts-local-v1.5": {
         "repo_id": "mlx-community/MOSS-TTS-Local-Transformer-v1.5-8bit",
@@ -153,6 +161,9 @@ MODEL_REGISTRY = {
         "ref_text": True,
         "license": "apache-2.0",
         "size_gb": 13.4,
+        "tokens_per_second": 12.5,
+        # MOSS ignores a target under 10 tokens (0.8 s) and runs on: 4 of 6 seeds at 8, every seed at 6.
+        "length_hint": {"kwarg": "tokens", "unit": "token", "min": 10},
     },
     "omnivoice": {
         "repo_id": "mlx-community/OmniVoice-bf16",
@@ -164,6 +175,7 @@ MODEL_REGISTRY = {
         "license": "cc-by-nc",
         "size_gb": 1.6,
         "non_commercial": True,
+        "tokens_per_second": None,
     },
     "fish-s2-pro": {
         "repo_id": "mlx-community/fish-audio-s2-pro-bf16",
@@ -175,6 +187,7 @@ MODEL_REGISTRY = {
         "license": "fish-audio-research",
         "size_gb": 11.0,
         "non_commercial": True,
+        "tokens_per_second": 21.53,
     },
     "chatterbox": {
         "repo_id": "mlx-community/Chatterbox-TTS-fp16",
@@ -186,6 +199,7 @@ MODEL_REGISTRY = {
         "ref_text": True,
         "license": "mit",
         "size_gb": 3.2,
+        "tokens_per_second": 25.0,
     },
     # Voice conversion
     "cosyvoice3-0.5B": {
@@ -288,6 +302,9 @@ async def _periodic_cleanup():
 
 @asynccontextmanager
 async def lifespan(app):
+    from tts import cap_mlx_cache, run_mlx
+
+    await run_mlx(cap_mlx_cache)
     _cleanup_generations()  # Sweep stale generations from prior session
     asyncio.create_task(_generation_worker())
     cleanup_task = asyncio.create_task(_periodic_cleanup())
@@ -478,6 +495,20 @@ async def _generation_worker():
 # ---------------------------------------------------------------------------
 
 
+# A phrase may run to SPEECH_BUDGET_RATIO times its expected length plus SPEECH_BUDGET_PAD_S before the
+# engine is stopped. Healthy phrases from all six engines came out at most 2.1x their original speech
+# (Chatterbox, "My fellow Americans,": 2.16 s for 1.02 s); MOSS with no length target spoke 48 s for it
+# and, unbounded, ran toward its 4,096-frame default while memory passed 40 GB (2026-10-27).
+SPEECH_BUDGET_RATIO = 3.0
+SPEECH_BUDGET_PAD_S = 2.0
+# Expected length of text with no timing (Create Voice's test sentence): the 30 s fixture speaker's
+# 386 characters over 26.2 s of phrases. Engines spoke the same phrases at 9.3-15.3 characters a second.
+SPEECH_CHARS_PER_S = 14.0
+# A phrase that runs to its bound is spoken again with a new seed: MOSS with no length target ran to it
+# on 2 or 3 of 8 seeds for a short phrase. Two runs to the bound fail the job naming the engine.
+SPEECH_ATTEMPTS = 2
+
+
 async def _do_generate(
     *,
     set_status,
@@ -503,6 +534,7 @@ async def _do_generate(
         concatenate_audio_chunks,
         pad_audio_to_match_timing,
         pad_or_truncate_to_duration,
+        reinserted_gap_seconds,
         split_text_into_chunks,
     )
 
@@ -523,9 +555,36 @@ async def _do_generate(
         if should_cancel():
             raise ConversionCancelled()
 
-    async def speak(chunk_text: str, seed: int | None = None):
-        check_cancel()  # also between the sub-chunks of a long segment
-        return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+    tokens_per_second = row["tokens_per_second"]
+    length_hint = row.get("length_hint")
+
+    async def speak(chunk_text: str, expected_s: float, seed: int | None = None):
+        """Speak ``chunk_text``, stopping the engine past its budget for ``expected_s`` seconds of speech."""
+        if tokens_per_second is None:  # the engine sets its own length from the text
+            check_cancel()
+            return await generate_speech(chunk_text, ref_audio, ref_text, seed=seed)
+        bound_s = SPEECH_BUDGET_RATIO * expected_s + SPEECH_BUDGET_PAD_S
+        limits = {"max_tokens": math.ceil(tokens_per_second * bound_s)}
+        if length_hint:
+            target = math.ceil(expected_s * tokens_per_second) if length_hint["unit"] == "token" else expected_s
+            limits[length_hint["kwarg"]] = max(target, length_hint.get("min", 0))
+        for attempt in range(SPEECH_ATTEMPTS):
+            check_cancel()  # also between the sub-chunks of a long segment
+            if attempt:
+                set_status("retrying")
+            audio, sr = await generate_speech(
+                chunk_text, ref_audio, ref_text,
+                seed=None if seed is None else seed + attempt * 10_000, **limits,
+            )
+            if attempt:
+                set_status("generating")
+            if len(audio) / sr * tokens_per_second < limits["max_tokens"] - 1:
+                return audio, sr
+            logger.warning("%s ran to its %.0f s bound on %r (try %d)", engine, bound_s, chunk_text, attempt + 1)
+        raise ValueError(
+            f"{row['display_name']} kept speaking past {bound_s:.0f} s on the {expected_s:.1f} s phrase "
+            f"\"{chunk_text}\" in {SPEECH_ATTEMPTS} tries; choose another engine"
+        )
 
     def step(done: int, total: int) -> None:
         check_cancel()
@@ -557,10 +616,16 @@ async def _do_generate(
                 f"({len(seg_text)} chars)"
             )
 
+            # The engine speaks the words; the pauses between them are put back from word_timing below.
+            word_timing = seg.get("words", [])
+            speech_s = seg_end - seg_start - reinserted_gap_seconds(word_timing)
+            if speech_s <= 0:  # degenerate word timing
+                speech_s = seg_end - seg_start
+
             # Sub-chunk long segments (>800 chars) and crossfade
             sub_chunks = split_text_into_chunks(seg_text)
             if len(sub_chunks) <= 1:
-                seg_audio, seg_sr = await speak(seg_text, seed=i)
+                seg_audio, seg_sr = await speak(seg_text, speech_s, seed=i)
             else:
                 logger.info(
                     f"  Sub-chunking segment {i + 1}: "
@@ -569,7 +634,9 @@ async def _do_generate(
                 sub_audios = []
                 seg_sr = None
                 for j, sub_text in enumerate(sub_chunks):
-                    sub_audio, sub_sr = await speak(sub_text, seed=i * 100 + j)
+                    sub_audio, sub_sr = await speak(
+                        sub_text, speech_s * len(sub_text) / len(seg_text), seed=i * 100 + j
+                    )
                     sub_audios.append(sub_audio)
                     if seg_sr is None:
                         seg_sr = sub_sr
@@ -577,7 +644,6 @@ async def _do_generate(
 
             # Insert proportional silences between words to match
             # original speaker's pacing (TTS always runs faster)
-            word_timing = seg.get("words", [])
             if word_timing and seg_sr:
                 seg_audio = pad_audio_to_match_timing(
                     seg_audio, seg_sr, word_timing
@@ -600,7 +666,7 @@ async def _do_generate(
 
         if len(chunks) <= 1:
             step(0, 1)
-            audio, sample_rate = await speak(text)
+            audio, sample_rate = await speak(text, len(text) / SPEECH_CHARS_PER_S)
             set_progress(1, 1)
         else:
             logger.info(f"Chunked generation: {len(chunks)} chunks")
@@ -608,7 +674,7 @@ async def _do_generate(
             sample_rate = None
             for i, chunk_text in enumerate(chunks):
                 step(i, len(chunks))
-                chunk_audio, chunk_sr = await speak(chunk_text, seed=i)  # deterministic per chunk
+                chunk_audio, chunk_sr = await speak(chunk_text, len(chunk_text) / SPEECH_CHARS_PER_S, seed=i)
                 audio_chunks.append(chunk_audio)
                 if sample_rate is None:
                     sample_rate = chunk_sr

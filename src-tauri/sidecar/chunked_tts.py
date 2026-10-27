@@ -256,6 +256,22 @@ def _fix_degenerate_timestamps(word_timing: list) -> list:
     return fixed
 
 
+def _word_gaps(word_timing: list) -> list[float]:
+    """The pauses between consecutive words, after fixing degenerate timestamps; empty under two words."""
+    if not word_timing or len(word_timing) < 2:
+        return []
+    word_timing = _fix_degenerate_timestamps(word_timing)
+    return [max(0.0, word_timing[i]["start"] - word_timing[i - 1]["end"]) for i in range(1, len(word_timing))]
+
+
+def reinserted_gap_seconds(word_timing: list) -> float:
+    """Seconds of silence pad_audio_to_match_timing puts back into a phrase with this word timing."""
+    gaps = _word_gaps(word_timing)
+    if sum(gaps) < 0.05:
+        return 0.0
+    return sum(g for g in gaps if g > 0.01)
+
+
 def pad_audio_to_match_timing(
     audio: np.ndarray,
     sample_rate: int,
@@ -277,15 +293,8 @@ def pad_audio_to_match_timing(
     if not word_timing or len(word_timing) < 2 or len(audio) == 0:
         return audio
 
-    # Fix degenerate timestamps before calculating gaps
-    word_timing = _fix_degenerate_timestamps(word_timing)
-
-    # Calculate original inter-word gaps (the pauses TTS didn't reproduce)
-    gaps = []
-    for i in range(1, len(word_timing)):
-        gap = word_timing[i]["start"] - word_timing[i - 1]["end"]
-        gaps.append(max(0.0, gap))
-
+    # The original inter-word gaps (the pauses TTS didn't reproduce); reinserted_gap_seconds reads the same
+    gaps = _word_gaps(word_timing)
     total_gap = sum(gaps)
     if total_gap < 0.05:
         # Less than 50ms total gap — not worth inserting
