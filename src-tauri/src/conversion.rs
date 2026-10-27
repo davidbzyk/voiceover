@@ -101,6 +101,11 @@ pub async fn engine_name(app: &tauri::AppHandle, choice: &VoiceChoice) -> String
     }
 }
 
+/// The progress label while `engine_name` (an engine's display name, or "ElevenLabs") converts the voice.
+pub(crate) fn converting_label(engine_name: &str) -> String {
+    format!("Converting voice ({engine_name})")
+}
+
 /// The progress label for a local job in sidecar `status`, naming the engine doing the work.
 pub(crate) fn local_stage_label(status: &str, engine_name: &str) -> String {
     match status {
@@ -108,7 +113,7 @@ pub(crate) fn local_stage_label(status: &str, engine_name: &str) -> String {
         "loading_model" => format!("Loading {engine_name}"),
         "transcribing" => "Transcribing".to_string(),
         "preparing_voice" => "Preparing the voice".to_string(),
-        _ => format!("Converting voice ({engine_name})"),
+        _ => converting_label(engine_name),
     }
 }
 
@@ -220,7 +225,7 @@ pub async fn convert(
                 source_wav,
                 work_dir,
                 stamp,
-                &|fraction| on_progress("Converting voice (ElevenLabs)", fraction),
+                &|fraction| on_progress(&converting_label("ElevenLabs"), fraction),
                 is_cancelled,
             )
             .await

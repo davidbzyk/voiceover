@@ -220,7 +220,7 @@ async fn convert_voice(
         return Err(e);
     }
 
-    let stage = format!("Converting voice ({engine_name})");
+    let stage = conversion::converting_label(engine_name);
     let stage = stage.as_str();
     progress(on_event, stage, 10.0);
     log::info!("[pipeline] Converting with {:?}, duration={:?}", choice, duration);

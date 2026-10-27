@@ -125,7 +125,7 @@
 			</div>
 		</div>
 
-		<!-- Text-to-Speech (Qwen) -->
+		<!-- Text-to-speech engines -->
 		<div class="section">
 			<div class="section-title">Text-to-Speech</div>
 			<div class="card">
