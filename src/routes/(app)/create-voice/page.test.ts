@@ -22,6 +22,9 @@ import Page from './+page.svelte';
 let sidecarUp = false;
 
 beforeEach(() => {
+	// Each case starts with the sidecar down and an empty store, whatever ran before it.
+	sidecarUp = false;
+	Object.assign(localVoices, { profiles: [], models: [], loaded: false, error: '' });
 	vi.mocked(tauriInvoke).mockImplementation(async (cmd: string) => {
 		if (cmd === 'test_local_connection') return sidecarUp;
 		if (!sidecarUp) throw new Error('sidecar not running');
