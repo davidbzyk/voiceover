@@ -5,9 +5,10 @@ use tauri::Manager;
 /// Polling interval while waiting for a sidecar job to finish.
 const POLL_INTERVAL_MS: u64 = 500;
 /// After its first chunk, a job that reports no new chunk for this long is treated as hung and cancelled.
-/// Measured 2026-10-21 on the 410s recording (M5 Max): chunks after the first take ~2.2s (max 2.5s).
-/// 60s leaves room for Macs many times slower; loading and the first chunk wait for the user's Cancel.
-const STALL_AFTER_SECS: u64 = 60;
+/// The slowest chunk measured is a Fish S2 Pro phrase: 37.9 s on the 410 s recording (M5 Max, 2026-10-27);
+/// CosyVoice chunks take about 2.5 s. 240 s is about 6x that phrase, an estimate of room for the slower
+/// Macs with the memory to load Fish. The sidecar bounds each phrase, so a long wait means a hung engine.
+const STALL_AFTER_SECS: u64 = 240;
 
 /// Shared HTTP client for all sidecar communication.
 /// Registered as Tauri managed state — no default timeout so each call site

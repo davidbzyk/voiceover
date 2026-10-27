@@ -1,5 +1,5 @@
-//! Speech-to-speech voice conversion, one contract for every provider: source audio in,
-//! the same speech in another voice out, at the source's length.
+//! Voice replacement, one contract for every provider and engine: source audio in, the same
+//! speech in another voice out, at the source's length. Local engines are picked by the user.
 
 use crate::audio_split;
 use crate::config::AppConfig;
