@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { appState } from '$lib/state.svelte';
-	import { voicebox, type VoiceboxModelStatus } from '$lib/voicebox';
+	import { voicebox } from '$lib/voicebox';
 	import { getRequiredModelNames } from '$lib/models';
 	import { engineOptions, localVoices } from '$lib/localVoice.svelte';
 	import EnginePicker from '$lib/EnginePicker.svelte';
@@ -13,7 +13,8 @@
 	// Step 1: Prerequisites
 	let healthy = $state<boolean | null>(null);
 	let checkingHealth = $state(false);
-	let models = $state<VoiceboxModelStatus[]>([]);
+	// One model list for the app: the store every engine picker reads.
+	const models = $derived(localVoices.models);
 	let downloading = $state(false);
 	let downloadError = $state('');
 	let prerequisiteError = $state('');
@@ -70,13 +71,17 @@
 
 	onMount(() => {
 		checkPrerequisites();
-		localVoices.refresh().then(() => {
-			const saved = appState.config.local_engine;
-			if (engineOptions(localVoices.models, true).some((e) => e.key === saved && e.downloaded)) {
-				testEngine ??= saved;
-			}
-		});
 	});
+
+	/** Fetch profiles and engines into the shared store; throws the store's error when the sidecar did not answer. */
+	async function refreshModels() {
+		await localVoices.refresh();
+		if (localVoices.error) throw new Error(localVoices.error);
+		const saved = appState.config.local_engine;
+		if (engineOptions(localVoices.models, true).some((e) => e.key === saved && e.downloaded)) {
+			testEngine ??= saved;
+		}
+	}
 
 	async function checkPrerequisites() {
 		checkingHealth = true;
@@ -90,7 +95,8 @@
 				return;
 			}
 
-			models = await client.getModelStatus();
+			// A retry after the sidecar was down also fills the engine picker at step 4.
+			await refreshModels();
 
 			// Whisper transcribes the sample; the engine for the test sentence is picked in step 4.
 			const requiredModels = getRequiredModelNames(appState.config);
@@ -134,7 +140,7 @@
 			downloadError = '';
 
 			// Refresh model status after all downloads complete
-			models = await client.getModelStatus();
+			await refreshModels();
 			const allDownloaded = requiredModels.every((reqName) =>
 				models.some((m) => m.model_name === reqName && m.downloaded)
 			);

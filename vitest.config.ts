@@ -23,7 +23,10 @@ export default defineConfig({
 	},
 	resolve: {
 		conditions: ['browser'],
-		// Components import through SvelteKit's $lib alias, which only the kit plugin sets up.
-		alias: { $lib: new URL('./src/lib', import.meta.url).pathname }
+		// Components import through SvelteKit's $lib and $app aliases, which only the kit plugin sets up.
+		alias: {
+			$lib: new URL('./src/lib', import.meta.url).pathname,
+			'$app/navigation': new URL('./vitest-stubs/app-navigation.ts', import.meta.url).pathname
+		}
 	}
 });
