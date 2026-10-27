@@ -41,17 +41,21 @@ export function buildVoiceOptions(
 	return [...eleven, ...local];
 }
 
-/** The Settings default for the active provider, or null when none is configured. */
-export function defaultVoiceChoice(
-	config: Pick<AppConfig, 'provider' | 'voices' | 'local_voice_profile_id' | 'local_engine'>
-): VoiceChoice | null {
+type SavedVoiceConfig = Pick<AppConfig, 'provider' | 'voices' | 'local_voice_profile_id' | 'local_engine'>;
+
+/** The voice and engine saved in Settings for the active provider; the voice id is empty when none is saved. */
+export function savedVoiceChoice(config: SavedVoiceConfig): VoiceChoice {
 	if (config.provider === 'local') {
-		return config.local_voice_profile_id
-			? { provider: 'local', voiceId: config.local_voice_profile_id, engine: config.local_engine || null }
-			: null;
+		return { provider: 'local', voiceId: config.local_voice_profile_id, engine: config.local_engine || null };
 	}
 	const voice = config.voices.find((v) => v.is_default) ?? config.voices[0];
-	return voice ? { provider: 'elevenlabs', voiceId: voice.id } : null;
+	return { provider: 'elevenlabs', voiceId: voice?.id ?? '' };
+}
+
+/** The Settings default for the active provider, or null when none is configured. */
+export function defaultVoiceChoice(config: SavedVoiceConfig): VoiceChoice | null {
+	const choice = savedVoiceChoice(config);
+	return choice.voiceId ? choice : null;
 }
 
 /** Whether to ask the local engine for voices; asking starts it, so ElevenLabs-only setups skip it. */

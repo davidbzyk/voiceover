@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import models from './fixtures/models-status.json';
-import { describeChoice, engineOptions, settingsChoice } from './localVoice.svelte';
+import { describeChoice, engineOptions } from './localVoice.svelte';
 import type { VoiceboxModelStatus } from './voicebox';
 
 const recorded = models as VoiceboxModelStatus[];
@@ -55,20 +55,5 @@ describe('describeChoice', () => {
 		expect(describeChoice({ provider: 'elevenlabs', voiceId: 'el-2' }, { voices }, profiles, engines)).toBe(
 			'Adam · ElevenLabs'
 		);
-	});
-});
-
-describe('settingsChoice', () => {
-	it('is the saved profile and engine for local', () => {
-		expect(
-			settingsChoice({ provider: 'local', voices, local_voice_profile_id: 'p1', local_engine: 'voxcpm2' })
-		).toEqual({ provider: 'local', voiceId: 'p1', engine: 'voxcpm2' });
-	});
-
-	it('is the default ElevenLabs voice otherwise', () => {
-		expect(settingsChoice({ provider: 'elevenlabs', voices, local_voice_profile_id: '', local_engine: '' })).toEqual({
-			provider: 'elevenlabs',
-			voiceId: 'el-2'
-		});
 	});
 });

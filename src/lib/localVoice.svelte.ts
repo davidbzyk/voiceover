@@ -44,17 +44,6 @@ export function describeChoice(
 	return `${profile} · ${engines.find((e) => e.key === choice.engine)?.name ?? 'No engine'}`;
 }
 
-/** The voice and engine Settings would convert with, for labels; ids are empty when nothing is picked. */
-export function settingsChoice(
-	config: Pick<AppConfig, 'provider' | 'voices' | 'local_voice_profile_id' | 'local_engine'>
-): VoiceChoice {
-	if (config.provider === 'local') {
-		return { provider: 'local', voiceId: config.local_voice_profile_id, engine: config.local_engine };
-	}
-	const voice = config.voices.find((v) => v.is_default) ?? config.voices[0];
-	return { provider: 'elevenlabs', voiceId: voice?.id ?? '' };
-}
-
 class LocalVoices {
 	profiles = $state<VoiceboxProfile[]>([]);
 	models = $state<VoiceboxModelStatus[]>([]);

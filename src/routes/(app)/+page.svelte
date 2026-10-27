@@ -14,7 +14,8 @@
 	} from '$lib/recorder.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { logger } from '$lib/logger';
-	import { describeChoice, localVoices, settingsChoice } from '$lib/localVoice.svelte';
+	import { savedVoiceChoice } from '$lib/conversion';
+	import { describeChoice, localVoices } from '$lib/localVoice.svelte';
 	import EnginePicker from '$lib/EnginePicker.svelte';
 	import WebcamBubble from '$lib/WebcamBubble.svelte';
 	import RegionSelector from '$lib/RegionSelector.svelte';
@@ -201,7 +202,7 @@
 					{#if !appState.config.preferences.voice_replacement_enabled}
 						Disabled — raw recording only
 					{:else}
-						{describeChoice(settingsChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)}
+						{describeChoice(savedVoiceChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)}
 					{/if}
 				</div>
 			</div>

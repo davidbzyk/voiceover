@@ -3,6 +3,7 @@ import {
 	buildVoiceOptions,
 	choiceKey,
 	defaultVoiceChoice,
+	savedVoiceChoice,
 	parseChoiceKey,
 	choiceReady,
 	pickVoice,
@@ -31,6 +32,16 @@ describe('buildVoiceOptions', () => {
 	it('leaves out ElevenLabs voices when no API key is set', () => {
 		const options = buildVoiceOptions({ voices, elevenlabs_api_key: '' }, [{ id: 'p1', name: 'DJT' }]);
 		expect(options.map((o) => o.provider)).toEqual(['local']);
+	});
+});
+
+describe('savedVoiceChoice', () => {
+	it('keeps a local choice with nothing saved, so labels can say what is missing', () => {
+		expect(savedVoiceChoice({ provider: 'local', voices, local_voice_profile_id: '', local_engine: '' })).toEqual({
+			provider: 'local',
+			voiceId: '',
+			engine: null
+		});
 	});
 });
 

@@ -4,7 +4,8 @@
 	import { tauriInvoke } from '$lib/tauri';
 	import { logger } from '$lib/logger';
 	import { shouldLoadLocalVoices } from '$lib/conversion';
-	import { describeChoice, localVoices, settingsChoice } from '$lib/localVoice.svelte';
+	import { savedVoiceChoice } from '$lib/conversion';
+	import { describeChoice, localVoices } from '$lib/localVoice.svelte';
 
 	let sidecarHealthy = $state(false);
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -35,7 +36,7 @@
 	});
 
 	const voiceLabel = $derived(
-		describeChoice(settingsChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)
+		describeChoice(savedVoiceChoice(appState.config), appState.config, localVoices.profiles, localVoices.engines)
 	);
 </script>
 
