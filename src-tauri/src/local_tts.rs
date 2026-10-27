@@ -180,21 +180,19 @@ pub(crate) async fn poll_and_download(
                 return Err(CANCELLED.to_string());
             }
 
-            let poll_resp = match send_with_timeout(
-                client.get(&status_url).send(),
-                120,
-                "Failed to poll generation status",
-            )
-            .await
-            {
-                Ok(resp) => resp,
-                // A dropped connection is not a failed job: poll again, and give up only once nothing has
-                // changed for the stall window. An answer with an error status still fails at once, below.
-                Err(e) if last_change.elapsed() <= timing.stall_after => {
-                    log::warn!("[local_tts] {e}; polling again");
+            let sent = tokio::time::timeout(std::time::Duration::from_secs(120), client.get(&status_url).send()).await;
+            let poll_resp = match sent {
+                Ok(Ok(resp)) => resp,
+                // Refused: nothing is listening, so the sidecar is gone and waiting cannot help.
+                Ok(Err(e)) if e.is_connect() => return Err(format!("Failed to poll generation status: {e}")),
+                // A dropped connection or a slow answer is not a failed job: poll again, and give up only once
+                // nothing has changed for the stall window. An answer with an error status fails at once, below.
+                failed if last_change.elapsed() <= timing.stall_after => {
+                    log::warn!("[local_tts] Status poll failed ({failed:?}); polling again");
                     continue;
                 }
-                Err(e) => return Err(e),
+                Ok(Err(e)) => return Err(format!("Failed to poll generation status: {e}")),
+                Err(_) => return Err("Failed to poll generation status: timed out after 120s".to_string()),
             };
 
             if !poll_resp.status().is_success() {
@@ -953,6 +951,22 @@ mod tests {
         ).await;
         let err = result.unwrap_err();
         assert!(err.contains("Failed to poll generation status"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_that_refuses_the_connection_fails_at_once() {
+        // Nothing listening means the sidecar is gone; waiting out the stall window cannot bring it back.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let out = std::env::temp_dir().join("vo-test-poll-refused.wav");
+        let started = std::time::Instant::now();
+        let result = poll_and_download(
+            &reqwest::Client::new(), &base_url, "gen-8", &out, fast_timing(10_000),
+            &|_, _| {}, &|| false,
+        ).await;
+        assert!(result.unwrap_err().contains("Failed to poll generation status"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", started.elapsed());
     }
 
     #[tokio::test]
