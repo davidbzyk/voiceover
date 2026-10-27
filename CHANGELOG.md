@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0] - 2026-10-27
+
+**50 app files | 3,167 additions | 765 deletions | 5 PRs | 40 commits** (excluding the OKF notes, the vendored CosyVoice copy and lockfiles)
+
+### 🌟 New Features
+
+- **Pick the engine for every local conversion** — CosyVoice (speech to speech, keeps your pacing) or a text-to-speech engine that speaks each phrase at its original time. Pick it on the Record screen, in Settings, in the voice picker on Preview and the Library, and in Create Voice (#34)
+- **Five more text-to-speech engines** — VoxCPM2, MOSS-TTS Local v1.5, OmniVoice, Fish S2 Pro and Chatterbox, beside Qwen3-TTS 1.7B (#31)
+- **The engine shows wherever the voice does** — Preview, Convert again and Library cards read "voice · engine", and the progress bar names the engine at work (#34)
+- **Cards on the Models page show size and licence**, with a Non-commercial mark on OmniVoice and Fish S2 Pro (#34)
+
+### 🐛 Bug Fixes
+
+- **A conversion could use up the Mac's memory** — an engine could keep speaking past the end of a phrase while MLX held on to freed memory, past 40 GB on one phrase. Each phrase now stops at 3× its length plus 2 s and is spoken again once if it runs that long, and MLX keeps at most 2 GB of freed memory. All seven engines replaced a 6m50s recording at 10–31 GB peak (#34)
+- **The status bar said "No profile"** with a profile picked (#34)
+- **One dropped connection failed a whole conversion** — the status check now tries again. Once a conversion has finished a chunk, 240 s with no new chunk still fails it; a first-time model download or a transcription has no time limit and can be cancelled (#34)
+- **Create Voice** stayed stuck after Retry Connection found the engine, and had no way forward when no text-to-speech engine was downloaded (#34)
+
+### 🛠️ Other Improvements
+
+- **No PyTorch in the voice engine** — it runs entirely on MLX (mlx 0.32.4, mlx-audio 0.6.1). Qwen replaced the 6m50s recording in 84 s, down from 10 minutes on PyTorch (#33)
+- After updating, Whisper and CosyVoice's tokenizer download once more; the old PyTorch Qwen and Whisper downloads (about 7 GB) are no longer used (#33)
+- Replacing a voice is no longer always speech-to-speech, as 0.3.0 had it: CosyVoice and the text-to-speech engines are each one pick away (#34)
+- CosyVoice3's MLX code ships as its own package, checked against its source by `scripts/check-cosyvoice-copy.sh` (#32)
+- What we learn about engines, the sidecar and releases is kept in `okf/` (#30)
+
 ## [0.3.0] - 2026-10-22
 
 **29 app files | 2,449 additions | 943 deletions | 6 PRs | 16 commits** (excluding the vendored code reviewer and lockfiles)
