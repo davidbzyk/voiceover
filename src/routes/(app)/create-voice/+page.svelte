@@ -15,6 +15,8 @@
 	let checkingHealth = $state(false);
 	// One model list for the app: the store every engine picker reads.
 	const models = $derived(localVoices.models);
+	// Step 1 needs only Whisper, so step 4 may have no engine to test with; the test is then skipped.
+	const canTest = $derived(engineOptions(models, true).some((e) => e.downloaded));
 	let downloading = $state(false);
 	let downloadError = $state('');
 	let prerequisiteError = $state('');
@@ -582,6 +584,9 @@
 					>
 						{generating ? 'Generating...' : 'Generate Test'}
 					</button>
+					{#if localVoices.loaded && !canTest}
+						<button class="small-btn" onclick={() => (step = 5)}>Skip the test</button>
+					{/if}
 				</div>
 
 				{#if generating}
