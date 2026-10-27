@@ -196,15 +196,18 @@ pub async fn convert(
             let output = work_dir.join(format!("transformed-{stamp}.wav"));
             let port = sidecar::ensure_running(app).await?;
             let http = app.state::<local_tts::HttpClient>();
+            let job = local_tts::ConvertJob {
+                engine,
+                profile_id: &choice.voice_id,
+                whisper_model: &config.whisper_model,
+                input_wav: source_wav,
+                output_wav: &output,
+                video_duration: duration,
+            };
             local_tts::voice_convert(
                 &http.client,
                 port,
-                engine,
-                &choice.voice_id,
-                &config.whisper_model,
-                source_wav,
-                &output,
-                duration,
+                job,
                 &|status, p| {
                     let fraction = if p.total > 0 { p.done as f32 / p.total as f32 } else { 0.0 };
                     on_progress(&local_stage_label(status, engine_name), fraction)

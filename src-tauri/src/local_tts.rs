@@ -291,24 +291,34 @@ use crate::tts_provider::CANCELLED;
 // Voice conversion (speech-to-speech, same contract as ElevenLabs)
 // ---------------------------------------------------------------------------
 
-/// Replace the voice in `input_wav` with the profile's, spoken by `engine` (a sidecar registry key), at the video's length.
+/// One replace-voice job for the sidecar, by name so no two of its strings can be passed in each other's place.
+#[derive(Clone, Copy, Debug)]
+pub struct ConvertJob<'a> {
+    /// Sidecar registry key of the engine that speaks.
+    pub engine: &'a str,
+    /// Local voice profile whose voice it speaks in.
+    pub profile_id: &'a str,
+    /// Whisper model a text-to-speech engine transcribes the recording with.
+    pub whisper_model: &'a str,
+    pub input_wav: &'a Path,
+    pub output_wav: &'a Path,
+    /// The video's length, which the output matches; the sidecar uses the recording's when absent.
+    pub video_duration: Option<f64>,
+}
+
+/// Replace the voice in `job.input_wav` with the profile's, spoken by `job.engine`, at the video's length.
 ///
-/// A speech-to-speech engine converts the speech; a text-to-speech engine first transcribes it with `whisper_model`.
-/// Reports the job's status and chunk progress through `on_progress`, and stops (cancelling the sidecar job) when
-/// `is_cancelled` turns true.
-#[allow(clippy::too_many_arguments)]
+/// A speech-to-speech engine converts the speech; a text-to-speech engine first transcribes it with the job's
+/// Whisper model. Reports the job's status and chunk progress through `on_progress`, and stops (cancelling the
+/// sidecar job) when `is_cancelled` turns true.
 pub async fn voice_convert(
     client: &reqwest::Client,
     port: u16,
-    engine: &str,
-    profile_id: &str,
-    whisper_model: &str,
-    input_wav: &Path,
-    output_wav: &Path,
-    video_duration: Option<f64>,
+    job: ConvertJob<'_>,
     on_progress: &(dyn Fn(&str, JobProgress) + Send + Sync),
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(), String> {
+    let ConvertJob { engine, profile_id, whisper_model, input_wav, output_wav, video_duration } = job;
     let base = format!("http://127.0.0.1:{}", port);
     let start = std::time::Instant::now();
 
@@ -899,10 +909,15 @@ mod tests {
         let fake = fake_sidecar(vec![r#"{"status":"completed","error":null,"progress":{"done":1,"total":1}}"#]).await;
         let port: u16 = fake.base_url.rsplit(':').next().unwrap().parse().unwrap();
         let out = std::env::temp_dir().join("vo-test-convert-engine.wav");
-        voice_convert(
-            &reqwest::Client::new(), port, "qwen-tts-1.7B", "4ad88b19", "whisper-large-v3-turbo",
-            Path::new("/tmp/extracted-1.wav"), &out, Some(29.993), &|_, _| {}, &|| false,
-        )
+        let job = ConvertJob {
+            engine: "qwen-tts-1.7B",
+            profile_id: "4ad88b19",
+            whisper_model: "whisper-large-v3-turbo",
+            input_wav: Path::new("/tmp/extracted-1.wav"),
+            output_wav: &out,
+            video_duration: Some(29.993),
+        };
+        voice_convert(&reqwest::Client::new(), port, job, &|_, _| {}, &|| false)
         .await
         .unwrap();
         let jobs = fake.jobs.lock().unwrap().clone();
