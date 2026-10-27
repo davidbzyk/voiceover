@@ -2,10 +2,9 @@
  * Local voice profiles and engines from the sidecar, shared by every screen that shows or picks them,
  * so a profile or engine picked on one screen shows on the others.
  */
-import { tauriInvoke } from './tauri';
 import type { AppConfig } from './state.svelte';
 import type { VoiceChoice } from './conversion';
-import type { VoiceboxModelStatus, VoiceboxProfile } from './voicebox';
+import { voicebox, type VoiceboxModelStatus, type VoiceboxProfile } from './voicebox';
 
 /** One engine as the pickers list it. */
 export interface EngineOption {
@@ -70,8 +69,8 @@ class LocalVoices {
 		this.#inFlight ??= (async () => {
 			try {
 				// One after the other: each command starts the sidecar if it is not running.
-				const profiles = await tauriInvoke<VoiceboxProfile[]>('list_local_voices');
-				const models = await tauriInvoke<VoiceboxModelStatus[]>('check_model_status');
+				const profiles = await voicebox.listProfiles();
+				const models = await voicebox.getModelStatus();
 				this.profiles = profiles;
 				this.models = models;
 				this.loaded = true;
