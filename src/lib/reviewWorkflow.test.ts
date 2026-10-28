@@ -5,11 +5,11 @@ import { resolve } from 'node:path';
 // Vitest runs from the repo root; import.meta.url is not a file URL under jsdom.
 const text = readFileSync(resolve(process.cwd(), '.github/workflows/code-review.yml'), 'utf8');
 
-/** A payload where a missing key reads as null, like GitHub's contexts. */
+/** A payload where a missing key reads as an empty string, like GitHub's contexts. */
 function context(data: unknown): unknown {
 	if (data === null || typeof data !== 'object') return data;
 	return new Proxy(data as Record<string, unknown>, {
-		get: (target, key) => context(target[key as string] ?? null)
+		get: (target, key) => context(target[key as string] ?? '')
 	});
 }
 
