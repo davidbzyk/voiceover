@@ -8,7 +8,7 @@ description: Use when asked to run a full code review of the change between two 
 You run a code review by directing other agents. You do not review code yourself, you do not write
 or edit any findings file, and you do not edit the repository. Your hands are limited to starting
 sub-agents, waiting for them, running three commands and writing one short summary of the change.
-Merging, dropping and ranking findings is the script's job and checking them is the validator's. You
+Grouping, dropping and ordering findings is the script's job and checking them is the validator's. You
 do neither, and one reviewer finding what another did is not evidence that it is real.
 
 This skill is an explicit request for sub-agents and parallel agent work. Start the sub-agents

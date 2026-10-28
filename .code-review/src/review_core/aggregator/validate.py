@@ -29,12 +29,15 @@ def plain_file(path: Path) -> bool:
 
 
 def verdict_id(finding: dict) -> str:
-    """The name a verdict uses for a finding: its fingerprint and its lines.
+    """The name a verdict uses for a finding: its fingerprint, its lines and its reviewer.
 
     The fingerprint alone is not enough: the same line quoted at two places in a file gives two
-    findings one fingerprint. Two findings with the same lines are merged before this point.
+    findings one fingerprint, and two reviewers can report two problems on the same lines.
     """
-    return f"{finding['fingerprint']}:{finding['line_start']}-{finding['line_end']}"
+    # Review (pre-push), shown not to occur: one reviewer's two findings on one quote and lines
+    # would share an id, and none of 545 findings in 50 real trials did.
+    lines = f"{finding['line_start']}-{finding['line_end']}"
+    return f"{finding['fingerprint']}:{lines}:{finding['reviewer']}"
 
 
 def read_verdicts(path: Path | str) -> dict[str, dict] | None:
@@ -78,9 +81,9 @@ def apply_verdicts(
     """Return (kept, declined). A verdict acts only on the finding it names, and only on one
     the validator was given; anything else is ignored.
 
-    Findings over the span limit are never merged, so two can share an id. A decline that fits
-    more than one finding removes none: a finding is not dropped on a verdict that might have
-    been about another.
+    Two findings share an id only when one reviewer reports the same lines twice. A decline that
+    fits more than one finding removes none: a finding is not dropped on a verdict that might
+    have been about another.
     """
     given = [verdict_id(x) for x in findings if x["severity"] in VALIDATED_SEVERITIES]
     shared = {i for i in given if given.count(i) > 1}

@@ -28,6 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from review_core.aggregator.cli import MAX_SUMMARY_BYTES
+from review_core.aggregator.dedup import Place, place_groups
 from review_core.aggregator.report import _clean, _description, _summary, _title
 from review_core.contracts.models import (
     REVIEWERS,
@@ -43,6 +44,7 @@ BOT = "github-actions[bot]"  # who posts; only its own markers count as already 
 SUMMARY_MARKER = "<!-- code-review-summary -->"
 MAX_BODY = 60_000  # GitHub refuses a review body over 65,536 characters
 MAX_COMMENT = 20_000  # one inline comment; the description is cut to fit
+SECTION = "\n\n---\n\n"  # between the findings one inline comment holds
 # Badge colours per severity: data, so a new level is a row here.
 BADGES = {"P0": "red", "P1": "orange", "P2": "yellow", "P3": "lightgrey"}
 STATUS_WORDS = {"complete": "Completed", "partial": "Partial", "failed": "Failed"}
@@ -91,8 +93,9 @@ def anchor(finding: Finding, lines: dict[str, set[int]]) -> dict | None:
 
 
 def _inert(text: str) -> str:
-    """Escaped text with @-mentions broken, so model text can ping no one."""
-    return _MENTION.sub("@​", text)
+    """Escaped text with @-mentions and HTML comment openers broken, so model text can ping no
+    one and never forms a marker that later runs would read as a finding."""
+    return _MENTION.sub("@​", text).replace("<!--", "<!​--")
 
 
 def _fence(text: str) -> list[str]:
@@ -110,11 +113,11 @@ def _badge(severity: str) -> str:
 
 
 def _meta(finding: Finding) -> str:
-    """The reviewer, confidence and the other reviewers that raised it, on one italic line."""
+    """The reviewer, confidence and the other reviewers on these lines, on one italic line."""
     parts = [f"_{_inert(_title(finding.reviewer))}_", f"_confidence {finding.confidence}_"]
     others = [r for r in REVIEWERS if r in finding.also_raised_by and r != finding.reviewer]
     if others:
-        parts.append("_also raised by " + ", ".join(_title(r) for r in others) + "_")
+        parts.append("_also on these lines: " + ", ".join(_title(r) for r in others) + "_")
     return " | ".join(parts)
 
 
@@ -138,23 +141,31 @@ def _prompt(finding: Finding) -> list[str]:
             "</details>"]  # fmt: skip
 
 
-def render_inline(finding: Finding, head: str) -> str:
-    """One inline comment: badge and title, a meta line, the description, the agent prompt.
+def render_place(findings: list[Finding], head: str) -> str:
+    """One inline comment for the findings at one place: a section each, within MAX_COMMENT."""
+    # Review (pre-push), shown not to occur: about 125 findings at one place would overflow the
+    # comment, and across 50 real Luna xhigh trials no place held more than 3.
+    room = (MAX_COMMENT - len(SECTION) * (len(findings) - 1)) // len(findings)
+    return SECTION.join(render_inline(f, head, room) for f in findings)
 
-    A description too long for one comment is cut, so one verbose finding cannot make GitHub
+
+def render_inline(finding: Finding, head: str, limit: int = MAX_COMMENT) -> str:
+    """One finding's section: badge and title, a meta line, the description, the agent prompt.
+
+    A description too long for `limit` is cut, so one verbose finding cannot make GitHub
     refuse the whole review.
     """
     text = _inline(finding, head)
-    if len(text) <= MAX_COMMENT:
+    if len(text) <= limit:
         return text
-    room = max(0, len(finding.description) - (len(text) - MAX_COMMENT) // 2 - 200)
+    room = max(0, len(finding.description) - (len(text) - limit) // 2 - 200)
     short = finding.description[:room].rstrip() + " ... (cut to fit one comment)"
     text = _inline(dataclasses.replace(finding, description=short), head)
-    if len(text) <= MAX_COMMENT:
+    if len(text) <= limit:
         return text
     # Still too long (a huge title or path): cut the text, never the marker that stops reposts.
     marker = _marker(finding, head)
-    return text[: MAX_COMMENT - len(marker) - 2].rstrip() + "\n\n" + marker
+    return text[: limit - len(marker) - 2].rstrip() + "\n\n" + marker
 
 
 def _inline(finding: Finding, head: str) -> str:
@@ -168,13 +179,24 @@ def _inline(finding: Finding, head: str) -> str:
 
 def _marker(finding: Finding, head: str) -> str:
     """The hidden line later runs read to know this finding is already on the pull request."""
-    marker = json.dumps({"fingerprint": finding.fingerprint, "head": head}, sort_keys=True)
+    fields = {"fingerprint": finding.fingerprint, "head": head, "reviewer": finding.reviewer}
+    marker = json.dumps(fields, sort_keys=True)
     return f"<!-- code-review:v1 {marker} -->"
+
+
+def _rank(finding: Finding) -> tuple:
+    """Most severe first, then by place."""
+    return SEVERITIES.index(finding.severity), finding.file, finding.line_start
 
 
 def _ordered(findings) -> list[Finding]:
     """Most severe first, then by place."""
-    return sorted(findings, key=lambda f: (SEVERITIES.index(f.severity), f.file, f.line_start))
+    return sorted(findings, key=_rank)
+
+
+def _place(finding: Finding) -> Place:
+    """The file, side and lines `place_groups` groups by."""
+    return finding.file, finding.side, finding.line_start, finding.line_end
 
 
 def _counts(findings, head: str, still_open: int | None = 0) -> str:
@@ -229,37 +251,46 @@ def _footer(run) -> str:
 _MARKER = re.compile(r"<!-- code-review:v1 (\{.*?\}) -->")
 
 
-def posted_fingerprints(bodies: list[str]) -> set[str]:
-    """Fingerprints of the findings our earlier reviews already posted, read from their markers."""
+def posted_findings(bodies: list[str]) -> set[tuple[str, str | None]]:
+    """(fingerprint, reviewer) of each finding our earlier reviews posted, read from their
+    markers; a marker written before markers named a reviewer gives None, matching any."""
     found = set()
     for body in bodies:
         for raw in _MARKER.findall(body or ""):
             try:
-                found.add(json.loads(raw)["fingerprint"])
-            except (ValueError, KeyError, TypeError):
+                marker = json.loads(raw)
+                found.add((marker["fingerprint"], marker.get("reviewer")))
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue
     return found
 
 
+def _posted_before(finding: Finding, posted: set[tuple[str, str | None]]) -> bool:
+    """Whether an earlier review posted this reviewer's finding on this quote."""
+    return bool({(finding.fingerprint, finding.reviewer), (finding.fingerprint, None)} & posted)
+
+
 def review_payload(doc: dict, diff: str, *, head: str, repo: str, title: str = TITLE,
-                   posted: set[str] = frozenset(), base: str | None = None,
+                   posted: set[tuple[str, str | None]] = frozenset(), base: str | None = None,
                    still_open: int | None = 0) -> dict:  # fmt: skip
     """The body of POST /repos/{repo}/pulls/{n}/reviews for one run.
 
-    A finding whose fingerprint is in `posted` is already on the pull request and is left out.
+    A finding `posted` names is already on the pull request and is left out. The findings at
+    one place share one inline comment, anchored at the most severe one whose lines are on the diff.
     """
     run = load_run_envelope(doc)
     lines = commentable_lines(diff)
-    comments, outside, repeated = [], [], 0
-    for finding in _ordered(_published(run)):
-        if finding.fingerprint in posted:
-            repeated += 1
-            continue
-        place = anchor(finding, lines)
+    comments, outside = [], []
+    fresh = [f for f in _published(run) if not _posted_before(f, posted)]
+    repeated = len(_published(run)) - len(fresh)
+    for group in sorted(map(_ordered, place_groups(fresh, at=_place)), key=lambda g: _rank(g[0])):
+        # Members can end on different lines: anchor at the most severe one on the diff.
+        place = next((p for p in (anchor(f, lines) for f in group) if p), None)
         if place is None:
-            outside.append(finding)
+            outside += group
         else:
-            comments.append({**place, "body": render_inline(finding, head)})
+            comments.append({**place, "body": render_place(group, head)})
+    outside = _ordered(outside)
     body = [f"### {_title(title)}", "", *_outcome(run, head, still_open)]
     if repeated:
         body += ["", f"{repeated} already posted on an earlier commit; not repeated here."]
@@ -432,7 +463,7 @@ def publish(doc: dict, diff: str, *, head: str, repo: str, pr: int, change_summa
         reviews = _pages(request, f"{api}/repos/{repo}/pulls/{pr}/reviews", token)
         found = [*comments, *reviews]
         ours = [c for c in found if (c.get("user") or {}).get("login") == bot]
-        posted = posted_fingerprints([c.get("body", "") for c in ours])
+        posted = posted_findings([c.get("body", "") for c in ours])
         from review_core.ci.history import body_threads, changed_since, open_count  # imports us
 
         # Findings left in a review body have no thread; they count as open until their file

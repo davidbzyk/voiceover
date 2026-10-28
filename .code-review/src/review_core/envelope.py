@@ -26,9 +26,9 @@ from review_core.contracts.models import (
 MAX_REVIEWER_FILE_BYTES = 5_000_000
 # No reviewer has this many real findings on one change; more is a flood, not a review.
 MAX_FINDINGS_PER_REVIEWER = 500
-# Findings in the same file and side count as one report when the later one starts no more than
-# this many lines after the earlier one ends: 0 means their line ranges share a line. A wider
-# window merged distinct defects a few lines apart, and bought almost nothing on tuning runs.
+# Findings in the same file and side share a place (one CI comment, never merged) when the later
+# one starts no more than this many lines after the earlier one ends: 0 means their line ranges
+# share a line. A wider window joined distinct defects a few lines apart.
 MERGE_WINDOW = 0
 
 DROP_COUNTS = DROP_REASONS
@@ -80,7 +80,7 @@ def fingerprint(finding: dict) -> str:
 
     Nothing a model words freely and no line number goes in, so the same quoted code gives the
     same fingerprint whoever raises it and however a later push moves it. Two places that quote
-    identical lines share a fingerprint; callers that need identity add the line range.
+    identical lines share a fingerprint; callers that need identity add the lines or reviewer.
     """
     path = safe_relpath(finding["file"]) or finding["file"]
     parts = [path, finding["side"], *quote_lines(finding["quote"])]

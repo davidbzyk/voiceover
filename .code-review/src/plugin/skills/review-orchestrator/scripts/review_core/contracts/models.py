@@ -48,7 +48,7 @@ DROP_REASONS = (
     "malformed",
 )
 # A finding that claims more lines than this points at no particular place: it is not matched
-# against the key and it is never merged with a neighbour.
+# against the key and it is never grouped with a neighbour.
 MAX_SPAN = 30
 TIERS = (1, 2, 3)
 TAGS = ("visible_in_diff", "needs_other_files")
@@ -161,7 +161,7 @@ class FindingsDoc:
 
 def _finding(doc, where: str, *, need_fingerprint: bool) -> Finding:
     """Validate one finding object."""
-    final = need_fingerprint  # only the final document's findings carry the merge list
+    final = need_fingerprint  # only the final document's findings name reviewers at their place
     d = _fields(doc, (*FINDING_FIELDS, "also_raised_by") if final else FINDING_FIELDS, where)
     merged = _list(d, "also_raised_by", where) if final else []
     if any(not isinstance(name, str) or name not in REVIEWERS for name in merged):

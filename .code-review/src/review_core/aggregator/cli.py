@@ -20,7 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     """Build the argument parser for both commands."""
     parser = argparse.ArgumentParser(prog="review_core.aggregator.cli")
     sub = parser.add_subparsers(dest="command", required=True)
-    first = sub.add_parser("first-pass", help="gate, filter and dedup the reviewers' findings")
+    first = sub.add_parser("first-pass", help="gate, filter and group the reviewers' findings")
     first.add_argument("--out", required=True)
     first.add_argument("--repo", required=True)
     first.add_argument("--base", required=True)

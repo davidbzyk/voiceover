@@ -88,7 +88,7 @@ def fetch(request: Callable, repo: str, pr: int, token: str, api: str = API) -> 
 
 def open_count(request: Callable, repo: str, pr: int, token: str, bot: str = BOT,
                api: str = API) -> int | None:  # fmt: skip
-    """How many of this action's threads are still open; None when they cannot be read."""
+    """How many findings in this action's threads are still open; None when unreadable."""
     try:
         response = fetch(request, repo, pr, token, api)
     except Exception:  # noqa: BLE001 - the summary says the count is unknown
@@ -136,10 +136,19 @@ def pushers(request: Callable, repo: str, token: str, api: str = API) -> Callabl
     return can_push
 
 
+def _sections(body: str) -> list[str]:
+    """Each finding's text in one of this action's comments, up to and including its marker."""
+    sections, start = [], 0
+    for marker in _MARKER.finditer(body):
+        sections.append(body[start : marker.end()])
+        start = marker.end()
+    return sections
+
+
 def our_threads(nodes: list[dict], bot: str = BOT,
                 can_push: Callable[[str], bool] | None = None) -> list[Thread]:  # fmt: skip
-    """This action's threads, newest first; with `can_push`, a reply is kept only from
-    someone who may push to the repository."""
+    """This action's findings in threads, one per finding a comment holds, newest first; with
+    `can_push`, a reply is kept only from someone who may push to the repository."""
     found = []
     for node in nodes:
         comments = (node.get("comments") or {}).get("nodes") or []
@@ -148,10 +157,9 @@ def our_threads(nodes: list[dict], bot: str = BOT,
         first = comments[0]
         if _login((first.get("author") or {}).get("login", "")) != _login(bot):
             continue
-        body = first.get("body") or ""
-        if not _MARKER.search(body):
+        sections = _sections(first.get("body") or "")
+        if not sections:
             continue
-        badge, title = _BADGE.search(body), _TITLE.search(body)
         end = node.get("line") or node.get("originalLine") or 0
         start = node.get("startLine") or node.get("originalStartLine") or end
         state = "resolved" if node.get("isResolved") else (
@@ -165,12 +173,18 @@ def our_threads(nodes: list[dict], bot: str = BOT,
         )  # fmt: skip
         if state == "open" and replies:  # a reply settles it for the reviewers, fix or not
             state = "answered"
-        found.append(Thread(
-            file=_plain(node.get("path") or "").replace("`", "'"), start=int(start), end=int(end),
-            severity=badge.group(1) if badge else "", title=_plain(title.group(1) if title else ""),
-            state=state, raised_on=((first.get("originalCommit") or {}).get("oid") or "")[:7],
-            raised_at=first.get("createdAt") or "", replies=replies,
-        ))  # fmt: skip
+        # Review (pre-push): one reply settles every finding a shared comment holds. Posting is
+        # unchanged: an unfixed finding on unchanged lines keeps its fingerprint, so
+        # `posted_findings` holds it back anyway, and changed lines let reviewers raise it again.
+        for section in sections:
+            badge, title = _BADGE.search(section), _TITLE.search(section)
+            found.append(Thread(
+                file=_plain(node.get("path") or "").replace("`", "'"), start=int(start),
+                end=int(end), severity=badge.group(1) if badge else "",
+                title=_plain(title.group(1) if title else ""), state=state,
+                raised_on=((first.get("originalCommit") or {}).get("oid") or "")[:7],
+                raised_at=first.get("createdAt") or "", replies=replies,
+            ))  # fmt: skip
     return sorted(found, key=lambda t: t.raised_at, reverse=True)
 
 
