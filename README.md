@@ -37,7 +37,7 @@ The progress bar names the engine at work and moves chunk by chunk. **Cancel** s
 |---|---|
 | ![Library](images/library.png) | ![Library card with the voice picker open](images/library-convert.png) |
 
-Each card shows the voice and engine it was made with. The 🎙️ button converts that recording again without opening it.
+A converted recording's card shows the voice it was made with, plus the engine for recordings made since 0.4.0; a recording saved without a voice change shows neither. The 🎙️ button converts a recording again without opening it.
 
 ### Models
 
