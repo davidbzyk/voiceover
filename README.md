@@ -121,7 +121,7 @@ flowchart LR
     Rust --> GD[("Google Drive API")]
 ```
 
-The **Python sidecar** is a FastAPI server that the app starts on a free local port at launch. It transcribes with Whisper, runs the voice-conversion and text-to-speech engines, and manages voice profiles and model downloads. Jobs run one at a time in a queue, so a transcription waits its turn and can be cancelled like the rest.
+The **Python sidecar** is a FastAPI server that the app starts on a free local port the first time something needs it (with Local as the provider, that's when the app loads your voices). It transcribes with Whisper, runs the voice-conversion and text-to-speech engines, and manages voice profiles and model downloads. Jobs run one at a time in a queue, so a transcription waits its turn and can be cancelled like the rest.
 
 The frontend never calls the sidecar directly: every request goes through the Rust backend (`sidecar_fetch`, `sidecar_upload`, and the conversion commands).
 
@@ -142,7 +142,7 @@ Text-to-speech:   Record → Extract audio → Whisper → engine speaks each ph
 
 The local engines run on [MLX](https://github.com/ml-explore/mlx) and need **Apple Silicon**. Development and measurements were on an **M5 Max**; the minimum M-series chip hasn't been verified. Any M1 or later should work, with speed depending on unified memory and GPU cores.
 
-Download models from the **Models** page in the sidebar. To create voices and convert with CosyVoice you need **Whisper Large v3 Turbo** (it transcribes your voice samples) and **CosyVoice3 0.5B**, about 4 GB together. Each text-to-speech engine is an optional extra download of 1.6–13.4 GB. Models are stored in `~/Library/Application Support/com.voiceover.app/models/`.
+Download models from the **Models** page in the sidebar. Creating a voice needs only the Whisper model chosen there (**Whisper Large v3 Turbo** by default, 1.6 GB), which transcribes your samples. Converting also needs the engine you pick: **CosyVoice3 0.5B** (2.4 GB) or any text-to-speech engine (1.6–13.4 GB); text-to-speech conversions use Whisper again to transcribe the recording. Models are stored in `~/Library/Application Support/com.voiceover.app/models/`.
 
 > **Note:** If you only use ElevenLabs, you don't need Apple Silicon or any model downloads.
 
@@ -263,9 +263,9 @@ All settings are managed in the app. No config files to edit by hand.
 
 ### Local Voice Setup (Optional)
 
-The local engines are built into VoiceOver. The sidecar starts with the app; there's no server to install.
+The local engines are built into VoiceOver. The app starts the sidecar itself when it's first needed; there's no server to install.
 
-**1. Download models:** open **Models** in the sidebar and download Whisper Large v3 Turbo, CosyVoice3, and any text-to-speech engines you want.
+**1. Download models:** open **Models** in the sidebar and download the Whisper model (needed to create voices), then the engines you want to convert with: CosyVoice3 to keep your exact timing, or any text-to-speech engine.
 
 **2. Create a voice profile:**
 
@@ -281,7 +281,7 @@ The local engines are built into VoiceOver. The sidecar starts with the app; the
 2. Choose the **Engine** (CosyVoice3 to keep your exact timing, or a text-to-speech engine) and the voice profile
 3. Record as normal. Preview and Library cards let you pick a different voice or engine for any single conversion
 
-**Supported audio formats for samples:** `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.aac`, `.webm`, `.opus` (max 50MB per sample)
+**Supported audio formats for samples:** `.wav`, `.mp3`, `.m4a`, `.ogg`, `.flac`, `.aac`, `.webm`, `.opus`
 
 ### Google Drive Setup (Optional)
 
@@ -490,7 +490,7 @@ The installed app writes the same logs to `~/Library/Logs/com.voiceover.app/Voic
 
 ## Known Issues
 
-- **Sidecar startup lag** — the sidecar takes 10–30 seconds to start on first launch. Until then local voice profiles don't appear in the pickers; the status bar shows "TTS Ready" once it's up.
+- **Sidecar startup lag** — the sidecar takes 10–30 seconds to start the first time the app needs it. Until then local voice profiles don't appear in the pickers; the status bar shows "TTS Ready" once it's up.
 - **Apple Silicon only for local engines** — they run on MLX. ElevenLabs works on any hardware.
 - **Voice quality depends on your samples** — clean, varied samples of 5–30 seconds give the best clones; noisy reference audio gives poor ones.
 - **Non-commercial engines** — OmniVoice (CC BY-NC) and Fish S2 Pro (Fish Audio Research licence) are marked on the Models page; don't use them for commercial work.
