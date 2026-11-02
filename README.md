@@ -74,7 +74,7 @@ A local conversion works in one of two ways, decided by the engine you pick:
 | Whisper Large v3 Turbo | Transcription (recommended) | 1.6 GB | MIT |
 | Whisper Medium | Transcription | 1.5 GB | Apache-2.0 |
 
-On a 6m50s recording, CosyVoice replaced the voice in about 40 seconds and Qwen3-TTS in 84 seconds (measured on an M5 Max during the 0.3.0 and 0.4.0 work).
+On a 6m50s recording, CosyVoice3 replaced the voice in 33 seconds, Qwen3-TTS in 84, and the slowest engine, Fish S2 Pro, in 327 (measured on an M5 Max for 0.4.0; all seven engines in [the evidence note](okf/lineage/evidence/tts-runaway-and-mlx-cache.md)).
 
 The app never picks an engine for you. The one you choose on the Record screen or in Settings becomes your default for later conversions; until you've chosen one, Convert and Save stay disabled for local voices. A new engine is one row in the sidecar's model registry; the pickers, the Models page and the saved metadata all read from it.
 
@@ -494,7 +494,7 @@ The installed app writes the same logs to `~/Library/Logs/com.voiceover.app/Voic
 - **Apple Silicon only for local engines** — they run on MLX. ElevenLabs works on any hardware.
 - **Voice quality depends on your samples** — clean, varied samples of 5–30 seconds give the best clones; noisy reference audio gives poor ones.
 - **Non-commercial engines** — OmniVoice (CC BY-NC) and Fish S2 Pro (Fish Audio Research licence) are marked on the Models page; don't use them for commercial work.
-- **Long pauses in a conversion** — once a local conversion has finished a chunk, 240 seconds with no new chunk fails it. Before that point, while the conversion is loading its engine (including a first-time download) or transcribing the recording, there's no time limit, and Cancel stops it. Model downloads on the Models page and sample transcriptions in Create Voice can't be cancelled.
+- **Long pauses in a conversion** — once a local conversion has finished a chunk, 240 seconds with no new chunk fails it. Before that point, while the conversion is loading its engine (including a first-time download) or transcribing the recording, there's no time limit. Cancel ends the conversion in the app at once, but the sidecar finishes the load or transcription it's in before it drops the job, so the next conversion may wait for that step. Model downloads on the Models page and sample transcriptions in Create Voice can't be cancelled.
 - **Webcam bubble** — bottom-left or bottom-right only, captured at 640x480 @ 30fps.
 - **Google Drive OAuth** — the connection must be made from the desktop app (it uses a loopback redirect).
 - **TTS audio cutoff** — local text-to-speech output may cut off the last 1–2 seconds abruptly. Under investigation.
