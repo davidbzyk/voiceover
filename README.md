@@ -86,7 +86,7 @@ Nothing preselects an engine: until a local voice has one, Convert and Save stay
 - **ElevenLabs speech-to-speech** — background noise removed before conversion; recordings over 5 minutes are split at pauses and rejoined at exact lengths
 - **Seven local engines on MLX** — CosyVoice3 plus six text-to-speech engines, no PyTorch
 - **Pick the voice and engine per conversion** — on the Record screen, in Settings, on Preview, on a Library card, and in Create Voice
-- **Convert again** — every converted recording keeps your original voice as `<name>.original.m4a`, so you can redo it in another voice
+- **Convert again** — recordings converted since 0.3.0 keep your original voice as `<name>.original.m4a`, so you can redo them in another voice; a recording saved without a voice change can be converted too. Recordings converted by earlier versions have no original to convert from
 - **Live progress and Cancel** — the bar names the engine and moves chunk by chunk; Cancel stops the sidecar job too
 - **"Voice · engine" labels** — on Preview, Library cards and the status bar
 - **Models page** — download and delete models, see size and licence, choose the Whisper model
