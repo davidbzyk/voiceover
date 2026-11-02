@@ -121,7 +121,7 @@ flowchart LR
     Rust --> GD[("Google Drive API")]
 ```
 
-The **Python sidecar** is a FastAPI server that the app starts on a free local port the first time something needs it (with Local as the provider, that's when the app loads your voices). It transcribes with Whisper, runs the voice-conversion and text-to-speech engines, and manages voice profiles and model downloads. Jobs run one at a time in a queue, so a transcription waits its turn and can be cancelled like the rest.
+The **Python sidecar** is a FastAPI server that the app starts on a free local port the first time something needs it (with Local as the provider, that's when the app loads your voices). It transcribes with Whisper, runs the voice-conversion and text-to-speech engines, and manages voice profiles and model downloads. Conversions run one at a time in a queue, and a conversion's own transcription is part of its job, so it waits its turn too (what Cancel does at each step is under Known Issues).
 
 The frontend never calls the sidecar directly: every request goes through the Rust backend (`sidecar_fetch`, `sidecar_upload`, and the conversion commands).
 
