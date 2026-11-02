@@ -236,7 +236,7 @@ pnpm test:rust:coverage     # Backend  → src-tauri/target/llvm-cov/html/index.
 pnpm test:all:coverage      # Both
 ```
 
-Pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) run frontend tests, Rust tests, and type checking in parallel before every commit. Every pull request also gets an automated code review from the copy of the reviewer in `.code-review/`.
+Pre-commit hooks (via [lefthook](https://github.com/evilmartians/lefthook)) run frontend tests, Rust tests, and type checking in parallel before every commit. Pull requests from branches in this repo also get an automated code review from the copy of the reviewer in `.code-review/`; drafts wait until they're marked ready, and fork and Dependabot PRs are skipped because they get no secrets.
 
 ## Building for Distribution
 
@@ -494,7 +494,7 @@ The installed app writes the same logs to `~/Library/Logs/com.voiceover.app/Voic
 - **Apple Silicon only for local engines** — they run on MLX. ElevenLabs works on any hardware.
 - **Voice quality depends on your samples** — clean, varied samples of 5–30 seconds give the best clones; noisy reference audio gives poor ones.
 - **Non-commercial engines** — OmniVoice (CC BY-NC) and Fish S2 Pro (Fish Audio Research licence) are marked on the Models page; don't use them for commercial work.
-- **Long pauses in a conversion** — once a local conversion has finished a chunk, 240 seconds with no new chunk fails it. A first-time model download or a transcription has no time limit and can be cancelled.
+- **Long pauses in a conversion** — once a local conversion has finished a chunk, 240 seconds with no new chunk fails it. Before that point, while the conversion is loading its engine (including a first-time download) or transcribing the recording, there's no time limit, and Cancel stops it. Model downloads on the Models page and sample transcriptions in Create Voice can't be cancelled.
 - **Webcam bubble** — bottom-left or bottom-right only, captured at 640x480 @ 30fps.
 - **Google Drive OAuth** — the connection must be made from the desktop app (it uses a loopback redirect).
 - **TTS audio cutoff** — local text-to-speech output may cut off the last 1–2 seconds abruptly. Under investigation.
