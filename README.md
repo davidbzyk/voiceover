@@ -76,7 +76,7 @@ A local conversion works in one of two ways, decided by the engine you pick:
 
 On a 6m50s recording, CosyVoice replaced the voice in about 40 seconds and Qwen3-TTS in 84 seconds (measured on an M5 Max during the 0.3.0 and 0.4.0 work).
 
-Nothing preselects an engine: until a local voice has one, Convert and Save stay disabled. A new engine is one row in the sidecar's model registry; the pickers, the Models page and the saved metadata all read from it.
+The app never picks an engine for you. The one you choose on the Record screen or in Settings becomes your default for later conversions; until you've chosen one, Convert and Save stay disabled for local voices. A new engine is one row in the sidecar's model registry; the pickers, the Models page and the saved metadata all read from it.
 
 ## Features
 
